@@ -1,0 +1,31 @@
+# Design docs (private)
+videomatte_hq_design_v3.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# Cache
+.cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Output
+out/
+
+# Test files
+TestFiles/

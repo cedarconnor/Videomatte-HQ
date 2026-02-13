@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videomatte-hq"
+version = "0.1.0"
+description = "Offline batch tool for high-quality 8K people video matting"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    # Core
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    # IO
+    "OpenEXR>=3.2",
+    "Imath>=0.0.1",
+    "Pillow>=10.0",
+    "imageio>=2.31",
+    "opencv-python>=4.8",
+    # Config & CLI
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "click>=8.1",
+    # Preview / QC
+    "imageio[ffmpeg]",
+    "jinja2>=3.1",
+    # Models
+    "transformers>=4.30",
+    # Progress
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "ruff",
+]
+
+[project.scripts]
+videomatte-hq = "videomatte_hq.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
