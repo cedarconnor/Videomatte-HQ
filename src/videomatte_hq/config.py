@@ -241,8 +241,8 @@ class PreviewConfig(BaseModel):
     """Live preview generation."""
     enabled: bool = False
     scale: float = 0.5
-    show_tiles: bool = True
-    show_band: bool = True
+    every: int = 10
+    modes: list[str] = Field(default_factory=lambda: ["alpha", "checker", "white", "flicker"])
 
 
 class RuntimeConfig(BaseModel):

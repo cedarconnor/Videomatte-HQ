@@ -1,56 +1,34 @@
-# Design docs (private)
-videomatte_hq_design_v3.md
-
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environments
-.venv/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
 venv/
+.env
 
-# Cache
-.cache/
-.pytest_cache/
-.ruff_cache/
+# NodeJS / React
+web/node_modules/
+web/dist/
+web/.env.local
+web/.env.development.local
+web/.env.test.local
+web/.env.production.local
+web/npm-debug.log*
+web/yarn-debug.log*
+web/yarn-error.log*
 
-# IDE
+# IDEs
 .vscode/
 .idea/
 
 # OS
-Thumbs.db
 .DS_Store
+Thumbs.db
 
-# Output
-out/
-output/
-output_test/
-debug_crash.log
-debug_crash_2.log
-error.log
-stitch_test_output.txt
-stitch_test_output_2.txt
-test_log.txt
-test_output.txt
-
-# Test files and scripts
-TestFiles/
-tests/
-input_frames/
-run_test.py
-repro.py
-debug_run.py
-temp_report_stub.py
-fast_debug_config.yaml
-
-# Logs
+# Project Specific
 logs/
-*.log
-
-# Editor temp files
-*.swp
+output/
+temp/
+cache/
