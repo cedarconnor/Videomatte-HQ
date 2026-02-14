@@ -119,6 +119,8 @@ def detect_rois(
     source: "FrameSource",
     cfg: "ROIConfig",
     bg_confidence: Optional[np.ndarray] = None,
+    bg_plate: Optional[np.ndarray] = None,
+    photometric_normalize: bool = True,
 ) -> list[Optional[BBox]]:
     """Run person detection at configured cadence and interpolate.
 
@@ -126,6 +128,8 @@ def detect_rois(
         source: Frame source.
         cfg: ROI configuration.
         bg_confidence: Optional BG confidence map for motion mask gating.
+        bg_plate: Optional BG plate for motion mask computation.
+        photometric_normalize: Whether to apply photometric normalization for motion mask.
 
     Returns:
         List of BBox (one per frame, None if no detection).
@@ -155,12 +159,41 @@ def detect_rois(
             y0 = min(b.y0 for b in persons)
             x1 = max(b.x1 for b in persons)
             y1 = max(b.y1 for b in persons)
-            detections[t] = [BBox(x0, y0, x1, y1, confidence=max(b.confidence for b in persons))]
+            det_box = BBox(x0, y0, x1, y1, confidence=max(b.confidence for b in persons))
         else:
-            detections[t] = []
+            det_box = None
+
+        # Motion mask union (Stage 1 design: union with motion mask from BG subtraction)
+        if cfg.use_motion_mask and bg_plate is not None and bg_confidence is not None:
+            from videomatte_hq.roi.motion_mask import compute_motion_mask
+
+            motion = compute_motion_mask(
+                frame, bg_plate, bg_confidence,
+                photometric_normalize=photometric_normalize,
+            )
+            if motion.any():
+                ys, xs = np.where(motion)
+                motion_box = BBox(
+                    x0=int(xs.min()), y0=int(ys.min()),
+                    x1=int(xs.max()), y1=int(ys.max()),
+                    confidence=0.5,
+                )
+                if det_box is not None:
+                    # Union of detector box and motion box
+                    det_box = BBox(
+                        x0=min(det_box.x0, motion_box.x0),
+                        y0=min(det_box.y0, motion_box.y0),
+                        x1=max(det_box.x1, motion_box.x1),
+                        y1=max(det_box.y1, motion_box.y1),
+                        confidence=det_box.confidence,
+                    )
+                else:
+                    det_box = motion_box
+
+        detections[t] = [det_box] if det_box is not None else []
 
         if t % (detect_every * 5) == 0:
-            logger.debug(f"Detection frame {t}/{num_frames}: {len(persons)} persons")
+            logger.debug(f"Detection frame {t}/{num_frames}: {len(detections[t])} detections")
 
     # Interpolate between detections
     rois: list[Optional[BBox]] = [None] * num_frames

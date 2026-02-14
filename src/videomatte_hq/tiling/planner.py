@@ -65,7 +65,10 @@ def plan_tiles(
 
     # Generate grid tiles within ROI
     tiles: list[Tile] = []
-    step = tile_size - overlap
+    step = max(1, tile_size - overlap)
+    if step <= 0:
+         logger.error(f"Invalid tiling: tile_size={tile_size}, overlap={overlap}. Step clamped to 1.")
+         step = 1
 
     y = ry0
     while y < ry1:

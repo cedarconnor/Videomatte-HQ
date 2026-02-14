@@ -15,6 +15,13 @@ set ALPHA_FORMAT=png16
 set SHOT_TYPE=locked_off
 set DEVICE=cuda
 set PRECISION=fp16
+set FRAME_START=
+set FRAME_END=
+
+:: Fast preset (1=on, 0=off)
+:: Speeds up iteration by lowering intermediate cost, reducing ROI detection frequency,
+:: disabling temporal flow, and disabling preview rendering.
+set FAST_PRESET=1
 
 :: ---- Locate venv Python ----
 set VENV_PYTHON=%~dp0.venv\Scripts\python.exe
@@ -80,7 +87,13 @@ if not exist "out\alpha" mkdir "out\alpha"
 :: ---- Run pipeline ----
 echo [START] Processing: %INPUT%
 echo [CONFIG] Format=%ALPHA_FORMAT%  Shot=%SHOT_TYPE%  Device=%DEVICE%  Precision=%PRECISION%
+echo [CONFIG] FrameRange=%FRAME_START%..%FRAME_END%  FastPreset=%FAST_PRESET%
 echo.
+
+set EXTRA_ARGS=
+if not "%FRAME_START%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --start %FRAME_START%
+if not "%FRAME_END%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --end %FRAME_END%
+if "%FAST_PRESET%"=="1" set EXTRA_ARGS=%EXTRA_ARGS% --temporal none --no-preview --intermediate-long-side 3072 --roi-detect-every 30
 
 "%VENV_PYTHON%" -m videomatte_hq.cli ^
     --input "%INPUT%" ^
@@ -92,7 +105,7 @@ echo.
     --preview ^
     --preview-modes checker,alpha,white,flicker ^
     --resume ^
-    -v
+    %EXTRA_ARGS%
 
 echo.
 if errorlevel 1 (

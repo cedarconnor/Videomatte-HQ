@@ -1,7 +1,6 @@
-"""Typed configuration schema for the VideoMatte-HQ pipeline.
+"""Configuration schema for VideoMatte-HQ pipeline.
 
-Mirrors the full YAML config from design doc §16.2, with default-to-PNG16 output.
-Supports loading from YAML file and per-stage config hashing for resume invalidation.
+Defines Pydantic models for all pipeline stages.
 """
 
 from __future__ import annotations
@@ -10,123 +9,88 @@ import hashlib
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
-import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
-
-class ShotType(str, Enum):
+class ShotType(Enum):
     LOCKED_OFF = "locked_off"
-    HANDHELD = "handheld"
+    MOVING = "moving"
     UNKNOWN = "unknown"
 
 
-class AlphaFormat(str, Enum):
-    PNG16 = "png16"
-    EXR_DWAA = "exr_dwaa"
-    EXR_DWAA_HQ = "exr_dwaa_hq"
-    EXR_LOSSLESS = "exr_lossless"
-    EXR_RAW = "exr_raw"
+class AlphaFormat(Enum):
+    PNG_16 = "png16"
+    PNG_8 = "png8"
+    DWAA = "dwaa"  # EXR DWAA compression
 
 
-class BandMode(str, Enum):
+class BandMode(Enum):
     ADAPTIVE = "adaptive"
-    THRESHOLD = "threshold"
+    FIXED = "fixed"
 
 
-class TrimapMethod(str, Enum):
+class TrimapMethod(Enum):
     DISTANCE_TRANSFORM = "distance_transform"
     EROSION = "erosion"
 
 
-class TemporalMethod(str, Enum):
-    FREQUENCY_SEPARATION = "frequency_separation"
-    BILATERAL = "bilateral"
+class TemporalSmooth(Enum):
     NONE = "none"
-
-
-class TemporalSmooth(str, Enum):
-    FLOW = "flow"
     EMA = "ema"
-    NONE = "none"
+    FLOW = "flow"
 
 
-class DespillMethod(str, Enum):
-    BG_PLATE = "bg_plate"
-    LOCAL_BG_ESTIMATE = "local_bg_estimate"
+class MultiPerson(Enum):
+    SINGLE = "single"    # largest only
+    UNION_K = "union_k"  # union of top K by area
 
 
-class ROIMode(str, Enum):
-    AUTO_PERSON_TRACK = "auto_person_track"
-    SEGMENTATION = "segmentation"
-    BG_SUB = "bg_sub"
-    MANUAL = "manual"
-
-
-class MultiPerson(str, Enum):
-    SINGLE = "single"
-    UNION_K = "union_k"
-    ALL = "all"
-
-
-class OcclusionFallback(str, Enum):
+class OcclusionFallback(Enum):
     AUTO = "auto"
     TEMPORAL_EXTREMES = "temporal_extremes"
     PATCH_INPAINT = "patch_inpaint"
     AI_INPAINT = "ai_inpaint"
 
 
-class RefFrameMode(str, Enum):
-    AUTO = "auto"
-    MANUAL = "manual"
-
-
-# ---------------------------------------------------------------------------
-# Config sections
-# ---------------------------------------------------------------------------
-
 class IOConfig(BaseModel):
-    """Input/output configuration."""
-    input: str = "frames/%06d.png"
-    output_alpha: str = "out/alpha/%06d.png"
-    output_fg: Optional[str] = None
-    output_preview: str = "out/preview/live_preview.mp4"
-    output_dir: str = "out"
-    fps: int = 30
-    colorspace: str = "auto"
-    shot_type: ShotType = ShotType.LOCKED_OFF
-    # Alpha output — default to 16-bit PNG per user preference
-    alpha_format: AlphaFormat = AlphaFormat.PNG16
+    """Input/Output settings (Stage 0, 7)."""
+    input: str = "input_frames/*.png"
+    output_dir: str = "output"
+    # Output pattern relative to output_dir
+    output_alpha: str = "alpha/frame_%05d.png"
+    
+    frame_start: int = 0
+    frame_end: int = -1  # -1 = all
+    
+    shot_type: ShotType = ShotType.UNKNOWN
+    
+    # Format
+    alpha_format: AlphaFormat = AlphaFormat.PNG_16
     alpha_dwaa_quality: float = 45.0
-    alpha_compression_qc: bool = True
-    alpha_compression_qc_threshold: float = 0.01
-    # Frame range
-    frame_start: Optional[int] = None
-    frame_end: Optional[int] = None
+    
+    # Metadata
+    force_overwrite: bool = False
 
 
 class BackgroundConfig(BaseModel):
     """Background plate estimation (Stage 0.5)."""
     enabled: bool = True
-    sample_count: int = 60
-    method: str = "temporal_median"
-    # Confidence
+    sample_count: int = 15
     variance_threshold: float = 0.05
+    photometric_normalize: bool = True
+    
+    # Occlusion handling
     occlusion_threshold: float = 0.3
     occlusion_fallback: OcclusionFallback = OcclusionFallback.AUTO
-    # Photometric normalization
-    photometric_normalize: bool = True
-    fg_diff_space: str = "luma"
+    
+    # Manual plate override (path to image)
+    manual_plate_path: str = ""
 
 
 class ROIConfig(BaseModel):
-    """ROI tracking (Stage 1)."""
-    mode: ROIMode = ROIMode.AUTO_PERSON_TRACK
+    """ROI tracking parameters (Stage 1)."""
     detect_every: int = 15
     pad_ratio: float = 0.25
     context_px: int = 256
@@ -145,6 +109,14 @@ class GlobalConfig(BaseModel):
     chunk_overlap: int = 6
     use_roi_crop: bool = True
 
+    @model_validator(mode="after")
+    def check_overlap(self) -> "GlobalConfig":
+        if self.chunk_overlap >= self.chunk_len:
+            raise ValueError(
+                f"Chunk overlap ({self.chunk_overlap}) must be less than chunk length ({self.chunk_len})"
+            )
+        return self
+
 
 class IntermediateConfig(BaseModel):
     """Pass A′ — Intermediate refinement (Stage 2.5)."""
@@ -157,6 +129,13 @@ class IntermediateConfig(BaseModel):
     # Temporal smoothing
     temporal_smooth: TemporalSmooth = TemporalSmooth.FLOW
     smooth_strength: float = 0.3
+    # Selective processing (speed optimization)
+    selective_enabled: bool = True
+    selective_rgb_threshold: float = 0.010
+    selective_a0_threshold: float = 0.005
+    selective_recheck_every: int = 8
+    selective_max_skip: int = 6
+    selective_delta_decay: float = 0.98
 
 
 class BandConfig(BaseModel):
@@ -184,6 +163,8 @@ class BandConfig(BaseModel):
     # Hair-aware
     hair_aware: bool = True
     hair_dilation_multiplier: float = 2.0
+    # Performance: compute band/trimap/feather at reduced resolution
+    compute_downscale: float = 0.25
 
 
 class TrimapConfig(BaseModel):
@@ -207,168 +188,136 @@ class TileConfig(BaseModel):
     min_band_coverage: float = 0.005
     blend_space: str = "logit"
     priority: str = "hair_first"
+    # Performance: tiles per GPU batch
+    tile_batch_size: int = 4
 
 
 class RefineConfig(BaseModel):
     """Pass B — Edge refinement (Stage 4)."""
     model: str = "vitmatte"
     use_bg_plate: bool = True
-    bg_confidence_gate: float = 0.7
+    bg_confidence_gate: float = 0.8
 
 
 class TemporalConfig(BaseModel):
     """Pass C — Temporal stabilization (Stage 5)."""
-    method: TemporalMethod = TemporalMethod.FREQUENCY_SEPARATION
-    # Structural/detail split
-    structural_sigma: float = 4.0
-    structural_threshold: float = 0.1
-    structural_blend_strength: float = 0.3
-    detail_blend_strength: float = 0.7
-    # Flow
-    flow_model: str = "raft"
-    flow_consistency_sigma: float = 2.0
-    fallback_threshold: float = 0.1
-    # Locked-off shortcut
-    locked_off_mode: bool = False
-    bilateral_sigma_space: float = 5.0
-    bilateral_sigma_intensity: float = 0.1
-    band_only: bool = True
-
-
-class DespillConfig(BaseModel):
-    """Edge color despill."""
-    enabled: bool = True
-    method: DespillMethod = DespillMethod.BG_PLATE
-    strength: float = 1.0
-    bg_confidence_gate: bool = True
-    min_bg_confidence: float = 0.4
-
-
-class FGOutputConfig(BaseModel):
-    """Foreground extraction output."""
-    enabled: bool = False
-    premultiplied: bool = True
-    despilled: bool = True
+    method: str = "frequency_separation"  # 'frequency_separation' or 'none'
+    structural_sigma: float = 1.0
+    structural_threshold: float = 0.015
+    structural_blend_strength: float = 0.7  # conservative
+    detail_blend_strength: float = 0.95     # aggressive
+    flow_consistency_sigma: float = 1.0
+    fallback_threshold: float = 0.2
 
 
 class PostprocessConfig(BaseModel):
-    """Post-processing (Stage 6)."""
-    despill: DespillConfig = Field(default_factory=DespillConfig)
-    fg_output: FGOutputConfig = Field(default_factory=FGOutputConfig)
+    """Post-processing and Despill (Stage 6)."""
+    class DespillConfig(BaseModel):
+        enabled: bool = True
+        method: str = "advanced"
+        spill_color: list[float] = Field(default_factory=lambda: [0.0, 1.0, 0.0]) # Green
+        luma_bias: float = 0.1
 
+    class FGOutputConfig(BaseModel):
+        enabled: bool = True
+        format: str = "png"
+        premultiplied: bool = False
 
-class QualityBoostConfig(BaseModel):
-    tile_size: int = 1536
-    refiner: str = "diffmatte"
+    despill: DespillConfig = DespillConfig()
+    fg_output: FGOutputConfig = FGOutputConfig()
 
 
 class ReferenceFrameConfig(BaseModel):
-    """Reference frame mechanism (optional)."""
+    """Reference Frame Mechanism (Section 15, optional)."""
     enabled: bool = False
-    mode: RefFrameMode = RefFrameMode.AUTO
     count: int = 5
-    quality_boost: QualityBoostConfig = Field(default_factory=QualityBoostConfig)
+    selection_method: str = "auto_quality"
     propagation_range_max: int = 30
     propagation_error_limit: float = 15.0
     propagation_motion_limit: float = 50.0
-    use_as: str = "prior"
 
 
 class PreviewConfig(BaseModel):
-    """Preview / QC output."""
-    enabled: bool = True
-    scale: int = 1080
-    every: int = 10
-    modes: list[str] = Field(default_factory=lambda: ["checker", "alpha", "white", "flicker"])
-    checker_size_px: int = 64
-    pass_comparison: bool = True
+    """Live preview generation."""
+    enabled: bool = False
+    scale: float = 0.5
+    show_tiles: bool = True
+    show_band: bool = True
 
 
 class RuntimeConfig(BaseModel):
-    """Runtime / hardware."""
+    """Runtime execution settings."""
     device: str = "cuda"
     precision: str = "fp16"
     workers_io: int = 4
-    cache_dir: str = ".cache/videomatte-hq"
+    cache_dir: str = ".cache"
     resume: bool = True
-    async_io: bool = True
+    verbose: bool = False
 
-
-# ---------------------------------------------------------------------------
-# Top-level config
-# ---------------------------------------------------------------------------
 
 class VideoMatteConfig(BaseModel):
-    """Top-level pipeline configuration."""
-    io: IOConfig = Field(default_factory=IOConfig)
-    background: BackgroundConfig = Field(default_factory=BackgroundConfig)
-    roi: ROIConfig = Field(default_factory=ROIConfig)
-    globals: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")
-    intermediate: IntermediateConfig = Field(default_factory=IntermediateConfig)
-    band: BandConfig = Field(default_factory=BandConfig)
-    trimap: TrimapConfig = Field(default_factory=TrimapConfig)
-    tiles: TileConfig = Field(default_factory=TileConfig)
-    refine: RefineConfig = Field(default_factory=RefineConfig)
-    temporal: TemporalConfig = Field(default_factory=TemporalConfig)
-    postprocess: PostprocessConfig = Field(default_factory=PostprocessConfig)
-    reference_frames: ReferenceFrameConfig = Field(default_factory=ReferenceFrameConfig)
-    preview: PreviewConfig = Field(default_factory=PreviewConfig)
-    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
-
-    model_config = {"populate_by_name": True}
-
-    @classmethod
-    def from_yaml(cls, path: str | Path) -> "VideoMatteConfig":
-        """Load configuration from a YAML file, merging with defaults."""
-        path = Path(path)
-        if not path.exists():
-            raise FileNotFoundError(f"Config file not found: {path}")
-        with open(path) as f:
-            data = yaml.safe_load(f) or {}
-        return cls.model_validate(data)
-
-    @classmethod
-    def default(cls) -> "VideoMatteConfig":
-        """Return default configuration."""
-        return cls()
-
-    def to_yaml(self, path: str | Path) -> None:
-        """Write configuration to a YAML file."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = self.model_dump(by_alias=True)
-        with open(path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    """Root configuration for the pipeline."""
+    io: IOConfig = IOConfig()
+    background: BackgroundConfig = BackgroundConfig()
+    roi: ROIConfig = ROIConfig()
+    global_: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")
+    intermediate: IntermediateConfig = IntermediateConfig()
+    band: BandConfig = BandConfig()
+    trimap: TrimapConfig = TrimapConfig()
+    tiles: TileConfig = TileConfig()
+    refine: RefineConfig = RefineConfig()
+    temporal: TemporalConfig = TemporalConfig()
+    postprocess: PostprocessConfig = PostprocessConfig()
+    reference_frames: ReferenceFrameConfig = ReferenceFrameConfig()
+    preview: PreviewConfig = PreviewConfig()
+    runtime: RuntimeConfig = RuntimeConfig()
 
     def stage_hash(self, stage: str) -> str:
-        """Compute a content hash for a specific pipeline stage's config.
+        """Compute SHA256 hash of configuration for a given stage."""
+        # For simplicity, hash the relevant subsection + IO context (framerate/resolution implied)
+        sections = []
+        if stage == "background":
+            sections.append(self.background.model_dump())
+        elif stage == "roi":
+            sections.append(self.roi.model_dump())
+        elif stage == "global":
+            sections.append(self.global_.model_dump())
+        elif stage == "intermediate":
+             sections.append(self.global_.model_dump())
+             sections.append(self.intermediate.model_dump())
+        elif stage == "band":
+             sections.append(self.intermediate.model_dump())
+             sections.append(self.band.model_dump())
+             sections.append(self.trimap.model_dump())
+             sections.append(self.tiles.model_dump())
+        elif stage == "refine":
+             sections.append(self.band.model_dump())
+             sections.append(self.trimap.model_dump())
+             sections.append(self.tiles.model_dump())
+             sections.append(self.refine.model_dump())
+        elif stage == "temporal":
+             sections.append(self.refine.model_dump())
+             sections.append(self.temporal.model_dump())
+        elif stage == "postprocess":
+             sections.append(self.temporal.model_dump())
+             sections.append(self.postprocess.model_dump())
+        elif stage == "io":
+             sections.append(self.postprocess.model_dump())
+             sections.append(self.io.model_dump())
 
-        Used for resume invalidation: if the hash changes, cached results
-        for this stage and all downstream stages are invalidated.
-
-        Args:
-            stage: One of 'background', 'roi', 'global', 'intermediate',
-                   'band', 'trimap', 'tiles', 'refine', 'temporal',
-                   'postprocess', 'io'.
-        """
-        section_map: dict[str, Any] = {
-            "background": self.background,
-            "roi": self.roi,
-            "global": self.globals,
-            "intermediate": self.intermediate,
-            "band": self.band,
-            "trimap": self.trimap,
-            "tiles": self.tiles,
-            "refine": self.refine,
-            "temporal": self.temporal,
-            "postprocess": self.postprocess,
-            "io": self.io,
-        }
-        section = section_map.get(stage)
-        if section is None:
-            raise ValueError(f"Unknown stage: {stage}")
-
-        # Deterministic JSON for hashing
-        data = section.model_dump()
+        # Always include IO context (frame range etc) for non-IO stages
+        # to ensure resume invalidates if frame range changes.
+        data = sections
+        if stage != "io":
+            # Frame span/input affect all stage outputs and must invalidate resume caches.
+            data = {
+                "section": data,
+                "io_context": {
+                    "input": self.io.input,
+                    "frame_start": self.io.frame_start,
+                    "frame_end": self.io.frame_end,
+                    "shot_type": self.io.shot_type.value,
+                },
+            }
         json_str = json.dumps(data, sort_keys=True, default=str)
         return hashlib.sha256(json_str.encode()).hexdigest()[:16]

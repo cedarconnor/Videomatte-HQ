@@ -15,6 +15,8 @@ venv/
 
 # Cache
 .cache/
+.pytest_cache/
+.ruff_cache/
 
 # IDE
 .vscode/
@@ -26,6 +28,29 @@ Thumbs.db
 
 # Output
 out/
+output/
+output_test/
+debug_crash.log
+debug_crash_2.log
+error.log
+stitch_test_output.txt
+stitch_test_output_2.txt
+test_log.txt
+test_output.txt
 
-# Test files
+# Test files and scripts
 TestFiles/
+tests/
+input_frames/
+run_test.py
+repro.py
+debug_run.py
+temp_report_stub.py
+fast_debug_config.yaml
+
+# Logs
+logs/
+*.log
+
+# Editor temp files
+*.swp

@@ -93,15 +93,21 @@ def run_temporal_stabilization(
             # Warp previous stabilized deltas to current frame
             from videomatte_hq.temporal.warp import warp as torch_warp
 
-            prev_struct_t = torch.from_numpy(prev_D_structural_stable).float().unsqueeze(0).unsqueeze(0)
-            prev_detail_t = torch.from_numpy(prev_D_detail_stable).float().unsqueeze(0).unsqueeze(0)
+            flow_device = flow_fwd.device
+            prev_struct_t = (
+                torch.from_numpy(prev_D_structural_stable).float().unsqueeze(0).unsqueeze(0).to(flow_device)
+            )
+            prev_detail_t = (
+                torch.from_numpy(prev_D_detail_stable).float().unsqueeze(0).unsqueeze(0).to(flow_device)
+            )
 
             # Resize flow to match alpha resolution if needed
             h, w = D_structural.shape
             if flow_fwd.shape[2] != h or flow_fwd.shape[3] != w:
+                flow_h, flow_w = flow_fwd.shape[2], flow_fwd.shape[3]
                 flow_fwd = torch.nn.functional.interpolate(flow_fwd, (h, w), mode="bilinear", align_corners=True)
-                flow_fwd[:, 0] *= w / flow_fwd.shape[3] if flow_fwd.shape[3] != w else 1
-                flow_fwd[:, 1] *= h / flow_fwd.shape[2] if flow_fwd.shape[2] != h else 1
+                flow_fwd[:, 0] *= w / float(flow_w)
+                flow_fwd[:, 1] *= h / float(flow_h)
                 conf = np.array(
                     torch.nn.functional.interpolate(
                         flow_confidence, (h, w), mode="bilinear", align_corners=True

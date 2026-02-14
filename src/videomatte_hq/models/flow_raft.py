@@ -18,9 +18,11 @@ logger = logging.getLogger(__name__)
 class RAFTFlowModel:
     """RAFT optical flow model from torchvision."""
 
-    def __init__(self, device: str = "cuda", precision: str = "fp16"):
+    def __init__(self, device: str = "cuda", precision: str = "fp16", max_long_side: int = 1024):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.precision = precision
+        # RAFT correlation volume scales quadratically with spatial size; cap inference res.
+        self.max_long_side = max_long_side
         self.model = None
 
     def load_weights(self, device: str = "cuda") -> None:
@@ -45,6 +47,19 @@ class RAFTFlowModel:
             img = F.pad(img, (0, pad_w, 0, pad_h), mode="replicate")
         return img
 
+    def _resize_for_flow(self, frame: Tensor) -> tuple[Tensor, tuple[int, int]]:
+        """Downscale large frames for RAFT, preserving aspect ratio."""
+        _, _, h, w = frame.shape
+        long_side = max(h, w)
+        if long_side <= self.max_long_side:
+            return frame, (h, w)
+
+        scale = self.max_long_side / float(long_side)
+        new_h = max(8, int(round(h * scale)))
+        new_w = max(8, int(round(w * scale)))
+        resized = F.interpolate(frame, size=(new_h, new_w), mode="bilinear", align_corners=False)
+        return resized, (new_h, new_w)
+
     @torch.no_grad()
     def compute_flow(
         self,
@@ -66,15 +81,31 @@ class RAFTFlowModel:
             raise RuntimeError("Model not loaded")
 
         _, _, h, w = frame1.shape
-        img1 = self._preprocess(frame1.to(self.device))
-        img2 = self._preprocess(frame2.to(self.device))
+        frame1 = frame1.to(self.device)
+        frame2 = frame2.to(self.device)
+
+        frame1_small, (h_small, w_small) = self._resize_for_flow(frame1)
+        frame2_small, _ = self._resize_for_flow(frame2)
+
+        if (h_small, w_small) != (h, w):
+            logger.debug(f"RAFT flow resized from {w}x{h} to {w_small}x{h_small}")
+
+        img1 = self._preprocess(frame1_small)
+        img2 = self._preprocess(frame2_small)
 
         # RAFT returns list of flow predictions at different iterations
         flow_predictions = self.model(img1, img2)
         flow = flow_predictions[-1]  # Use final iteration
 
         # Remove padding
-        flow = flow[:, :, :h, :w]
+        flow = flow[:, :, :h_small, :w_small]
+
+        # Upsample flow back to original resolution and scale vector magnitude.
+        if (h_small, w_small) != (h, w):
+            flow = F.interpolate(flow, size=(h, w), mode="bilinear", align_corners=False)
+            flow[:, 0] *= w / float(w_small)
+            flow[:, 1] *= h / float(h_small)
+
         return flow
 
     @torch.no_grad()

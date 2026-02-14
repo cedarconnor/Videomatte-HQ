@@ -31,6 +31,10 @@ dependencies = [
     "jinja2>=3.1",
     # Models
     "transformers>=4.30",
+    # Web UI
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "python-multipart",
     # Progress
     "tqdm>=4.65",
 ]

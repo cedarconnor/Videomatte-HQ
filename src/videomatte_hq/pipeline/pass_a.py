@@ -15,6 +15,7 @@ import torch
 from tqdm import tqdm
 
 from videomatte_hq.config import VideoMatteConfig
+from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.roi.detect import BBox
 from videomatte_hq.safe_math import logit_blend
 
@@ -87,12 +88,12 @@ def run_pass_a(
     """
     num_frames = source.num_frames
     full_h, full_w = source.resolution
-    long_side = cfg.globals.long_side
-    chunk_len = cfg.globals.chunk_len
-    chunk_overlap = cfg.globals.chunk_overlap
+    long_side = cfg.global_.long_side
+    chunk_len = cfg.global_.chunk_len
+    chunk_overlap = cfg.global_.chunk_overlap
 
     # Load model
-    model_name = cfg.globals.model
+    model_name = cfg.global_.model
     if model_name == "rvm":
         from videomatte_hq.models.global_rvm import RVMModel
         model = RVMModel(

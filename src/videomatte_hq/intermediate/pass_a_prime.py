@@ -20,6 +20,33 @@ from videomatte_hq.roi.detect import BBox
 logger = logging.getLogger(__name__)
 
 
+def _mean_abs_diff_small(curr: np.ndarray, prev: np.ndarray, max_long_side: int = 320) -> float:
+    """Fast motion proxy using downscaled mean absolute difference."""
+    if curr.ndim == 2:
+        curr = curr[..., np.newaxis]
+    if prev.ndim == 2:
+        prev = prev[..., np.newaxis]
+
+    h, w = curr.shape[:2]
+    if prev.shape[:2] != (h, w):
+        prev = cv2.resize(prev, (w, h), interpolation=cv2.INTER_LINEAR)
+        if prev.ndim == 2:
+            prev = prev[..., np.newaxis]
+
+    scale = min(max_long_side / max(h, w), 1.0)
+    if scale < 1.0:
+        sw = max(1, int(w * scale))
+        sh = max(1, int(h * scale))
+        curr = cv2.resize(curr, (sw, sh), interpolation=cv2.INTER_LINEAR)
+        prev = cv2.resize(prev, (sw, sh), interpolation=cv2.INTER_LINEAR)
+        if curr.ndim == 2:
+            curr = curr[..., np.newaxis]
+        if prev.ndim == 2:
+            prev = prev[..., np.newaxis]
+
+    return float(np.abs(curr.astype(np.float32) - prev.astype(np.float32)).mean())
+
+
 def run_pass_a_prime(
     source,
     a0_results: list[np.ndarray],
@@ -54,6 +81,10 @@ def run_pass_a_prime(
     refiner.load_weights(cfg.runtime.device)
 
     results = []
+    skipped_frames = 0
+    last_refined_idx = -1
+    prev_delta_full = np.zeros((full_h, full_w), dtype=np.float32)
+    prev_delta_4k = None  # for temporal smoothing of filtered delta
 
     for t in range(num_frames):
         roi = rois[t]
@@ -63,6 +94,36 @@ def run_pass_a_prime(
         # Crop to ROI
         rgb_crop = frame[roi.y0:roi.y1, roi.x0:roi.x1]
         a0_crop = a0[roi.y0:roi.y1, roi.x0:roi.x1]
+
+        # Skip expensive A′ inference on stable frames, periodically forcing a refresh.
+        if cfg.intermediate.selective_enabled and t > 0 and last_refined_idx >= 0:
+            prev_frame = source[t - 1]
+            prev_rgb_crop = prev_frame[roi.y0:roi.y1, roi.x0:roi.x1]
+            prev_a0_crop = a0_results[t - 1][roi.y0:roi.y1, roi.x0:roi.x1]
+
+            rgb_change = _mean_abs_diff_small(rgb_crop, prev_rgb_crop)
+            a0_change = _mean_abs_diff_small(a0_crop, prev_a0_crop)
+            due_recheck = (
+                cfg.intermediate.selective_recheck_every > 0
+                and (t % cfg.intermediate.selective_recheck_every == 0)
+            )
+            can_skip_more = (t - last_refined_idx) <= cfg.intermediate.selective_max_skip
+
+            if (
+                not due_recheck
+                and can_skip_more
+                and rgb_change < cfg.intermediate.selective_rgb_threshold
+                and a0_change < cfg.intermediate.selective_a0_threshold
+            ):
+                prev_delta_full *= cfg.intermediate.selective_delta_decay
+                a0prime_full = np.clip(a0 + prev_delta_full, 0.0, 1.0).astype(np.float32)
+                results.append(a0prime_full)
+                skipped_frames += 1
+                if t % 50 == 0:
+                    logger.info(
+                        f"Pass A′: frame {t}/{num_frames} (skipped, rgb={rgb_change:.4f}, a0={a0_change:.4f})"
+                    )
+                continue
 
         # Resize to 4K working resolution
         crop_h, crop_w = rgb_crop.shape[:2]
@@ -95,6 +156,16 @@ def run_pass_a_prime(
             radius=cfg.intermediate.guide_filter_radius,
             eps=cfg.intermediate.guide_filter_eps,
         )
+        # Temporal smoothing of filtered delta (§9.5)
+        if t > 0 and cfg.intermediate.temporal_smooth != "none":
+            smooth_strength = cfg.intermediate.smooth_strength
+            if prev_delta_4k is not None and prev_delta_4k.shape == delta_filtered.shape:
+                # EMA (used for both 'ema' and 'flow' fallback at this stage)
+                delta_filtered = (
+                    smooth_strength * prev_delta_4k + (1.0 - smooth_strength) * delta_filtered
+                ).astype(np.float32)
+
+        prev_delta_4k = delta_filtered.copy()
 
         # A′ = backbone + medium-frequency corrections only  
         a0prime_4k = np.clip(a0_4k + delta_filtered, 0.0, 1.0)
@@ -104,10 +175,15 @@ def run_pass_a_prime(
 
         a0prime_full = a0_results[t].copy()
         a0prime_full[roi.y0:roi.y1, roi.x0:roi.x1] = a0prime_roi
+        a0prime_full = a0prime_full.astype(np.float32)
+        prev_delta_full = a0prime_full - a0
+        last_refined_idx = t
         results.append(a0prime_full)
 
         if t % 50 == 0:
             logger.info(f"Pass A′: frame {t}/{num_frames}")
 
+    if cfg.intermediate.selective_enabled:
+        logger.info(f"Pass A′ selective skip: {skipped_frames}/{num_frames} frames reused prior delta")
     logger.info(f"Pass A′ complete: {num_frames} frames")
     return results

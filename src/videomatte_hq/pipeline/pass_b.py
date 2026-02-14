@@ -2,6 +2,8 @@
 
 Runs the edge refiner on boundary-only tiles at native resolution,
 then stitches results via band-scoped logit blending.
+
+Tiles of the same size are batched together for GPU efficiency.
 """
 
 from __future__ import annotations
@@ -42,16 +44,7 @@ def run_pass_b(
         List of (H, W) float32 alpha (A1_8k) per frame.
     """
     num_frames = source.num_frames
-
-    # Select tile size based on VRAM
-    try:
-        tile_size = select_tile_size(
-            cfg.refine.model, cfg.runtime.device,
-            cfg.tiles.vram_headroom, cfg.tiles.tile_size_backoff,
-        )
-    except RuntimeError:
-        tile_size = cfg.tiles.tile_size_backoff[-1]
-        logger.warning(f"VRAM probe failed, using minimum tile size {tile_size}")
+    tile_batch_size = getattr(cfg.tiles, 'tile_batch_size', 4)
 
     # Load refiner model
     model_name = cfg.refine.model
@@ -79,51 +72,100 @@ def run_pass_b(
             a1_results.append(a0prime.copy())
             continue
 
-        # Process each tile
-        tile_alphas: list[tuple[Tile, np.ndarray]] = []
+        # ---------------------------------------------------------------
+        # Group tiles by size for batched inference
+        # ---------------------------------------------------------------
+        size_groups: dict[tuple[int, int], list[tuple[int, Tile]]] = {}
+        for idx, tile in enumerate(tiles):
+            key = (tile.y1 - tile.y0, tile.x1 - tile.x0)
+            if key not in size_groups:
+                size_groups[key] = []
+            size_groups[key].append((idx, tile))
 
-        for tile in tiles:
-            # Extract tile crops
-            rgb_crop = frame[tile.y0:tile.y1, tile.x0:tile.x1]
-            trimap_crop = trimap[tile.y0:tile.y1, tile.x0:tile.x1]
-            alpha_crop = a0prime[tile.y0:tile.y1, tile.x0:tile.x1]
+        tile_alphas: list[Optional[tuple[Tile, np.ndarray]]] = [None] * len(tiles)
 
-            # Convert to tensors
-            rgb_tensor = torch.from_numpy(rgb_crop.transpose(2, 0, 1)).float()
-            trimap_tensor = torch.from_numpy(trimap_crop).unsqueeze(0).float()
-            alpha_tensor = torch.from_numpy(alpha_crop).unsqueeze(0).float()
+        for (gh, gw), group_items in size_groups.items():
+            # Process each size group in sub-batches
+            for batch_start in range(0, len(group_items), tile_batch_size):
+                batch_items = group_items[batch_start:batch_start + tile_batch_size]
 
-            # Optional BG plate tile (only where confident)
-            bg_tensor = None
-            if (
-                bg_plate is not None
-                and bg_confidence is not None
-                and cfg.refine.use_bg_plate
-            ):
-                bg_crop = bg_plate[tile.y0:tile.y1, tile.x0:tile.x1]
-                conf_crop = bg_confidence[tile.y0:tile.y1, tile.x0:tile.x1]
-                # Mask out low-confidence regions
-                bg_crop = bg_crop.copy()
-                bg_crop[conf_crop < cfg.refine.bg_confidence_gate] = 0.0
-                bg_tensor = torch.from_numpy(bg_crop.transpose(2, 0, 1)).float()
+                rgb_tiles_batch = []
+                trimap_tiles_batch = []
+                alpha_tiles_batch = []
+                bg_tiles_batch = []
 
-            # Run refiner with OOM retry
-            try:
-                refined = refiner.infer_tile(rgb_tensor, trimap_tensor, alpha_tensor, bg_tensor)
-                refined_np = refined[0].cpu().numpy()  # (H, W)
-            except torch.cuda.OutOfMemoryError:
-                logger.warning(f"OOM on tile ({tile.x0},{tile.y0}), using backbone alpha")
-                torch.cuda.empty_cache()
-                refined_np = alpha_crop
+                for _, tile in batch_items:
+                    rgb_crop = frame[tile.y0:tile.y1, tile.x0:tile.x1]
+                    trimap_crop = trimap[tile.y0:tile.y1, tile.x0:tile.x1]
+                    alpha_crop = a0prime[tile.y0:tile.y1, tile.x0:tile.x1]
 
-            tile_alphas.append((tile, refined_np))
+                    rgb_tiles_batch.append(
+                        torch.from_numpy(rgb_crop.transpose(2, 0, 1)).float()
+                    )
+                    trimap_tiles_batch.append(
+                        torch.from_numpy(trimap_crop).unsqueeze(0).float()
+                    )
+                    alpha_tiles_batch.append(
+                        torch.from_numpy(alpha_crop).unsqueeze(0).float()
+                    )
+
+                    bg_t = None
+                    if (
+                        bg_plate is not None
+                        and bg_confidence is not None
+                        and cfg.refine.use_bg_plate
+                    ):
+                        bg_crop = bg_plate[tile.y0:tile.y1, tile.x0:tile.x1].copy()
+                        conf_crop = bg_confidence[tile.y0:tile.y1, tile.x0:tile.x1]
+                        bg_crop[conf_crop < cfg.refine.bg_confidence_gate] = 0.0
+                        bg_t = torch.from_numpy(bg_crop.transpose(2, 0, 1)).float()
+                    bg_tiles_batch.append(bg_t)
+
+                # Batched inference
+                try:
+                    if t == 0 and batch_start == 0:
+                        logger.debug(
+                            f"Pass B batch: {len(batch_items)} tiles of {gw}×{gh}"
+                        )
+
+                    results = refiner.infer_tile_batch(
+                        rgb_tiles_batch,
+                        trimap_tiles_batch,
+                        alpha_tiles_batch,
+                        bg_tiles_batch,
+                    )
+
+                    for (orig_idx, tile), refined_tensor in zip(batch_items, results):
+                        tile_alphas[orig_idx] = (tile, refined_tensor[0].cpu().numpy())
+
+                except torch.cuda.OutOfMemoryError:
+                    logger.warning(
+                        f"OOM on batch of {len(batch_items)} tiles, "
+                        f"using backbone alpha"
+                    )
+                    torch.cuda.empty_cache()
+                    for orig_idx, tile in batch_items:
+                        alpha_crop = a0prime[tile.y0:tile.y1, tile.x0:tile.x1]
+                        tile_alphas[orig_idx] = (tile, alpha_crop)
+
+                except RuntimeError as e:
+                    logger.error(
+                        f"RuntimeError in Pass B batch frame {t}: {e}"
+                    )
+                    raise
+
+        # Filter out any None entries (safety net)
+        tile_alphas_clean = [ta for ta in tile_alphas if ta is not None]
 
         # Stitch tiles
-        a1 = stitch_tiles(tile_alphas, a0prime, band, feather)
+        a1 = stitch_tiles(tile_alphas_clean, a0prime, band, feather)
         a1_results.append(a1)
 
         if t % 50 == 0:
-            logger.info(f"Pass B: frame {t}/{num_frames}, {len(tiles)} tiles")
+            logger.info(
+                f"Pass B: frame {t}/{num_frames}, "
+                f"{len(tiles)} tiles (batched, max_batch={tile_batch_size})"
+            )
 
     logger.info(f"Pass B complete: {num_frames} frames")
     return a1_results
