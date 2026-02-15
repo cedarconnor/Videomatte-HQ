@@ -7,7 +7,7 @@ This guide is for first-time users who want the easiest path.
 - You need Windows and Python 3.10 or newer.
 - You should have:
   - A video file (or image sequence)
-  - At least one mask image for a keyframe (usually frame 0)
+  - Optional: a mask image for a keyframe (usually frame 0)
 
 ## 2) One-Time Setup
 
@@ -44,19 +44,21 @@ In the **Run Job** tab:
 3. In **Subject Assignment (Mask-First)**:
    - **Keyframe Index**: `0`
    - **Anchor Type**: `Initial`
-   - **Mask Path**: your mask image path
-   - Click **Import Mask**
-    - If you do not already have a mask file, use **Initial Mask Builder (Phase 3)**:
-      - Click **Load Frame**
-      - (Optional) Enter a prompt like `person center` and click **Suggest Boxes**
-      - Keep backend on **GrabCut** for fastest setup (or try **SAM** if you have a local SAM model)
-      - Draw one box around the subject
-      - Add a few FG points on the subject and BG points on the background (if needed)
-      - Click **Build + Import Mask**
-    - Optional after importing/building the first keyframe: use **Phase 4: Long-Range Propagation Assist**
-      - Keep backend on **Flow (Built-in)** for now
-      - Set your range start/end
-      - Click **Propagate Keyframes** to auto-add correction anchors across the shot
+   - If you already have a mask image:
+     - Set **Mask Path**
+     - Click **Import Mask**
+   - If you do not have a mask image, use **Initial Mask Builder (Phase 3)**:
+     - Click **Load Frame**
+     - (Optional) Enter a prompt like `person center` and click **Suggest Boxes**
+     - Keep backend on **GrabCut** for fastest setup (or try **SAM** if you have a local SAM model)
+     - Draw one box around the subject
+     - Add a few FG points on the subject and BG points on the background (if needed)
+     - Click **Build + Import Mask**
+   - Optional after your first keyframe is imported/built: use **Phase 4: Long-Range Propagation Assist**
+     - The current **Keyframe Index** is used as the anchor
+     - Keep backend on **Flow (Built-in)** for now
+     - Set your propagation range start/end
+     - Click **Propagate Keyframes** to auto-add correction anchors across the shot
 4. In **Matte Tuning**:
    - Start with preset **Balanced**
 5. Click **Start Pipeline**

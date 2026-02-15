@@ -15,6 +15,8 @@ The current implementation is a mask-first, assignment-driven workflow:
 - Old multi-stage flow-stabilized pipeline is removed from runtime.
 - Project-backed mask-first assignment (`.vmhqproj`) is required by default.
 - Correction anchors support suggested partial reprocess ranges.
+- Phase 3 Initial Mask Builder is integrated in UI/API with `GrabCut` and optional `SAM` backend.
+- Phase 4 long-range propagation assist can auto-insert correction anchors from one keyframe (`flow`, `sam2_video_predictor`, `cutie`, with fallback-to-flow).
 - Built-in QC metrics and regression gates can fail runs automatically.
 
 ## Requirements
