@@ -2,6 +2,8 @@
 
 Offline Option B video matting pipeline for people footage.
 
+![Run Job tab](docs/images/run_job_tab.png)
+
 The current implementation is a mask-first, assignment-driven workflow:
 - Stage 0: load frames
 - Stage 1: load/create project and keyframe assignments
@@ -180,23 +182,46 @@ run_web.bat
 ```
 Then open `http://localhost:5173`.
 
+Keyboard shortcuts: `Ctrl+1-4` to switch tabs, `J/K` or arrow keys for frame navigation in QC, `Shift` for 10-frame jumps, `Home/End` for first/last frame.
+
 ### Run Job tab
-- Input/output + frame range
-- Mask-first assignment import
-- Initial Mask Builder (Phase 3): load frame, text-prompt box suggestions, draw/adjust box, add FG/BG points, choose backend (`GrabCut` or optional `SAM`), build + import mask
-- Phase 4 propagation assist: generate additional correction anchors from one keyframe over a range (`Flow`, `SAM2VideoPredictor`, `Cutie` with fallback-to-flow)
-- Anchor type: `initial` / `correction`
-- Auto-apply suggested reprocess range
-- One-click matte tuning presets: `Subtle`, `Balanced`, `Aggressive`, plus `Reset`
-- Matte tuning controls (trimap width, shrink/grow, feather, offset X/Y)
-- Runtime settings
-- QC & regression-gate settings (all QC thresholds exposed)
+Configure and launch a new matting job. All pipeline settings are exposed in collapsible sections:
+
+- **Input / Output** — video path (drag-and-drop or type), output directory, alpha pattern, frame range, alpha format (PNG 8/16-bit, EXR), shot type, DWAA quality
+- **Subject Assignment (Mask-First)** — project file, keyframe index, anchor type (`initial`/`correction`), mask import, auto-apply suggested reprocess range
+- **Initial Mask Builder (Phase 3)** — load a frame, auto-detect subjects with text prompts (`Suggest Boxes`), draw/adjust box, add FG/BG points, choose backend (`GrabCut` or optional `SAM`), build + import mask
+- **Phase 4: Long-Range Propagation Assist** — generate additional correction anchors from one keyframe over a range (`Flow`, `SAM2VideoPredictor`, `Cutie` with fallback-to-flow)
+- **Background Plate** — background estimation settings
+- **ROI & Tracking** — region-of-interest and tracking configuration
+- **Global Pass (Pass A)** — global matting model selection (RVM), resolution, chunk length
+- **Intermediate (Pass A')** — intermediate pass settings
+- **Band & Trimap** — trimap generation and band configuration
+- **Detail Refinement (Pass B)** — tile-based detail refinement
+- **Matte Tuning** — one-click presets (`Subtle`, `Balanced`, `Aggressive`, `Reset`) plus manual controls (trimap width, shrink/grow, feather, offset X/Y)
+- **Temporal Stability (Pass C)** — temporal cleanup settings
+- **Post-Processing** — post-processing options
+- **Runtime & Preview** — device (CUDA/CPU), precision (FP16/FP32), IO workers, live preview settings
+- **QC & Regression Gates** — all QC thresholds exposed (flicker, edge confidence, band spike, roundtrip MAE)
+
+![Mask Builder — auto-detect subject and build initial mask](docs/images/mask_builder_result.png)
+
+### Job Queue tab
+- Job history list with status indicators
+- Job detail view with log viewer, auto-scroll, and Live indicator
 
 ### Quality Control tab
-- A/B wipe comparison
-- Alpha/checker/white/black/overlay composite modes
+- A/B wipe comparison (drag the divider to compare input RGB vs output alpha)
+- Composite view modes: Alpha (Raw), Checkerboard, White BG, Black BG, Overlay
 - Overlay color + opacity controls for matte inspection
+- Frame scrubber with prev/next/skip-10 navigation
 - Dynamic path discovery from recent jobs (`/api/qc/info`)
+
+![Quality Control — A/B wipe comparison](docs/images/qc_tab.png)
+
+### Settings tab
+- Job defaults (output directory, device, precision)
+- UI preferences (show/hide advanced options)
+- System information
 
 ## API Endpoints (current)
 - `POST /api/jobs`

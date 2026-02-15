@@ -262,7 +262,7 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
     },
     preview: {
         enabled: false,
-        scale: 0.5,
+        scale: 1080,
         every: 10,
         modes: ["checker", "alpha", "white", "flicker"]
     },
@@ -1935,10 +1935,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 {showAdvanced && (
                                     <>
                                         <Input
-                                            label="Preview Scale" type="number" step="0.1"
+                                            label="Preview Scale" type="number" step="1"
                                             value={config.preview.scale}
-                                            onChange={e => updateConfig('preview', 'scale', parseFloat(e.target.value))}
-                                            tooltip="Scale factor for the preview window (0.5 = half size)."
+                                            onChange={e => updateConfig('preview', 'scale', parseInt(e.target.value) || 1080)}
+                                            tooltip="Target long-side resolution in pixels for preview frames (e.g. 1080)."
                                         />
                                         <Input
                                             label="Update Every (frames)" type="number"

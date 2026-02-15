@@ -2,6 +2,8 @@
 
 This guide is for first-time users who want the easiest path.
 
+![Mask Builder — load a frame, auto-detect the subject, and build a mask](docs/images/mask_builder_result.png)
+
 ## 1) Before You Start
 
 - You need Windows and Python 3.10 or newer.
@@ -49,7 +51,7 @@ In the **Run Job** tab:
      - Click **Import Mask**
    - If you do not have a mask image, use **Initial Mask Builder (Phase 3)**:
      - Click **Load Frame**
-     - (Optional) Enter a prompt like `person center` and click **Suggest Boxes**
+     - (Optional) Enter a prompt like `person` and click **Suggest Boxes**
      - Keep backend on **GrabCut** for fastest setup (or try **SAM** if you have a local SAM model)
      - Draw one box around the subject
      - Add a few FG points on the subject and BG points on the background (if needed)
@@ -66,8 +68,10 @@ In the **Run Job** tab:
 ## 5) Check Progress and Quality
 
 - **Job Queue** tab: shows running/completed jobs and logs
-- **Quality Control** tab: compare input vs output
+- **Quality Control** tab: compare input vs output with the A/B wipe slider
+  - Use the dropdown to switch between **Alpha (Raw)**, **Checkerboard**, **White BG**, **Black BG**, or **Overlay**
   - Try **Overlay** mode to check edge quality
+  - Use **J/K** or arrow keys to navigate frames, **Shift** for 10-frame jumps
 
 ## 6) If a Section Looks Wrong
 
@@ -112,3 +116,6 @@ Use a correction keyframe:
   - Increase feather slightly (for example 1 to 2)
 - If output looks too loose:
   - Use a small negative shrink/grow (for example `-1`)
+- If the mask builder or pipeline features fail with errors:
+  - Make sure you ran `run_web.bat` from the project folder (it activates the venv automatically)
+  - Check that both servers are running (backend on port 8000, frontend on port 5173)
