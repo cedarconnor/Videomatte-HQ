@@ -7,9 +7,18 @@ import sys
 from pathlib import Path
 
 import click
+import numpy as np
 
 from videomatte_hq.config import AlphaFormat, ShotType, VideoMatteConfig
-from videomatte_hq.project import ensure_project, import_keyframe_mask, suggest_reprocess_range
+from videomatte_hq.io.reader import FrameSource
+from videomatte_hq.propagation_assist import propagate_masks_assist, select_propagation_frames
+from videomatte_hq.project import (
+    ensure_project,
+    import_keyframe_mask,
+    load_keyframe_masks,
+    suggest_reprocess_range,
+    upsert_keyframe_alpha,
+)
 
 logger = logging.getLogger("videomatte_hq")
 
@@ -66,6 +75,63 @@ def setup_logging(verbose: bool = False) -> None:
     help="When importing a correction assignment, apply suggested reprocess range",
 )
 @click.option("--assign-only", is_flag=True, help="Only import assignment and exit")
+@click.option(
+    "--propagate-from-frame",
+    default=None,
+    type=int,
+    help="Phase 4: propagate additional keyframes from this anchor frame",
+)
+@click.option("--propagate-range-start", default=None, type=int, help="Propagation range start frame")
+@click.option("--propagate-range-end", default=None, type=int, help="Propagation range end frame")
+@click.option(
+    "--propagate-backend",
+    default="flow",
+    help="Propagation backend (flow/sam2_video_predictor/cutie)",
+)
+@click.option(
+    "--propagate-fallback-to-flow/--no-propagate-fallback-to-flow",
+    default=True,
+    help="Fallback to flow backend if SAM2/Cutie backend is unavailable",
+)
+@click.option("--propagate-stride", default=8, type=int, help="Insert propagated keyframes every N frames")
+@click.option(
+    "--propagate-max-new-keyframes",
+    default=24,
+    type=int,
+    help="Maximum propagated keyframes to insert",
+)
+@click.option(
+    "--propagate-overwrite-existing/--no-propagate-overwrite-existing",
+    default=False,
+    help="Overwrite existing keyframes when frame indices collide",
+)
+@click.option(
+    "--propagate-flow-downscale",
+    default=0.5,
+    type=float,
+    help="Flow propagation analysis downscale (0.15..1.0)",
+)
+@click.option(
+    "--propagate-flow-min-coverage",
+    default=0.002,
+    type=float,
+    help="Minimum propagated mask coverage required to save an anchor",
+)
+@click.option(
+    "--propagate-flow-max-coverage",
+    default=0.98,
+    type=float,
+    help="Maximum propagated mask coverage accepted before fallback",
+)
+@click.option(
+    "--propagate-flow-feather-px",
+    default=1,
+    type=int,
+    help="Feather radius applied during flow propagation",
+)
+@click.option("--propagate-kind", default="correction", help="Inserted assignment kind (initial/correction)")
+@click.option("--propagate-source", default="cli_propagate", help="Inserted assignment source label")
+@click.option("--propagate-only", is_flag=True, help="Only run propagation assist and exit")
 @click.option("--resume/--no-resume", default=None, help="Use stage cache resume")
 @click.option("--qc/--no-qc", default=None, help="Enable/disable Option B QC evaluation")
 @click.option(
@@ -121,6 +187,21 @@ def main(
     assign_kind,
     apply_suggested_range,
     assign_only,
+    propagate_from_frame,
+    propagate_range_start,
+    propagate_range_end,
+    propagate_backend,
+    propagate_fallback_to_flow,
+    propagate_stride,
+    propagate_max_new_keyframes,
+    propagate_overwrite_existing,
+    propagate_flow_downscale,
+    propagate_flow_min_coverage,
+    propagate_flow_max_coverage,
+    propagate_flow_feather_px,
+    propagate_kind,
+    propagate_source,
+    propagate_only,
     resume,
     qc,
     qc_fail_on_regression,
@@ -237,9 +318,18 @@ def main(
         click.echo(yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False))
         return
 
+    def _to_rgb_u8(frame: np.ndarray) -> np.ndarray:
+        rgb = np.asarray(frame, dtype=np.float32)
+        if rgb.ndim != 3:
+            raise ValueError("Input frame must be RGB-like for propagation.")
+        if rgb.shape[2] > 3:
+            rgb = rgb[..., :3]
+        rgb = np.clip(rgb, 0.0, 1.0)
+        return (rgb * 255.0).round().astype(np.uint8)
+
     # Optional assignment import path.
+    project_file, project_state = ensure_project(cfg)
     if assign_mask:
-        project_file, project_state = ensure_project(cfg)
         normalized_kind = str(assign_kind).lower()
         assignment = import_keyframe_mask(
             cfg=cfg,
@@ -269,8 +359,137 @@ def main(
                 start,
                 end,
             )
-        if assign_only:
-            return
+
+    if assign_only and propagate_from_frame is None:
+        return
+
+    if propagate_from_frame is not None:
+        source = FrameSource(
+            pattern=cfg.io.input,
+            frame_start=cfg.io.frame_start,
+            frame_end=cfg.io.frame_end,
+            prefetch_workers=0,
+        )
+        try:
+            num_frames = int(source.num_frames)
+            if num_frames <= 0:
+                raise ValueError("Input has no frames for propagation.")
+
+            clip_abs_start = int(cfg.io.frame_start)
+            clip_abs_end = int(cfg.io.frame_end) if int(cfg.io.frame_end) >= 0 else (clip_abs_start + num_frames - 1)
+
+            anchor_candidates = [int(propagate_from_frame), int(propagate_from_frame) - clip_abs_start]
+            local_anchor: int | None = None
+            for candidate in anchor_candidates:
+                if 0 <= candidate < num_frames:
+                    local_anchor = int(candidate)
+                    break
+            if local_anchor is None:
+                raise ValueError(
+                    f"Propagation anchor frame {propagate_from_frame} is outside loaded range "
+                    f"[{clip_abs_start}:{clip_abs_end}]"
+                )
+
+            anchor_abs = int(propagate_from_frame)
+            if project_state.get_assignment(anchor_abs) is None:
+                alt_abs = int(clip_abs_start + local_anchor)
+                if project_state.get_assignment(alt_abs) is not None:
+                    anchor_abs = alt_abs
+                else:
+                    raise ValueError(
+                        f"Anchor frame {propagate_from_frame} has no assignment. "
+                        "Import/build a keyframe first."
+                    )
+
+            start_abs = clip_abs_start if propagate_range_start is None else int(propagate_range_start)
+            end_abs = clip_abs_end if propagate_range_end is None else int(propagate_range_end)
+            start_abs = max(clip_abs_start, min(clip_abs_end, start_abs))
+            end_abs = max(clip_abs_start, min(clip_abs_end, end_abs))
+            if end_abs < start_abs:
+                raise ValueError(f"Invalid propagation range: {start_abs}..{end_abs}")
+
+            local_start = int(start_abs - clip_abs_start)
+            local_end = int(end_abs - clip_abs_start)
+            if local_anchor < local_start or local_anchor > local_end:
+                raise ValueError(
+                    f"Anchor frame {anchor_abs} is outside propagation range {start_abs}..{end_abs}"
+                )
+
+            anchor_rgb = _to_rgb_u8(source[local_anchor])
+            h, w = anchor_rgb.shape[:2]
+            keyframe_masks = load_keyframe_masks(project_file, project_state, target_shape=(h, w))
+            anchor_alpha = keyframe_masks.get(anchor_abs)
+            if anchor_alpha is None:
+                raise ValueError(f"Failed to load anchor mask for frame {anchor_abs}")
+
+            def _load_local_rgb(idx: int) -> np.ndarray:
+                if idx < local_start or idx > local_end:
+                    raise ValueError(f"Local frame {idx} outside range {local_start}..{local_end}")
+                return _to_rgb_u8(source[idx])
+
+            prop_result = propagate_masks_assist(
+                frame_loader=_load_local_rgb,
+                frame_start=local_start,
+                frame_end=local_end,
+                anchor_frame=local_anchor,
+                anchor_mask=anchor_alpha,
+                backend=propagate_backend,
+                fallback_to_flow=bool(propagate_fallback_to_flow),
+                flow_downscale=float(propagate_flow_downscale),
+                flow_min_coverage=float(propagate_flow_min_coverage),
+                flow_max_coverage=float(propagate_flow_max_coverage),
+                flow_feather_px=max(0, int(propagate_flow_feather_px)),
+            )
+
+            selected_local = select_propagation_frames(
+                frame_start=local_start,
+                frame_end=local_end,
+                anchor_frame=local_anchor,
+                stride=max(1, int(propagate_stride)),
+                max_new_keyframes=max(1, int(propagate_max_new_keyframes)),
+            )
+
+            existing_frames = {int(item.frame) for item in project_state.keyframes}
+            inserted = 0
+            for local_idx in selected_local:
+                abs_frame = int(clip_abs_start + local_idx)
+                if abs_frame == anchor_abs:
+                    continue
+                if abs_frame in existing_frames and not bool(propagate_overwrite_existing):
+                    continue
+                alpha = prop_result.masks.get(int(local_idx))
+                if alpha is None:
+                    continue
+                alpha = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
+                if float(alpha.mean()) < float(propagate_flow_min_coverage):
+                    continue
+                upsert_keyframe_alpha(
+                    cfg=cfg,
+                    project_path=project_file,
+                    project=project_state,
+                    frame=abs_frame,
+                    alpha=alpha,
+                    source=f"{str(propagate_source).strip() or 'cli_propagate'}:{prop_result.backend_used}",
+                    kind=(str(propagate_kind).lower() if str(propagate_kind).lower() in ("initial", "correction") else "correction"),  # type: ignore[arg-type]
+                )
+                existing_frames.add(abs_frame)
+                inserted += 1
+
+            logger.info(
+                "Phase 4 propagation complete: backend=%s inserted=%d range=%d..%d anchor=%d",
+                prop_result.backend_used,
+                inserted,
+                start_abs,
+                end_abs,
+                anchor_abs,
+            )
+            if prop_result.note:
+                logger.warning("Propagation note: %s", prop_result.note)
+        finally:
+            source.close()
+
+    if assign_only or propagate_only:
+        return
 
     from videomatte_hq.pipeline.orchestrator import run_pipeline
 

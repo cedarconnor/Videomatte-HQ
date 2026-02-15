@@ -47,6 +47,7 @@ interface BuilderCandidate extends BuilderBox {
 
 type BuilderTool = 'box' | 'fg' | 'bg'
 type BuilderBackend = 'grabcut' | 'sam'
+type PropagationBackend = 'flow' | 'sam2_video_predictor' | 'cutie'
 
 interface MatteTuningPreset {
     id: string
@@ -339,6 +340,18 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     const [builderBackend, setBuilderBackend] = useState<BuilderBackend>('grabcut')
     const [builderSamModelId, setBuilderSamModelId] = useState("facebook/sam-vit-base")
     const [builderSamLocalOnly, setBuilderSamLocalOnly] = useState(true)
+    const [propagateBackend, setPropagateBackend] = useState<PropagationBackend>('flow')
+    const [propagateFrameStart, setPropagateFrameStart] = useState<number>(DEFAULT_CONFIG.io.frame_start)
+    const [propagateFrameEnd, setPropagateFrameEnd] = useState<number>(DEFAULT_CONFIG.io.frame_end)
+    const [propagateStride, setPropagateStride] = useState(8)
+    const [propagateMaxNewKeyframes, setPropagateMaxNewKeyframes] = useState(24)
+    const [propagateFallbackToFlow, setPropagateFallbackToFlow] = useState(true)
+    const [propagateOverwriteExisting, setPropagateOverwriteExisting] = useState(false)
+    const [propagateFlowDownscale, setPropagateFlowDownscale] = useState(0.5)
+    const [propagateFlowMinCoverage, setPropagateFlowMinCoverage] = useState(0.002)
+    const [propagateFlowMaxCoverage, setPropagateFlowMaxCoverage] = useState(0.98)
+    const [propagateFlowFeatherPx, setPropagateFlowFeatherPx] = useState(1)
+    const [propagateRunning, setPropagateRunning] = useState(false)
     const [builderLoadingFrame, setBuilderLoadingFrame] = useState(false)
     const [builderBuildingMask, setBuilderBuildingMask] = useState(false)
     const [builderDragStart, setBuilderDragStart] = useState<BuilderPoint | null>(null)
@@ -669,6 +682,80 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
         }
     }
 
+    async function handlePropagateAssignments() {
+        setError(null)
+        setStatus(null)
+        setPropagateRunning(true)
+        try {
+            const res = await fetch('/api/assignments/propagate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config,
+                    anchor_frame: assignmentFrame,
+                    frame_start: propagateFrameStart,
+                    frame_end: propagateFrameEnd,
+                    backend: propagateBackend,
+                    fallback_to_flow: propagateFallbackToFlow,
+                    stride: propagateStride,
+                    max_new_keyframes: propagateMaxNewKeyframes,
+                    flow_downscale: propagateFlowDownscale,
+                    flow_min_coverage: propagateFlowMinCoverage,
+                    flow_max_coverage: propagateFlowMaxCoverage,
+                    flow_feather_px: propagateFlowFeatherPx,
+                    kind: 'correction',
+                    source: 'ui_propagate',
+                    overwrite_existing: propagateOverwriteExisting,
+                }),
+            })
+            if (!res.ok) throw new Error(await parseApiError(res))
+            const data = await res.json() as {
+                project_path: string
+                keyframe_count: number
+                keyframes: ProjectKeyframe[]
+                require_assignment: boolean
+                inserted_count?: number
+                inserted_frames?: number[]
+                skipped_existing_frames?: number[]
+                backend_used?: string
+                builder_note?: string | null
+                suggested_reprocess_range?: SuggestedReprocessRange
+                frame_start?: number
+                frame_end?: number
+            }
+
+            setProjectSummary({
+                project_path: data.project_path,
+                keyframe_count: data.keyframe_count,
+                keyframes: data.keyframes || [],
+                require_assignment: data.require_assignment ?? true,
+            })
+
+            const inserted = data.inserted_count ?? (data.inserted_frames?.length ?? 0)
+            const backendUsedLabel = data.backend_used ? ` (${data.backend_used})` : ""
+            const rangeMsg = `range ${data.frame_start ?? propagateFrameStart}..${data.frame_end ?? propagateFrameEnd}`
+            let msg = `Propagation assist${backendUsedLabel} inserted ${inserted} keyframe(s) from anchor ${assignmentFrame} over ${rangeMsg}.`
+            if ((data.skipped_existing_frames?.length ?? 0) > 0) {
+                msg += ` Skipped existing: ${data.skipped_existing_frames!.length}.`
+            }
+            if (data.builder_note) {
+                msg += ` ${data.builder_note}`
+            }
+            setStatus(msg)
+
+            if (data.suggested_reprocess_range) {
+                setSuggestedRange(data.suggested_reprocess_range)
+                if (autoApplySuggestedRange) {
+                    applySuggestedRange(data.suggested_reprocess_range)
+                }
+            }
+        } catch (err: any) {
+            setError(err.message)
+        } finally {
+            setPropagateRunning(false)
+        }
+    }
+
     function handleBuilderMouseDown(e: React.MouseEvent<HTMLDivElement>) {
         if (builderTool !== 'box' || !builderFrameSize) return
         const p = getBuilderPointFromMouse(e)
@@ -866,7 +953,8 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     }
 
     const activeBuilderBox = builderDraftBox ?? builderBox
-    const assignmentBusy = assignmentLoading || builderLoadingFrame || builderBuildingMask || builderSuggestingBoxes
+    const assignmentBusy =
+        assignmentLoading || builderLoadingFrame || builderBuildingMask || builderSuggestingBoxes || propagateRunning
 
     return (
         <div className="space-y-4 pb-20">
@@ -1285,6 +1373,112 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     Click "Load Frame" to start building an initial mask from box and points.
                                 </div>
                             )}
+                        </div>
+                        <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
+                            <div className="flex items-center justify-between gap-2">
+                                <div className="text-sm font-semibold text-gray-200">
+                                    Phase 4: Long-Range Propagation Assist
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={handlePropagateAssignments}
+                                    disabled={assignmentBusy}
+                                    className="px-3 py-2 rounded bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {propagateRunning ? "Propagating..." : "Propagate Keyframes"}
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                                <Select
+                                    label="Backend"
+                                    value={propagateBackend}
+                                    onChange={e => setPropagateBackend(e.target.value as PropagationBackend)}
+                                    options={[
+                                        { value: 'flow', label: 'Flow (Built-in)' },
+                                        { value: 'sam2_video_predictor', label: 'SAM2VideoPredictor' },
+                                        { value: 'cutie', label: 'Cutie' },
+                                    ]}
+                                    tooltip="Phase 4 backend. SAM2/Cutie currently fallback to flow when unavailable."
+                                />
+                                <Input
+                                    label="Range Start"
+                                    type="number"
+                                    value={propagateFrameStart}
+                                    onChange={e => setPropagateFrameStart(parseInt(e.target.value || "0"))}
+                                    tooltip="Absolute frame index to start propagation."
+                                />
+                                <Input
+                                    label="Range End"
+                                    type="number"
+                                    value={propagateFrameEnd}
+                                    onChange={e => setPropagateFrameEnd(parseInt(e.target.value || "-1"))}
+                                    tooltip="Absolute frame index to end propagation."
+                                />
+                                <Input
+                                    label="Stride"
+                                    type="number"
+                                    value={propagateStride}
+                                    onChange={e => setPropagateStride(parseInt(e.target.value || "8"))}
+                                    tooltip="Insert one propagated keyframe every N frames."
+                                />
+                                <Input
+                                    label="Max New Keyframes"
+                                    type="number"
+                                    value={propagateMaxNewKeyframes}
+                                    onChange={e => setPropagateMaxNewKeyframes(parseInt(e.target.value || "24"))}
+                                    tooltip="Cap how many propagated correction anchors are added."
+                                />
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                <Input
+                                    label="Flow Downscale"
+                                    type="number"
+                                    step="0.05"
+                                    value={propagateFlowDownscale}
+                                    onChange={e => setPropagateFlowDownscale(parseFloat(e.target.value || "0.5"))}
+                                    tooltip="Smaller is faster; larger can track finer motion."
+                                />
+                                <Input
+                                    label="Min Coverage"
+                                    type="number"
+                                    step="0.001"
+                                    value={propagateFlowMinCoverage}
+                                    onChange={e => setPropagateFlowMinCoverage(parseFloat(e.target.value || "0.002"))}
+                                    tooltip="Reject propagated masks that become too small."
+                                />
+                                <Input
+                                    label="Max Coverage"
+                                    type="number"
+                                    step="0.01"
+                                    value={propagateFlowMaxCoverage}
+                                    onChange={e => setPropagateFlowMaxCoverage(parseFloat(e.target.value || "0.98"))}
+                                    tooltip="Reject propagated masks that become unrealistically large."
+                                />
+                                <Input
+                                    label="Flow Feather (px)"
+                                    type="number"
+                                    value={propagateFlowFeatherPx}
+                                    onChange={e => setPropagateFlowFeatherPx(parseInt(e.target.value || "1"))}
+                                    tooltip="Softening applied during propagation smoothing."
+                                />
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                <Switch
+                                    label="Fallback To Flow"
+                                    checked={propagateFallbackToFlow}
+                                    onChange={setPropagateFallbackToFlow}
+                                    tooltip="If SAM2/Cutie is unavailable, continue with flow backend."
+                                />
+                                <Switch
+                                    label="Overwrite Existing Frames"
+                                    checked={propagateOverwriteExisting}
+                                    onChange={setPropagateOverwriteExisting}
+                                    tooltip="Replace existing assignments if propagated frame indices collide."
+                                />
+                            </div>
+                            <div className="text-xs text-gray-400">
+                                Uses current <span className="font-mono">Keyframe Index</span> as the anchor frame.
+                            </div>
                         </div>
                         <div className="text-xs text-gray-400">
                             Project: <span className="font-mono text-gray-300">{projectSummary?.project_path || "(not resolved yet)"}</span>

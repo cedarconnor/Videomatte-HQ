@@ -63,7 +63,22 @@ videomatte-hq \
   --apply-suggested-range
 ```
 
-4. Apply matte tuning (trimap width, grow, feather, offset):
+4. Phase 4 propagation assist (add long-range correction anchors from one keyframe):
+```bash
+videomatte-hq \
+  --input input_frames/frame_%05d.png \
+  --project output/project.vmhqproj \
+  --propagate-from-frame 0 \
+  --propagate-range-start 0 \
+  --propagate-range-end 240 \
+  --propagate-backend sam2_video_predictor \
+  --propagate-fallback-to-flow \
+  --propagate-stride 12 \
+  --propagate-max-new-keyframes 20 \
+  --propagate-only
+```
+
+5. Apply matte tuning (trimap width, grow, feather, offset):
 ```bash
 videomatte-hq \
   --input input_frames/frame_%05d.png \
@@ -100,6 +115,21 @@ videomatte-hq \
 - `--assign-kind {initial,correction}`
 - `--apply-suggested-range/--no-apply-suggested-range`
 - `--assign-only`
+
+### Phase 4 propagation assist
+- `--propagate-from-frame`
+- `--propagate-range-start`, `--propagate-range-end`
+- `--propagate-backend` (`flow`, `sam2_video_predictor`, `cutie`)
+- `--propagate-fallback-to-flow/--no-propagate-fallback-to-flow`
+- `--propagate-stride`
+- `--propagate-max-new-keyframes`
+- `--propagate-overwrite-existing/--no-propagate-overwrite-existing`
+- `--propagate-flow-downscale`
+- `--propagate-flow-min-coverage`
+- `--propagate-flow-max-coverage`
+- `--propagate-flow-feather-px`
+- `--propagate-kind`, `--propagate-source`
+- `--propagate-only`
 
 ### Memory core
 - `--memory-backend`
@@ -152,6 +182,7 @@ Then open `http://localhost:5173`.
 - Input/output + frame range
 - Mask-first assignment import
 - Initial Mask Builder (Phase 3): load frame, text-prompt box suggestions, draw/adjust box, add FG/BG points, choose backend (`GrabCut` or optional `SAM`), build + import mask
+- Phase 4 propagation assist: generate additional correction anchors from one keyframe over a range (`Flow`, `SAM2VideoPredictor`, `Cutie` with fallback-to-flow)
 - Anchor type: `initial` / `correction`
 - Auto-apply suggested reprocess range
 - One-click matte tuning presets: `Subtle`, `Balanced`, `Aggressive`, plus `Reset`
@@ -177,6 +208,7 @@ Then open `http://localhost:5173`.
 - `POST /api/assignments/frame-preview`
 - `POST /api/assignments/build-mask`
 - `POST /api/assignments/suggest-boxes`
+- `POST /api/assignments/propagate`
 - `GET /api/qc/info`
 
 ## Config Schema (runtime)

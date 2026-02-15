@@ -16,11 +16,17 @@ from pydantic import BaseModel, Field
 from videomatte_hq.config import VideoMatteConfig
 from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.mask_builder import build_prompt_mask_grabcut
+from videomatte_hq.propagation_assist import (
+    SUPPORTED_PROPAGATION_BACKENDS,
+    propagate_masks_assist,
+    select_propagation_frames,
+)
 from videomatte_hq.prompt_boxes import suggest_prompt_boxes
 from videomatte_hq.sam_builder import build_prompt_mask_sam, DEFAULT_SAM_MODEL_ID
 from videomatte_hq.project import (
     ensure_project,
     import_keyframe_mask,
+    load_keyframe_masks,
     suggest_reprocess_range,
     upsert_keyframe_alpha,
 )
@@ -121,6 +127,24 @@ class SuggestAssignmentBoxesRequest(BaseModel):
     max_candidates: int = Field(default=5, ge=1, le=12)
 
 
+class PropagateAssignmentMasksRequest(BaseModel):
+    config: dict
+    anchor_frame: int = 0
+    frame_start: int | None = None
+    frame_end: int | None = None
+    backend: str = "flow"
+    fallback_to_flow: bool = True
+    stride: int = Field(default=8, ge=1, le=300)
+    max_new_keyframes: int = Field(default=24, ge=1, le=1000)
+    flow_downscale: float = Field(default=0.5, ge=0.15, le=1.0)
+    flow_min_coverage: float = Field(default=0.002, ge=0.0, le=1.0)
+    flow_max_coverage: float = Field(default=0.98, ge=0.0, le=1.0)
+    flow_feather_px: int = Field(default=1, ge=0, le=32)
+    kind: str = "correction"
+    source: str = "ui_propagate"
+    overwrite_existing: bool = False
+
+
 def _build_project_summary(cfg: VideoMatteConfig) -> dict:
     project_path, project = ensure_project(cfg)
     keyframes = [
@@ -171,17 +195,20 @@ def _load_input_frame_rgb_u8(cfg: VideoMatteConfig, requested_frame: int) -> tup
     )
     try:
         local_idx = _resolve_local_frame_index(cfg=cfg, source=source, requested_frame=requested_frame)
-        frame = source[local_idx]
-        rgb = np.asarray(frame, dtype=np.float32)
-        if rgb.ndim != 3:
-            raise ValueError("Input frame must be RGB-like for mask builder.")
-        if rgb.shape[2] > 3:
-            rgb = rgb[..., :3]
-        rgb = np.clip(rgb, 0.0, 1.0)
-        rgb_u8 = (rgb * 255.0).round().astype(np.uint8)
+        rgb_u8 = _frame_to_rgb_u8(source[local_idx], error_context="mask builder")
         return rgb_u8, local_idx
     finally:
         source.close()
+
+
+def _frame_to_rgb_u8(frame: np.ndarray, error_context: str = "frame IO") -> np.ndarray:
+    rgb = np.asarray(frame, dtype=np.float32)
+    if rgb.ndim != 3:
+        raise ValueError(f"Input frame must be RGB-like for {error_context}.")
+    if rgb.shape[2] > 3:
+        rgb = rgb[..., :3]
+    rgb = np.clip(rgb, 0.0, 1.0)
+    return (rgb * 255.0).round().astype(np.uint8)
 
 
 def _png_data_url_from_gray_u8(gray: np.ndarray) -> str:
@@ -454,6 +481,172 @@ async def suggest_assignment_boxes(req: SuggestAssignmentBoxesRequest):
         }
     except Exception as e:
         logger.exception("Failed to suggest assignment boxes")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/assignments/propagate")
+async def propagate_assignment_masks(req: PropagateAssignmentMasksRequest):
+    """Create additional keyframe masks by propagating from one anchor assignment."""
+    try:
+        cfg = VideoMatteConfig(**req.config)
+        project_path, project = ensure_project(cfg)
+        if not project.keyframes:
+            raise ValueError("No keyframe assignments exist. Import or build one keyframe first.")
+
+        source = FrameSource(
+            pattern=cfg.io.input,
+            frame_start=cfg.io.frame_start,
+            frame_end=cfg.io.frame_end,
+            prefetch_workers=0,
+        )
+        try:
+            num_frames = int(source.num_frames)
+            if num_frames <= 0:
+                raise ValueError("Input has no frames.")
+
+            clip_abs_start = int(cfg.io.frame_start)
+            clip_abs_end = int(cfg.io.frame_end) if int(cfg.io.frame_end) >= 0 else (clip_abs_start + num_frames - 1)
+
+            anchor_local = _resolve_local_frame_index(cfg=cfg, source=source, requested_frame=req.anchor_frame)
+            anchor_abs_candidates = [int(req.anchor_frame), clip_abs_start + int(anchor_local)]
+            anchor_abs_frame: int | None = None
+            for candidate in anchor_abs_candidates:
+                if project.get_assignment(candidate) is not None:
+                    anchor_abs_frame = int(candidate)
+                    break
+            if anchor_abs_frame is None:
+                raise ValueError(
+                    f"Anchor frame {req.anchor_frame} has no imported assignment. "
+                    "Use Import Mask or Build + Import Mask first."
+                )
+
+            start_abs = clip_abs_start if req.frame_start is None else int(req.frame_start)
+            end_abs = clip_abs_end if req.frame_end is None else int(req.frame_end)
+            start_abs = max(clip_abs_start, min(clip_abs_end, start_abs))
+            end_abs = max(clip_abs_start, min(clip_abs_end, end_abs))
+            if end_abs < start_abs:
+                raise ValueError(f"Invalid propagation range: {start_abs}..{end_abs}")
+
+            local_start = int(start_abs - clip_abs_start)
+            local_end = int(end_abs - clip_abs_start)
+            if anchor_local < local_start or anchor_local > local_end:
+                raise ValueError(
+                    f"Anchor frame {anchor_abs_frame} is outside propagation range {start_abs}..{end_abs}."
+                )
+
+            anchor_frame_rgb_u8 = _frame_to_rgb_u8(source[int(anchor_local)], error_context="propagation assist")
+            h, w = anchor_frame_rgb_u8.shape[:2]
+            keyframe_masks = load_keyframe_masks(project_path, project, target_shape=(h, w))
+            anchor_alpha = keyframe_masks.get(int(anchor_abs_frame))
+            if anchor_alpha is None:
+                raise ValueError(f"Failed to load anchor assignment mask for frame {anchor_abs_frame}.")
+
+            def _load_local_rgb_u8(local_idx: int) -> np.ndarray:
+                if local_idx < local_start or local_idx > local_end:
+                    raise ValueError(f"Local frame {local_idx} is outside range {local_start}..{local_end}.")
+                return _frame_to_rgb_u8(source[int(local_idx)], error_context="propagation assist")
+
+            prop_result = propagate_masks_assist(
+                frame_loader=_load_local_rgb_u8,
+                frame_start=local_start,
+                frame_end=local_end,
+                anchor_frame=int(anchor_local),
+                anchor_mask=anchor_alpha,
+                backend=req.backend,
+                fallback_to_flow=bool(req.fallback_to_flow),
+                flow_downscale=float(req.flow_downscale),
+                flow_min_coverage=float(req.flow_min_coverage),
+                flow_max_coverage=float(req.flow_max_coverage),
+                flow_feather_px=int(req.flow_feather_px),
+            )
+
+            selected_local_frames = select_propagation_frames(
+                frame_start=local_start,
+                frame_end=local_end,
+                anchor_frame=int(anchor_local),
+                stride=int(req.stride),
+                max_new_keyframes=int(req.max_new_keyframes),
+            )
+
+            normalized_kind = req.kind if req.kind in ("initial", "correction") else "correction"
+            existing_frames = {int(item.frame) for item in project.keyframes}
+            inserted_frames: list[int] = []
+            skipped_existing_frames: list[int] = []
+            inserted_coverage: list[float] = []
+
+            for local_idx in selected_local_frames:
+                abs_frame = int(clip_abs_start + int(local_idx))
+                if abs_frame == int(anchor_abs_frame):
+                    continue
+                if abs_frame in existing_frames and not bool(req.overwrite_existing):
+                    skipped_existing_frames.append(abs_frame)
+                    continue
+
+                alpha = prop_result.masks.get(int(local_idx))
+                if alpha is None:
+                    continue
+                alpha = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
+                coverage = float(alpha.mean())
+                if coverage < float(req.flow_min_coverage):
+                    continue
+
+                assignment = upsert_keyframe_alpha(
+                    cfg=cfg,
+                    project_path=project_path,
+                    project=project,
+                    frame=abs_frame,
+                    alpha=alpha,
+                    source=f"{req.source}:{prop_result.backend_used}",
+                    kind=normalized_kind,  # type: ignore[arg-type]
+                )
+                inserted_frames.append(int(assignment.frame))
+                inserted_coverage.append(coverage)
+                existing_frames.add(abs_frame)
+
+            if inserted_frames:
+                all_frames = [int(anchor_abs_frame)] + [int(f) for f in inserted_frames]
+                suggested_start = max(clip_abs_start, min(all_frames))
+                suggested_end = min(clip_abs_end, max(all_frames))
+                suggestion_reason = "phase4_propagation_span"
+            else:
+                suggested_start, suggested_end = suggest_reprocess_range(
+                    project=project,
+                    anchor_frame=int(anchor_abs_frame),
+                    memory_window=cfg.memory.window,
+                    clip_start=cfg.io.frame_start,
+                    clip_end=cfg.io.frame_end,
+                )
+                suggestion_reason = "neighbor_midpoint_window"
+
+            summary = _build_project_summary(cfg)
+            return {
+                "status": "ok",
+                "anchor_frame": int(anchor_abs_frame),
+                "frame_start": int(start_abs),
+                "frame_end": int(end_abs),
+                "backend_requested": str(req.backend).strip().lower() or "flow",
+                "backend_used": prop_result.backend_used,
+                "builder_note": prop_result.note,
+                "supported_backends": list(SUPPORTED_PROPAGATION_BACKENDS),
+                "selected_local_frames": [int(x) for x in selected_local_frames],
+                "selected_frames": [int(clip_abs_start + int(x)) for x in selected_local_frames],
+                "inserted_frames": [int(x) for x in inserted_frames],
+                "skipped_existing_frames": [int(x) for x in skipped_existing_frames],
+                "inserted_count": len(inserted_frames),
+                "mean_inserted_coverage": (
+                    float(np.mean(inserted_coverage)) if inserted_coverage else 0.0
+                ),
+                "suggested_reprocess_range": {
+                    "frame_start": int(suggested_start),
+                    "frame_end": int(suggested_end),
+                    "reason": suggestion_reason,
+                },
+                **summary,
+            }
+        finally:
+            source.close()
+    except Exception as e:
+        logger.exception("Failed to propagate assignment masks")
         raise HTTPException(status_code=400, detail=str(e))
 
 

@@ -46,13 +46,17 @@ In the **Run Job** tab:
    - **Anchor Type**: `Initial`
    - **Mask Path**: your mask image path
    - Click **Import Mask**
-   - If you do not already have a mask file, use **Initial Mask Builder (Phase 3)**:
-     - Click **Load Frame**
-     - (Optional) Enter a prompt like `person center` and click **Suggest Boxes**
-     - Keep backend on **GrabCut** for fastest setup (or try **SAM** if you have a local SAM model)
-     - Draw one box around the subject
-     - Add a few FG points on the subject and BG points on the background (if needed)
-     - Click **Build + Import Mask**
+    - If you do not already have a mask file, use **Initial Mask Builder (Phase 3)**:
+      - Click **Load Frame**
+      - (Optional) Enter a prompt like `person center` and click **Suggest Boxes**
+      - Keep backend on **GrabCut** for fastest setup (or try **SAM** if you have a local SAM model)
+      - Draw one box around the subject
+      - Add a few FG points on the subject and BG points on the background (if needed)
+      - Click **Build + Import Mask**
+    - Optional after importing/building the first keyframe: use **Phase 4: Long-Range Propagation Assist**
+      - Keep backend on **Flow (Built-in)** for now
+      - Set your range start/end
+      - Click **Propagate Keyframes** to auto-add correction anchors across the shot
 4. In **Matte Tuning**:
    - Start with preset **Balanced**
 5. Click **Start Pipeline**
