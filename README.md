@@ -2,6 +2,8 @@
 
 Offline Option B video matting pipeline for people footage.
 
+![Mask Builder — auto-detect subject and build initial mask](docs/images/mask_builder_result.png)
+
 ![Run Job tab](docs/images/run_job_tab.png)
 
 The current implementation is a mask-first, assignment-driven workflow:
