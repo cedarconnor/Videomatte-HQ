@@ -32,3 +32,28 @@ logs/
 output/
 temp/
 cache/
+
+# Local Environments / Tool Caches
+.venv/
+.cache/
+.pytest_cache/
+.ruff_cache/
+.claude/
+
+# Build / Runtime Artifacts
+out/
+output_*/
+*.egg-info/
+
+# Local Media/Test Assets
+TestFiles/
+input_frames/
+
+# Local Debug / Temp Files
+debug_*.log
+error.log
+web/errors.txt
+web/frontend_build*.log
+stitch_test_output*.txt
+test_log.txt
+test_output.txt
