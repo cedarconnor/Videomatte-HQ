@@ -143,3 +143,57 @@ async def test_assignment_mask_builder_preview_and_build(tmp_path: Path, monkeyp
     )
     assert suggested_boxes["status"] == "ok"
     assert len(suggested_boxes["candidates"]) >= 1
+
+
+@pytest.mark.anyio
+async def test_assignment_mask_builder_sam_fallback_to_grabcut(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    frame = np.zeros((72, 96, 3), dtype=np.uint8)
+    frame[16:60, 30:74, :] = 210
+    assert cv2.imwrite(str(frames_dir / "frame_00000.png"), frame)
+
+    out_dir = tmp_path / "out_builder_fallback"
+    cfg = VideoMatteConfig(
+        io={
+            "input": "frames/frame_%05d.png",
+            "output_dir": str(out_dir),
+            "output_alpha": "alpha/%05d.png",
+            "frame_start": 0,
+            "frame_end": 0,
+        },
+        assignment={"require_assignment": True},
+        project={"path": str(out_dir / "project.vmhqproj")},
+    )
+
+    # Force SAM path to fail so API must use grabcut fallback.
+    import videomatte_hq_web.server as server_mod
+
+    def _raise_sam(*args, **kwargs):
+        raise RuntimeError("sam model unavailable in test")
+
+    monkeypatch.setattr(server_mod, "build_prompt_mask_sam", _raise_sam)
+
+    built = await build_assignment_mask(
+        BuildAssignmentMaskRequest(
+            config=cfg.model_dump(mode="json"),
+            frame=0,
+            kind="initial",
+            backend="sam",
+            sam_model_id="facebook/sam-vit-base",
+            sam_local_files_only=True,
+            sam_fallback_to_grabcut=True,
+            box=PromptBox(x0=24, y0=10, x1=82, y1=64),
+            fg_points=[PromptPoint(x=50, y=40)],
+            bg_points=[PromptPoint(x=8, y=8)],
+            point_radius=6,
+            iter_count=4,
+        )
+    )
+    assert built["status"] == "ok"
+    assert built["backend_requested"] == "sam"
+    assert built["backend_used"] == "grabcut_fallback"
+    assert "SAM unavailable" in str(built.get("builder_note"))

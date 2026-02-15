@@ -46,6 +46,7 @@ interface BuilderCandidate extends BuilderBox {
 }
 
 type BuilderTool = 'box' | 'fg' | 'bg'
+type BuilderBackend = 'grabcut' | 'sam'
 
 interface MatteTuningPreset {
     id: string
@@ -335,6 +336,9 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     const [builderPrompt, setBuilderPrompt] = useState("person")
     const [builderSuggestingBoxes, setBuilderSuggestingBoxes] = useState(false)
     const [builderCandidates, setBuilderCandidates] = useState<BuilderCandidate[]>([])
+    const [builderBackend, setBuilderBackend] = useState<BuilderBackend>('grabcut')
+    const [builderSamModelId, setBuilderSamModelId] = useState("facebook/sam-vit-base")
+    const [builderSamLocalOnly, setBuilderSamLocalOnly] = useState(true)
     const [builderLoadingFrame, setBuilderLoadingFrame] = useState(false)
     const [builderBuildingMask, setBuilderBuildingMask] = useState(false)
     const [builderDragStart, setBuilderDragStart] = useState<BuilderPoint | null>(null)
@@ -605,11 +609,15 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                     frame: assignmentFrame,
                     kind: assignmentKind,
                     source: "ui_builder",
+                    backend: builderBackend,
                     box: builderBox,
                     fg_points: builderFgPoints,
                     bg_points: builderBgPoints,
                     point_radius: builderPointRadius,
                     iter_count: builderIterCount,
+                    sam_model_id: builderSamModelId,
+                    sam_local_files_only: builderSamLocalOnly,
+                    sam_fallback_to_grabcut: true,
                 }),
             })
             if (!res.ok) throw new Error(await parseApiError(res))
@@ -621,6 +629,8 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                 suggested_reprocess_range?: SuggestedReprocessRange
                 mask_preview_data_url?: string
                 coverage?: number
+                backend_used?: string
+                builder_note?: string | null
             }
             const range = data.suggested_reprocess_range
             setProjectSummary({
@@ -632,21 +642,25 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
             if (data.mask_preview_data_url) {
                 setBuilderMaskPreviewUrl(data.mask_preview_data_url)
             }
+            const backendUsedLabel = data.backend_used ? ` (${data.backend_used})` : ""
             if (range) {
                 setSuggestedRange(range)
                 if (assignmentKind === 'correction' && autoApplySuggestedRange) {
                     applySuggestedRange(range)
                     setStatus(
-                        `Built and imported correction mask at frame ${assignmentFrame}. Applied reprocess range ${range.frame_start}..${range.frame_end}.`
+                        `Built and imported correction mask${backendUsedLabel} at frame ${assignmentFrame}. Applied reprocess range ${range.frame_start}..${range.frame_end}.`
                     )
                 } else {
                     const covPct = Math.round((data.coverage ?? 0) * 1000) / 10
                     setStatus(
-                        `Built and imported mask at frame ${assignmentFrame} (coverage ${covPct}%). Suggested range: ${range.frame_start}..${range.frame_end}.`
+                        `Built and imported mask${backendUsedLabel} at frame ${assignmentFrame} (coverage ${covPct}%). Suggested range: ${range.frame_start}..${range.frame_end}.`
                     )
                 }
             } else {
-                setStatus(`Built and imported mask at frame ${assignmentFrame}.`)
+                setStatus(`Built and imported mask${backendUsedLabel} at frame ${assignmentFrame}.`)
+            }
+            if (data.builder_note) {
+                setStatus(prev => prev ? `${prev} ${data.builder_note}` : data.builder_note || null)
             }
         } catch (err: any) {
             setError(err.message)
@@ -1062,7 +1076,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                         <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
                             <div className="flex flex-wrap gap-2 items-center justify-between">
-                                <div className="text-sm font-semibold text-gray-200">Initial Mask Builder (Phase 2)</div>
+                                <div className="text-sm font-semibold text-gray-200">Initial Mask Builder (Phase 3)</div>
                                 <div className="flex gap-2">
                                     <button
                                         type="button"
@@ -1123,7 +1137,17 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     </div>
                                 </div>
                             )}
-                            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                            <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                                <Select
+                                    label="Mask Builder Backend"
+                                    value={builderBackend}
+                                    onChange={e => setBuilderBackend(e.target.value as BuilderBackend)}
+                                    options={[
+                                        { value: 'grabcut', label: 'GrabCut (Fast)' },
+                                        { value: 'sam', label: 'SAM (Phase 3)' },
+                                    ]}
+                                    tooltip="Phase 3: optional SAM backend for higher-quality prompt masks."
+                                />
                                 <Select
                                     label="Builder Tool"
                                     value={builderTool}
@@ -1160,6 +1184,23 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     </button>
                                 </div>
                             </div>
+                            {builderBackend === 'sam' && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 rounded border border-gray-700/70 bg-gray-900/70 p-2">
+                                    <Input
+                                        label="SAM Model ID / Path"
+                                        value={builderSamModelId}
+                                        onChange={e => setBuilderSamModelId(e.target.value)}
+                                        placeholder="facebook/sam-vit-base"
+                                        tooltip="Use a local path or HuggingFace model id for SAM."
+                                    />
+                                    <Switch
+                                        label="Local Files Only"
+                                        checked={builderSamLocalOnly}
+                                        onChange={setBuilderSamLocalOnly}
+                                        tooltip="Recommended: ON. Avoids downloads and uses only local model files."
+                                    />
+                                </div>
+                            )}
                             {builderFrameDataUrl && builderFrameSize ? (
                                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
                                     <div>

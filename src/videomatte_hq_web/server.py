@@ -17,6 +17,7 @@ from videomatte_hq.config import VideoMatteConfig
 from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.mask_builder import build_prompt_mask_grabcut
 from videomatte_hq.prompt_boxes import suggest_prompt_boxes
+from videomatte_hq.sam_builder import build_prompt_mask_sam, DEFAULT_SAM_MODEL_ID
 from videomatte_hq.project import (
     ensure_project,
     import_keyframe_mask,
@@ -103,8 +104,12 @@ class BuildAssignmentMaskRequest(BaseModel):
     box: PromptBox
     fg_points: list[PromptPoint] = Field(default_factory=list)
     bg_points: list[PromptPoint] = Field(default_factory=list)
+    backend: str = "grabcut"
     point_radius: int = Field(default=8, ge=1, le=128)
     iter_count: int = Field(default=5, ge=1, le=20)
+    sam_model_id: str = DEFAULT_SAM_MODEL_ID
+    sam_local_files_only: bool = True
+    sam_fallback_to_grabcut: bool = True
     source: str = "ui_builder"
     kind: str = "initial"
 
@@ -330,15 +335,52 @@ async def build_assignment_mask(req: BuildAssignmentMaskRequest):
     try:
         cfg = VideoMatteConfig(**req.config)
         frame_rgb_u8, local_idx = _load_input_frame_rgb_u8(cfg=cfg, requested_frame=req.frame)
+        fg_points = [(p.x, p.y) for p in req.fg_points]
+        bg_points = [(p.x, p.y) for p in req.bg_points]
+        box_xyxy = (req.box.x0, req.box.y0, req.box.x1, req.box.y1)
 
-        alpha = build_prompt_mask_grabcut(
-            frame_rgb_u8=frame_rgb_u8,
-            box_xyxy=(req.box.x0, req.box.y0, req.box.x1, req.box.y1),
-            fg_points=[(p.x, p.y) for p in req.fg_points],
-            bg_points=[(p.x, p.y) for p in req.bg_points],
-            point_radius=req.point_radius,
-            iter_count=req.iter_count,
-        )
+        backend_requested = str(req.backend).strip().lower() or "grabcut"
+        backend_used = backend_requested
+        builder_note: str | None = None
+        if backend_requested in {"grabcut", "classic"}:
+            alpha = build_prompt_mask_grabcut(
+                frame_rgb_u8=frame_rgb_u8,
+                box_xyxy=box_xyxy,
+                fg_points=fg_points,
+                bg_points=bg_points,
+                point_radius=req.point_radius,
+                iter_count=req.iter_count,
+            )
+            backend_used = "grabcut"
+        elif backend_requested in {"sam", "sam_hq", "segment_anything"}:
+            try:
+                alpha = build_prompt_mask_sam(
+                    frame_rgb_u8=frame_rgb_u8,
+                    box_xyxy=box_xyxy,
+                    fg_points=fg_points,
+                    bg_points=bg_points,
+                    model_id=req.sam_model_id or DEFAULT_SAM_MODEL_ID,
+                    local_files_only=req.sam_local_files_only,
+                    device_hint=cfg.runtime.device,
+                    point_radius=req.point_radius,
+                )
+                backend_used = "sam"
+            except Exception as sam_exc:
+                if not req.sam_fallback_to_grabcut:
+                    raise
+                logger.warning("SAM backend unavailable, falling back to GrabCut: %s", sam_exc)
+                alpha = build_prompt_mask_grabcut(
+                    frame_rgb_u8=frame_rgb_u8,
+                    box_xyxy=box_xyxy,
+                    fg_points=fg_points,
+                    bg_points=bg_points,
+                    point_radius=req.point_radius,
+                    iter_count=req.iter_count,
+                )
+                backend_used = "grabcut_fallback"
+                builder_note = f"SAM unavailable: {sam_exc}. Used GrabCut fallback."
+        else:
+            raise ValueError(f"Unsupported mask builder backend: {req.backend}")
 
         project_path, project = ensure_project(cfg)
         assignment = upsert_keyframe_alpha(
@@ -366,6 +408,9 @@ async def build_assignment_mask(req: BuildAssignmentMaskRequest):
             "frame": int(req.frame),
             "local_index": int(local_idx),
             "coverage": coverage,
+            "backend_requested": backend_requested,
+            "backend_used": backend_used,
+            "builder_note": builder_note,
             "assignment": {
                 "frame": assignment.frame,
                 "mask_asset": assignment.mask_asset,

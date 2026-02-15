@@ -151,7 +151,7 @@ Then open `http://localhost:5173`.
 ### Run Job tab
 - Input/output + frame range
 - Mask-first assignment import
-- Initial Mask Builder (Phase 2): load frame, text-prompt box suggestions, draw/adjust box, add FG/BG points, build + import mask
+- Initial Mask Builder (Phase 3): load frame, text-prompt box suggestions, draw/adjust box, add FG/BG points, choose backend (`GrabCut` or optional `SAM`), build + import mask
 - Anchor type: `initial` / `correction`
 - Auto-apply suggested reprocess range
 - One-click matte tuning presets: `Subtle`, `Balanced`, `Aggressive`, plus `Reset`
