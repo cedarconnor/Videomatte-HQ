@@ -46,8 +46,9 @@ In the **Run Job** tab:
    - **Anchor Type**: `Initial`
    - **Mask Path**: your mask image path
    - Click **Import Mask**
-   - If you do not already have a mask file, use **Initial Mask Builder (Phase 1)**:
+   - If you do not already have a mask file, use **Initial Mask Builder (Phase 2)**:
      - Click **Load Frame**
+     - (Optional) Enter a prompt like `person center` and click **Suggest Boxes**
      - Draw one box around the subject
      - Add a few FG points on the subject and BG points on the background (if needed)
      - Click **Build + Import Mask**

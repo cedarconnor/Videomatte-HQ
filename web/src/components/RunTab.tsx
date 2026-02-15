@@ -39,6 +39,12 @@ interface BuilderBox {
     y1: number
 }
 
+interface BuilderCandidate extends BuilderBox {
+    score: number
+    source: string
+    label: string
+}
+
 type BuilderTool = 'box' | 'fg' | 'bg'
 
 interface MatteTuningPreset {
@@ -326,6 +332,9 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     const [builderBgPoints, setBuilderBgPoints] = useState<BuilderPoint[]>([])
     const [builderPointRadius, setBuilderPointRadius] = useState(8)
     const [builderIterCount, setBuilderIterCount] = useState(5)
+    const [builderPrompt, setBuilderPrompt] = useState("person")
+    const [builderSuggestingBoxes, setBuilderSuggestingBoxes] = useState(false)
+    const [builderCandidates, setBuilderCandidates] = useState<BuilderCandidate[]>([])
     const [builderLoadingFrame, setBuilderLoadingFrame] = useState(false)
     const [builderBuildingMask, setBuilderBuildingMask] = useState(false)
     const [builderDragStart, setBuilderDragStart] = useState<BuilderPoint | null>(null)
@@ -486,6 +495,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
         setBuilderFgPoints([])
         setBuilderBgPoints([])
         setBuilderMaskPreviewUrl(null)
+        setBuilderCandidates([])
     }
 
     async function handleLoadBuilderFrame() {
@@ -516,6 +526,61 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
         } finally {
             setBuilderLoadingFrame(false)
         }
+    }
+
+    async function handleSuggestBuilderBoxes() {
+        setError(null)
+        setStatus(null)
+        if (!builderFrameDataUrl || !builderFrameSize) {
+            setError("Load a frame before requesting prompt box suggestions.")
+            return
+        }
+        const prompt = builderPrompt.trim()
+        if (!prompt) {
+            setError("Enter a prompt first (for example: person, person left, person center).")
+            return
+        }
+        setBuilderSuggestingBoxes(true)
+        try {
+            const res = await fetch('/api/assignments/suggest-boxes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config,
+                    frame: assignmentFrame,
+                    prompt,
+                    max_candidates: 5,
+                }),
+            })
+            if (!res.ok) throw new Error(await parseApiError(res))
+            const data = await res.json() as { candidates: BuilderCandidate[] }
+            const cands = data.candidates || []
+            setBuilderCandidates(cands)
+            if (cands.length > 0) {
+                setBuilderBox({
+                    x0: cands[0].x0,
+                    y0: cands[0].y0,
+                    x1: cands[0].x1,
+                    y1: cands[0].y1,
+                })
+                setBuilderDraftBox(null)
+                setBuilderMaskPreviewUrl(null)
+                setStatus(`Detected ${cands.length} candidate box(es). Applied top candidate.`)
+            } else {
+                setStatus("No prompt candidates found; draw a manual box.")
+            }
+        } catch (err: any) {
+            setError(err.message)
+        } finally {
+            setBuilderSuggestingBoxes(false)
+        }
+    }
+
+    function applyBuilderCandidate(c: BuilderCandidate, index: number) {
+        setBuilderBox({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1 })
+        setBuilderDraftBox(null)
+        setBuilderMaskPreviewUrl(null)
+        setStatus(`Applied candidate #${index + 1} (${c.label}, ${Math.round(c.score * 100)}%).`)
     }
 
     async function handleBuildMaskFromPrompts() {
@@ -626,6 +691,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
         }
         setBuilderBox(normalized)
         setBuilderMaskPreviewUrl(null)
+        setBuilderCandidates([])
     }
 
     function handleBuilderMouseUp(e: React.MouseEvent<HTMLDivElement>) {
@@ -786,7 +852,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     }
 
     const activeBuilderBox = builderDraftBox ?? builderBox
-    const assignmentBusy = assignmentLoading || builderLoadingFrame || builderBuildingMask
+    const assignmentBusy = assignmentLoading || builderLoadingFrame || builderBuildingMask || builderSuggestingBoxes
 
     return (
         <div className="space-y-4 pb-20">
@@ -996,7 +1062,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                         <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
                             <div className="flex flex-wrap gap-2 items-center justify-between">
-                                <div className="text-sm font-semibold text-gray-200">Initial Mask Builder (Phase 1)</div>
+                                <div className="text-sm font-semibold text-gray-200">Initial Mask Builder (Phase 2)</div>
                                 <div className="flex gap-2">
                                     <button
                                         type="button"
@@ -1016,6 +1082,47 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     </button>
                                 </div>
                             </div>
+                            <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                                <div className="md:col-span-4">
+                                    <Input
+                                        label="Prompt Auto-Detect"
+                                        value={builderPrompt}
+                                        onChange={e => setBuilderPrompt(e.target.value)}
+                                        placeholder="person, person left, person center"
+                                        tooltip="Suggest subject boxes from text prompt. Works best with people prompts."
+                                    />
+                                </div>
+                                <div className="flex items-end">
+                                    <button
+                                        type="button"
+                                        onClick={handleSuggestBuilderBoxes}
+                                        disabled={assignmentBusy || !builderFrameDataUrl}
+                                        className="w-full px-3 py-2 rounded bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {builderSuggestingBoxes ? "Detecting..." : "Suggest Boxes"}
+                                    </button>
+                                </div>
+                            </div>
+                            {builderCandidates.length > 0 && (
+                                <div className="rounded border border-gray-700/80 bg-gray-900/70 p-2">
+                                    <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mb-2">
+                                        Prompt Candidates
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {builderCandidates.map((cand, idx) => (
+                                            <button
+                                                key={`cand-${idx}`}
+                                                type="button"
+                                                onClick={() => applyBuilderCandidate(cand, idx)}
+                                                className="px-2.5 py-1.5 rounded border border-gray-600 bg-gray-800 hover:bg-gray-700 text-xs text-gray-100"
+                                                title={`${cand.source} (${cand.label}) score=${cand.score.toFixed(3)}`}
+                                            >
+                                                #{idx + 1} {cand.label} ({Math.round(cand.score * 100)}%)
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                             <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                                 <Select
                                     label="Builder Tool"
@@ -1057,7 +1164,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
                                     <div>
                                         <div className="text-xs text-gray-400 mb-1">
-                                            Step 1: Draw a box around the subject. Step 2: Add FG/BG points if needed.
+                                            Step 1: Prompt auto-detect or draw a subject box. Step 2: Add FG/BG points if needed.
                                         </div>
                                         <div
                                             className={`relative inline-block border border-gray-700 rounded overflow-hidden ${builderTool === 'box' ? 'cursor-crosshair' : 'cursor-cell'}`}

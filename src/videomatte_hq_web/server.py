@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from videomatte_hq.config import VideoMatteConfig
 from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.mask_builder import build_prompt_mask_grabcut
+from videomatte_hq.prompt_boxes import suggest_prompt_boxes
 from videomatte_hq.project import (
     ensure_project,
     import_keyframe_mask,
@@ -106,6 +107,13 @@ class BuildAssignmentMaskRequest(BaseModel):
     iter_count: int = Field(default=5, ge=1, le=20)
     source: str = "ui_builder"
     kind: str = "initial"
+
+
+class SuggestAssignmentBoxesRequest(BaseModel):
+    config: dict
+    frame: int = 0
+    prompt: str = Field(default="person", min_length=1)
+    max_candidates: int = Field(default=5, ge=1, le=12)
 
 
 def _build_project_summary(cfg: VideoMatteConfig) -> dict:
@@ -375,6 +383,32 @@ async def build_assignment_mask(req: BuildAssignmentMaskRequest):
         }
     except Exception as e:
         logger.exception("Failed to build assignment mask")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/assignments/suggest-boxes")
+async def suggest_assignment_boxes(req: SuggestAssignmentBoxesRequest):
+    """Suggest assignment boxes from a text prompt on the selected frame."""
+    try:
+        cfg = VideoMatteConfig(**req.config)
+        frame_rgb_u8, local_idx = _load_input_frame_rgb_u8(cfg=cfg, requested_frame=req.frame)
+        h, w = frame_rgb_u8.shape[:2]
+        cands = suggest_prompt_boxes(
+            frame_rgb_u8=frame_rgb_u8,
+            prompt=req.prompt,
+            max_candidates=req.max_candidates,
+        )
+        return {
+            "status": "ok",
+            "frame": int(req.frame),
+            "local_index": int(local_idx),
+            "width": int(w),
+            "height": int(h),
+            "prompt": req.prompt,
+            "candidates": [c.as_dict() for c in cands],
+        }
+    except Exception as e:
+        logger.exception("Failed to suggest assignment boxes")
         raise HTTPException(status_code=400, detail=str(e))
 
 

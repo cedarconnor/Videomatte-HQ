@@ -18,7 +18,9 @@ from videomatte_hq_web.server import (
     build_assignment_mask,
     import_assignment,
     project_state,
+    SuggestAssignmentBoxesRequest,
     suggest_assignment_range,
+    suggest_assignment_boxes,
     SuggestReprocessRangeRequest,
 )
 
@@ -130,3 +132,14 @@ async def test_assignment_mask_builder_preview_and_build(tmp_path: Path, monkeyp
     assert built["keyframe_count"] == 1
     assert float(built["coverage"]) > 0.05
     assert str(built["mask_preview_data_url"]).startswith("data:image/png;base64,")
+
+    suggested_boxes = await suggest_assignment_boxes(
+        SuggestAssignmentBoxesRequest(
+            config=cfg.model_dump(mode="json"),
+            frame=0,
+            prompt="object center",
+            max_candidates=4,
+        )
+    )
+    assert suggested_boxes["status"] == "ok"
+    assert len(suggested_boxes["candidates"]) >= 1

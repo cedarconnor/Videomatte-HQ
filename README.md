@@ -151,7 +151,7 @@ Then open `http://localhost:5173`.
 ### Run Job tab
 - Input/output + frame range
 - Mask-first assignment import
-- Initial Mask Builder (Phase 1): load frame, draw box, add FG/BG points, build + import mask
+- Initial Mask Builder (Phase 2): load frame, text-prompt box suggestions, draw/adjust box, add FG/BG points, build + import mask
 - Anchor type: `initial` / `correction`
 - Auto-apply suggested reprocess range
 - One-click matte tuning presets: `Subtle`, `Balanced`, `Aggressive`, plus `Reset`
@@ -174,6 +174,9 @@ Then open `http://localhost:5173`.
 - `POST /api/project/state`
 - `POST /api/assignments/import`
 - `POST /api/assignments/suggest-range`
+- `POST /api/assignments/frame-preview`
+- `POST /api/assignments/build-mask`
+- `POST /api/assignments/suggest-boxes`
 - `GET /api/qc/info`
 
 ## Config Schema (runtime)
