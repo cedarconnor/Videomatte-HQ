@@ -188,6 +188,39 @@ runtime:
 
 </details>
 
+## Web UI
+
+VideoMatte-HQ includes a browser-based interface for configuring jobs, monitoring progress, and inspecting output quality.
+
+### Launching
+
+```bash
+run_web.bat
+```
+
+This starts the backend API on `http://localhost:8000` and the frontend dev server on `http://localhost:5173`. Open `http://localhost:5173` in your browser.
+
+### Tabs
+
+The UI has four tabs, switchable via the sidebar or keyboard shortcuts (`Ctrl+1` through `Ctrl+4`).
+
+**Run Job** (`Ctrl+1`) — Configure and launch a matting pipeline run. All pipeline parameters are exposed in collapsible sections matching the YAML config (I/O, Background Plate, ROI, Global Pass, Intermediate, Band & Trimap, Detail Refinement, Temporal Stability, Runtime & Preview). The input field supports drag-and-drop for video files. Click **Start Pipeline** to submit the job.
+
+**Job Queue** (`Ctrl+2`) — Lists all submitted jobs with their status (queued, running, completed, failed). Selecting a job opens the **Console Output** log viewer, which streams logs in real time. Auto-scroll keeps the view at the bottom during active runs, disables when you scroll up manually, and provides a floating button to jump back to the latest output.
+
+**Quality Control** (`Ctrl+3`) — Side-by-side inspection of input frames vs. output alpha mattes using an interactive wipe comparison. Features:
+
+- **Wipe slider** — drag the divider left/right to compare input RGB against the matte output
+- **Frame scrubber** — slider, step buttons (+/-1, +/-10, first/last), and direct frame number input
+- **Keyboard navigation** — `J`/`Left Arrow` for previous frame, `K`/`Right Arrow` for next, `Shift` modifier for 10-frame jumps, `Home`/`End` for first/last
+- **Composite view modes** — dropdown to switch between Alpha (raw grayscale matte), Checkerboard (transparency pattern), White BG, and Black BG composites
+
+**Settings** (`Ctrl+4`) — Persistent preferences stored in your browser (default output directory, device, precision). Toggle "Show Advanced Options" to reveal additional parameters in the Run Job form.
+
+### Notifications
+
+Toast notifications appear when jobs complete or fail, so you can leave the UI on any tab and still be alerted to status changes.
+
 ## Output
 
 | Output | Path | Description |
@@ -215,9 +248,24 @@ Model weights are downloaded automatically on first run.
 videomatte-hq/
 ├── pyproject.toml
 ├── run_videomatte.bat
+├── run_web.bat
 ├── README.md
 ├── TestFiles/
 │   └── 6138680-uhd_3840_2160_24fps.mp4
+├── src/videomatte_hq_web/
+│   └── server.py              # FastAPI backend (API + static file serving)
+├── web/                        # React frontend (Vite + Tailwind)
+│   └── src/
+│       ├── App.tsx             # Root layout, sidebar, tab routing, shortcuts
+│       └── components/
+│           ├── RunTab.tsx      # Job configuration form with drag-and-drop
+│           ├── JobsTab.tsx     # Job queue list
+│           ├── JobDetail.tsx   # Log viewer with auto-scroll
+│           ├── JobProgress.tsx # Header progress bar for active jobs
+│           ├── QCTab.tsx       # Frame scrubber + composite mode selector
+│           ├── WipeComparison.tsx  # A/B wipe slider with canvas compositing
+│           ├── SettingsTab.tsx # Persistent user preferences
+│           └── Toast.tsx       # Notification system
 └── src/videomatte_hq/
     ├── cli.py                  # CLI entry point
     ├── config.py               # YAML config schema

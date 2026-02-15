@@ -51,6 +51,10 @@ def estimate_background_plate(
     for idx in indices:
         frame = source[idx]
         sampled.append(frame)
+    if len(sampled) == 0:
+        raise ValueError(
+            f"No frames to sample for BG estimation (num_frames={num_frames}, sample_count={cfg.sample_count})"
+        )
     sampled_frames = np.stack(sampled, axis=0)  # (N, H, W, C)
 
     # Temporal median

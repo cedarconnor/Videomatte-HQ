@@ -24,7 +24,16 @@ async def lifespan(app: FastAPI):
     # Shutdown
 
 
+
+# Custom Log Filter to suppress polling noise
+class EndpointFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage().find("GET /api/jobs") == -1
+
+logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
+
 app = FastAPI(title="VideoMatte-HQ Web API", lifespan=lifespan)
+
 
 # Allow CORS for dev
 app.add_middleware(
@@ -95,6 +104,46 @@ async def get_job_logs(job_id: str):
     if not job or not job.log_file or not job.log_file.exists():
         return {"logs": ""}
     return {"logs": job.log_file.read_text()}
+
+
+@app.get("/api/qc/info")
+async def qc_info():
+    """Return available input/output frame info for QC tab."""
+    import re
+
+    result = {
+        "input": {"pattern": None, "count": 0, "padding": 5, "prefix": "frame_", "ext": "png"},
+        "output": {"pattern": None, "count": 0, "padding": 6, "prefix": "", "ext": "png"},
+    }
+
+    # Scan input_frames/
+    input_dir = Path("input_frames")
+    if input_dir.exists():
+        files = sorted(f for f in input_dir.iterdir() if f.suffix.lower() in (".png", ".exr", ".jpg"))
+        if files:
+            result["input"]["count"] = len(files)
+            # Detect pattern from first file
+            m = re.match(r"^(.*?)(\d+)\.(\w+)$", files[0].name)
+            if m:
+                result["input"]["prefix"] = m.group(1)
+                result["input"]["padding"] = len(m.group(2))
+                result["input"]["ext"] = m.group(3)
+            result["input"]["pattern"] = f"input_frames/{files[0].name}"
+
+    # Scan out/alpha/
+    output_dir = Path("out/alpha")
+    if output_dir.exists():
+        files = sorted(f for f in output_dir.iterdir() if f.suffix.lower() in (".png", ".exr", ".jpg"))
+        if files:
+            result["output"]["count"] = len(files)
+            m = re.match(r"^(.*?)(\d+)\.(\w+)$", files[0].name)
+            if m:
+                result["output"]["prefix"] = m.group(1)
+                result["output"]["padding"] = len(m.group(2))
+                result["output"]["ext"] = m.group(3)
+            result["output"]["pattern"] = f"out/alpha/{files[0].name}"
+
+    return result
 
 
 # Serve files from project root for preview

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { FaPlay, FaSpinner, FaExclamationCircle } from 'react-icons/fa'
+import { useState, useEffect, useCallback } from 'react'
+import { FaPlay, FaSpinner, FaExclamationCircle, FaFileVideo } from 'react-icons/fa'
 import { VideoMatteConfig } from '../types'
 import { Section } from './ui/Section'
 import { Input } from './ui/Input'
@@ -222,6 +222,26 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
         })
     }
 
+    const [dragOver, setDragOver] = useState(false)
+
+    const handleDrop = useCallback((e: React.DragEvent) => {
+        e.preventDefault()
+        setDragOver(false)
+        // Try to get file path from dropped items
+        const files = e.dataTransfer.files
+        if (files.length > 0) {
+            // Browser security prevents reading full paths, but we show the filename
+            // User would need to type the full path — this handles the UX hint
+            const name = files[0].name
+            updateConfig('io', 'input', name)
+        }
+        // Try text data (e.g., dragged from file manager on some platforms)
+        const text = e.dataTransfer.getData('text/plain')
+        if (text) {
+            updateConfig('io', 'input', text.trim())
+        }
+    }, [])
+
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault()
         setLoading(true)
@@ -270,15 +290,41 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                 {/* 1. IO Section */}
                 <Section title="Input / Output" defaultOpen={true} tooltip="Configure file paths, frame ranges, and formats.">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                        <Input
-                            label="Input Path"
-                            name="input"
-                            value={config.io.input}
-                            onChange={e => updateConfig('io', 'input', e.target.value)}
-                            placeholder="videos/my_video.mp4"
+                        {/* Drop zone for input file */}
+                        <div
                             className="col-span-2"
-                            tooltip="Path to the video file or image sequence (e.g., 'frame_%05d.png')."
-                        />
+                            onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+                            onDragLeave={() => setDragOver(false)}
+                            onDrop={handleDrop}
+                        >
+                            {!config.io.input ? (
+                                <div className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors cursor-pointer ${dragOver ? 'border-brand-500 bg-brand-500/5' : 'border-gray-700 hover:border-gray-500'}`}
+                                     onClick={() => {
+                                         const el = document.getElementById('input-path-field')
+                                         if (el) el.focus()
+                                     }}
+                                >
+                                    <FaFileVideo className={`mx-auto text-2xl mb-2 ${dragOver ? 'text-brand-400' : 'text-gray-500'}`} />
+                                    <p className="text-sm text-gray-400">Drop a video file here or type the path below</p>
+                                    <input
+                                        id="input-path-field"
+                                        value={config.io.input}
+                                        onChange={e => updateConfig('io', 'input', e.target.value)}
+                                        placeholder="videos/my_video.mp4"
+                                        className="mt-2 w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500"
+                                    />
+                                </div>
+                            ) : (
+                                <Input
+                                    label="Input Path"
+                                    name="input"
+                                    value={config.io.input}
+                                    onChange={e => updateConfig('io', 'input', e.target.value)}
+                                    placeholder="videos/my_video.mp4"
+                                    tooltip="Path to the video file or image sequence (e.g., 'frame_%05d.png')."
+                                />
+                            )}
+                        </div>
                         <Input
                             label="Output Directory"
                             value={config.io.output_dir}

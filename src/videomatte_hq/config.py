@@ -321,3 +321,13 @@ class VideoMatteConfig(BaseModel):
             }
         json_str = json.dumps(data, sort_keys=True, default=str)
         return hashlib.sha256(json_str.encode()).hexdigest()[:16]
+
+    def to_yaml(self, path: Path | str) -> None:
+        """Save configuration to a YAML file."""
+        import yaml
+        
+        # model_dump(mode='json') converts enums to strings etc.
+        data = self.model_dump(mode='json')
+        
+        with open(path, 'w') as f:
+            yaml.dump(data, f, sort_keys=False, default_flow_style=False)

@@ -196,7 +196,7 @@ class VideoReader:
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         self.frame_start = frame_start
-        self.frame_end = frame_end if frame_end is not None else self.total_frames - 1
+        self.frame_end = frame_end if (frame_end is not None and frame_end >= 0) else self.total_frames - 1
 
         logger.info(
             f"Video: {path.name} — {self.width}×{self.height} @ {self.fps:.1f}fps, "
@@ -257,7 +257,8 @@ class FrameSource:
         video_exts = {".mp4", ".mov", ".avi", ".mkv", ".mxf", ".webm"}
 
         if len(files) == 1 and files[0].suffix.lower() in video_exts:
-            self._video = VideoReader(files[0], frame_start or 0, frame_end)
+            effective_end = frame_end if (frame_end is not None and frame_end >= 0) else None
+            self._video = VideoReader(files[0], frame_start or 0, effective_end)
             self._frames = None
             self._is_video = True
         else:

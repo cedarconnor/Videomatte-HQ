@@ -22,7 +22,6 @@ from videomatte_hq.config import (
     VideoMatteConfig,
 )
 import videomatte_hq.config
-print(f"DEBUG: Loaded config from {videomatte_hq.config.__file__}")
 
 logger = logging.getLogger("videomatte_hq")
 
