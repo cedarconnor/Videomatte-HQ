@@ -3,22 +3,25 @@ import WipeComparison from './WipeComparison'
 import { FaRegImage, FaChevronLeft, FaChevronRight, FaStepBackward, FaStepForward } from 'react-icons/fa'
 
 interface QCInfo {
-    input: { prefix: string; padding: number; ext: string; count: number }
-    output: { prefix: string; padding: number; ext: string; count: number }
+    input: { prefix: string; padding: number; ext: string; count: number; dir?: string }
+    output: { prefix: string; padding: number; ext: string; count: number; dir?: string }
 }
 
-type CompositeMode = 'alpha' | 'checker' | 'white' | 'black'
+type CompositeMode = 'alpha' | 'checker' | 'white' | 'black' | 'overlay'
 
 const COMPOSITE_MODES: { value: CompositeMode; label: string }[] = [
     { value: 'alpha', label: 'Alpha (Raw)' },
     { value: 'checker', label: 'Checkerboard' },
     { value: 'white', label: 'White BG' },
     { value: 'black', label: 'Black BG' },
+    { value: 'overlay', label: 'Color Overlay' },
 ]
 
 export default function QCTab() {
     const [frame, setFrame] = useState(0)
     const [compositeMode, setCompositeMode] = useState<CompositeMode>('alpha')
+    const [overlayColor, setOverlayColor] = useState('#00ff00')
+    const [overlayOpacity, setOverlayOpacity] = useState(0.6)
     const [qcInfo, setQcInfo] = useState<QCInfo | null>(null)
     const containerRef = useRef<HTMLDivElement>(null)
 
@@ -31,14 +34,16 @@ export default function QCTab() {
     }, [])
 
     const maxFrame = qcInfo ? Math.max(qcInfo.input.count, qcInfo.output.count) - 1 : 162
-    const inputInfo = qcInfo?.input ?? { prefix: 'frame_', padding: 5, ext: 'png' }
-    const outputInfo = qcInfo?.output ?? { prefix: '', padding: 6, ext: 'png' }
+    const inputInfo = qcInfo?.input ?? { prefix: 'frame_', padding: 5, ext: 'png', dir: 'input_frames' }
+    const outputInfo = qcInfo?.output ?? { prefix: '', padding: 6, ext: 'png', dir: 'out/alpha' }
 
     const inputFrameStr = frame.toString().padStart(inputInfo.padding, '0')
     const outputFrameStr = frame.toString().padStart(outputInfo.padding, '0')
 
-    const inputUrl = `/files/input_frames/${inputInfo.prefix}${inputFrameStr}.${inputInfo.ext}`
-    const outputUrl = `/files/out/alpha/${outputInfo.prefix}${outputFrameStr}.${outputInfo.ext}`
+    const inputBaseDir = (inputInfo.dir || 'input_frames').replace(/\\/g, '/').replace(/^\/+/, '')
+    const outputBaseDir = (outputInfo.dir || 'out/alpha').replace(/\\/g, '/').replace(/^\/+/, '')
+    const inputUrl = `/files/${inputBaseDir}/${inputInfo.prefix}${inputFrameStr}.${inputInfo.ext}`
+    const outputUrl = `/files/${outputBaseDir}/${outputInfo.prefix}${outputFrameStr}.${outputInfo.ext}`
 
     const clampFrame = useCallback((n: number) => Math.max(0, Math.min(n, maxFrame)), [maxFrame])
 
@@ -91,6 +96,30 @@ export default function QCTab() {
                             <option key={m.value} value={m.value}>{m.label}</option>
                         ))}
                     </select>
+                    {compositeMode === 'overlay' && (
+                        <>
+                            <input
+                                type="color"
+                                value={overlayColor}
+                                onChange={e => setOverlayColor(e.target.value)}
+                                className="h-8 w-10 rounded border border-gray-700 bg-gray-800 p-0.5 cursor-pointer"
+                                title="Overlay Color"
+                            />
+                            <div className="flex items-center gap-2 text-xs text-gray-300">
+                                <span>Opacity</span>
+                                <input
+                                    type="range"
+                                    min={0}
+                                    max={1}
+                                    step={0.01}
+                                    value={overlayOpacity}
+                                    onChange={e => setOverlayOpacity(parseFloat(e.target.value))}
+                                    className="w-20 accent-brand-500"
+                                />
+                                <span className="font-mono w-10 text-right">{overlayOpacity.toFixed(2)}</span>
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
 
@@ -102,6 +131,8 @@ export default function QCTab() {
                     leftLabel="Input (RGB)"
                     rightLabel="Output (Alpha)"
                     compositeMode={compositeMode}
+                    overlayColor={overlayColor}
+                    overlayOpacity={overlayOpacity}
                 />
             </div>
 

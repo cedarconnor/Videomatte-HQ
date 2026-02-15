@@ -15,12 +15,24 @@ set ALPHA_FORMAT=png16
 set SHOT_TYPE=locked_off
 set DEVICE=cuda
 set PRECISION=fp16
+set PROJECT=out\project.vmhqproj
+set ASSIGN_MASK=
+set ASSIGN_FRAME=0
+set REQUIRE_ASSIGNMENT=1
 set FRAME_START=
 set FRAME_END=
+set QC_ENABLE=1
+set QC_FAIL_ON_REGRESSION=1
+set QC_SAMPLE_OUTPUT_FRAMES=3
+set QC_MAX_OUTPUT_ROUNDTRIP_MAE=0.002
+set QC_MAX_P95_FLICKER=0.005
+set QC_MAX_P95_EDGE_FLICKER=0.02
+set QC_MIN_MEAN_EDGE_CONFIDENCE=0.22
+set QC_BAND_SPIKE_RATIO=1.8
+set QC_MAX_BAND_SPIKE_FRAMES=3
 
 :: Fast preset (1=on, 0=off)
-:: Speeds up iteration by lowering intermediate cost, reducing ROI detection frequency,
-:: disabling temporal flow, and disabling preview rendering.
+:: For Option B bootstrap this only relaxes assignment requirement if no mask is available.
 set FAST_PRESET=1
 
 :: ---- Locate venv Python ----
@@ -87,13 +99,30 @@ if not exist "out\alpha" mkdir "out\alpha"
 :: ---- Run pipeline ----
 echo [START] Processing: %INPUT%
 echo [CONFIG] Format=%ALPHA_FORMAT%  Shot=%SHOT_TYPE%  Device=%DEVICE%  Precision=%PRECISION%
+echo [CONFIG] Project=%PROJECT%  AssignMask=%ASSIGN_MASK%  RequireAssignment=%REQUIRE_ASSIGNMENT%
 echo [CONFIG] FrameRange=%FRAME_START%..%FRAME_END%  FastPreset=%FAST_PRESET%
+echo [CONFIG] QC=%QC_ENABLE%  QCFailOnRegression=%QC_FAIL_ON_REGRESSION%
+echo [CONFIG] QCTuned maxFlicker=%QC_MAX_P95_FLICKER% maxEdgeFlicker=%QC_MAX_P95_EDGE_FLICKER% minEdgeConf=%QC_MIN_MEAN_EDGE_CONFIDENCE%
 echo.
 
 set EXTRA_ARGS=
 if not "%FRAME_START%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --start %FRAME_START%
 if not "%FRAME_END%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --end %FRAME_END%
-if "%FAST_PRESET%"=="1" set EXTRA_ARGS=%EXTRA_ARGS% --temporal none --no-preview --intermediate-long-side 3072 --roi-detect-every 30
+if not "%PROJECT%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --project "%PROJECT%"
+if not "%ASSIGN_MASK%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --assign-mask "%ASSIGN_MASK%" --assign-frame %ASSIGN_FRAME%
+if "%REQUIRE_ASSIGNMENT%"=="0" set EXTRA_ARGS=%EXTRA_ARGS% --allow-empty-assignment
+if "%FAST_PRESET%"=="1" if "%ASSIGN_MASK%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --allow-empty-assignment
+if "%QC_ENABLE%"=="1" set EXTRA_ARGS=%EXTRA_ARGS% --qc
+if "%QC_ENABLE%"=="0" set EXTRA_ARGS=%EXTRA_ARGS% --no-qc
+if "%QC_FAIL_ON_REGRESSION%"=="1" set EXTRA_ARGS=%EXTRA_ARGS% --qc-fail-on-regression
+if "%QC_FAIL_ON_REGRESSION%"=="0" set EXTRA_ARGS=%EXTRA_ARGS% --no-qc-fail-on-regression
+if not "%QC_SAMPLE_OUTPUT_FRAMES%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --qc-sample-output-frames %QC_SAMPLE_OUTPUT_FRAMES%
+if not "%QC_MAX_OUTPUT_ROUNDTRIP_MAE%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --qc-max-output-roundtrip-mae %QC_MAX_OUTPUT_ROUNDTRIP_MAE%
+if not "%QC_MAX_P95_FLICKER%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --qc-max-p95-flicker %QC_MAX_P95_FLICKER%
+if not "%QC_MAX_P95_EDGE_FLICKER%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --qc-max-p95-edge-flicker %QC_MAX_P95_EDGE_FLICKER%
+if not "%QC_MIN_MEAN_EDGE_CONFIDENCE%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --qc-min-mean-edge-confidence %QC_MIN_MEAN_EDGE_CONFIDENCE%
+if not "%QC_BAND_SPIKE_RATIO%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --qc-band-spike-ratio %QC_BAND_SPIKE_RATIO%
+if not "%QC_MAX_BAND_SPIKE_FRAMES%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --qc-max-band-spike-frames %QC_MAX_BAND_SPIKE_FRAMES%
 
 "%VENV_PYTHON%" -m videomatte_hq.cli ^
     --input "%INPUT%" ^
@@ -102,8 +131,6 @@ if "%FAST_PRESET%"=="1" set EXTRA_ARGS=%EXTRA_ARGS% --temporal none --no-preview
     --shot-type %SHOT_TYPE% ^
     --device %DEVICE% ^
     --precision %PRECISION% ^
-    --preview ^
-    --preview-modes checker,alpha,white,flicker ^
     --resume ^
     %EXTRA_ARGS%
 
@@ -113,8 +140,7 @@ if errorlevel 1 (
 ) else (
     echo ============================================================
     echo [DONE] Output written to: out\alpha\
-    echo        Preview: out\preview\live_preview.mp4
-    echo        QC Report: out\qc\report.html
+    echo        Project: %PROJECT%
     echo ============================================================
 )
 

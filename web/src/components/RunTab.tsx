@@ -1,10 +1,75 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FaPlay, FaSpinner, FaExclamationCircle, FaFileVideo } from 'react-icons/fa'
+import { FaPlay, FaSpinner, FaExclamationCircle, FaFileVideo, FaUpload, FaSync } from 'react-icons/fa'
 import { VideoMatteConfig } from '../types'
 import { Section } from './ui/Section'
 import { Input } from './ui/Input'
 import { Select } from './ui/Select'
 import { Switch } from './ui/Switch'
+
+interface ProjectKeyframe {
+    frame: number
+    mask_asset: string
+    source: string
+    kind: 'initial' | 'correction'
+    updated_at: string
+}
+
+interface ProjectSummary {
+    project_path: string
+    keyframe_count: number
+    keyframes: ProjectKeyframe[]
+    require_assignment: boolean
+}
+
+interface SuggestedReprocessRange {
+    frame_start: number
+    frame_end: number
+    reason: string
+}
+
+interface MatteTuningPreset {
+    id: string
+    label: string
+    description: string
+    unknown_band_px: number
+    shrink_grow_px: number
+    feather_px: number
+    offset_x_px: number
+    offset_y_px: number
+}
+
+const MATTE_TUNING_PRESETS: MatteTuningPreset[] = [
+    {
+        id: 'subtle',
+        label: 'Subtle',
+        description: 'Mild refinement with very light feather.',
+        unknown_band_px: 56,
+        shrink_grow_px: 0,
+        feather_px: 1,
+        offset_x_px: 0,
+        offset_y_px: 0,
+    },
+    {
+        id: 'balanced',
+        label: 'Balanced',
+        description: 'Moderate edge tightening and smoothing.',
+        unknown_band_px: 64,
+        shrink_grow_px: -1,
+        feather_px: 2,
+        offset_x_px: 0,
+        offset_y_px: 0,
+    },
+    {
+        id: 'aggressive',
+        label: 'Aggressive',
+        description: 'Stronger choke and feather for difficult halos.',
+        unknown_band_px: 80,
+        shrink_grow_px: -2,
+        feather_px: 3,
+        offset_x_px: 0,
+        offset_y_px: 0,
+    },
+]
 
 // Default Configuration
 const DEFAULT_CONFIG: VideoMatteConfig = {
@@ -18,6 +83,31 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         alpha_format: "png16",
         alpha_dwaa_quality: 45.0,
         force_overwrite: false
+    },
+    project: {
+        path: "",
+        masks_dir: "masks",
+        cache_dir: "cache",
+        autosave: true
+    },
+    assignment: {
+        mode: "mask_first",
+        default_keyframe: 0,
+        require_assignment: true,
+        unknown_radius_px: 64,
+        fg_erosion_px: 6,
+        bg_dilation_px: 12
+    },
+    memory: {
+        backend: "appearance_memory_bank",
+        memory_frames: 12,
+        window: 120,
+        max_anchors: 20,
+        confidence_reanchor_threshold: 0.35,
+        query_long_side: 960,
+        spatial_weight: 0.1,
+        temperature: 1.0,
+        auto_anchor_min_gap: 0
     },
     background: {
         enabled: true,
@@ -101,6 +191,19 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         tile_batch_size: 4
     },
     refine: {
+        enabled: true,
+        backend: "guided_band",
+        unknown_band_px: 64,
+        tile_size: 1536,
+        overlap: 96,
+        alpha_bg_threshold: 0.05,
+        alpha_fg_threshold: 0.95,
+        min_confidence: 0.5,
+        guided_radius: 8,
+        guided_eps: 0.01,
+        edge_boost: 0.15,
+        confidence_gain: 1.0,
+        tile_min_coverage: 0.002,
         model: "vitmatte",
         use_bg_plate: true,
         bg_confidence_gate: 0.8
@@ -141,6 +244,42 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         every: 10,
         modes: ["checker", "alpha", "white", "flicker"]
     },
+    qc: {
+        enabled: true,
+        fail_on_regression: false,
+        output_subdir: "qc",
+        metrics_filename: "optionb_metrics.json",
+        report_filename: "optionb_report.md",
+        sample_output_frames: 3,
+        max_output_roundtrip_mae: 0.01,
+        alpha_range_eps: 0.001,
+        max_p95_flicker: 0.08,
+        max_p95_edge_flicker: 0.12,
+        min_mean_edge_confidence: 0.15,
+        band_spike_ratio: 2.5,
+        max_band_spike_frames: 8,
+    },
+    temporal_cleanup: {
+        enabled: true,
+        outside_band_ema: 0.15,
+        min_confidence: 0.5,
+        reset_on_new_anchor: true,
+        anchor_reset_frames: 6,
+        edge_bg_threshold: 0.05,
+        edge_fg_threshold: 0.95,
+        edge_band_radius_px: 2,
+        edge_snap_enabled: false,
+        edge_snap_radius: 2,
+        edge_snap_eps: 0.01,
+        clamp_delta: 0.25
+    },
+    matte_tuning: {
+        enabled: true,
+        shrink_grow_px: 0,
+        feather_px: 0,
+        offset_x_px: 0,
+        offset_y_px: 0,
+    },
     runtime: {
         device: "cuda",
         precision: "fp16",
@@ -154,7 +293,15 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
 export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [status, setStatus] = useState<string | null>(null)
     const [showAdvanced, setShowAdvanced] = useState(true)
+    const [projectSummary, setProjectSummary] = useState<ProjectSummary | null>(null)
+    const [assignmentMaskPath, setAssignmentMaskPath] = useState("")
+    const [assignmentFrame, setAssignmentFrame] = useState(0)
+    const [assignmentLoading, setAssignmentLoading] = useState(false)
+    const [assignmentKind, setAssignmentKind] = useState<'initial' | 'correction'>('initial')
+    const [autoApplySuggestedRange, setAutoApplySuggestedRange] = useState(true)
+    const [suggestedRange, setSuggestedRange] = useState<SuggestedReprocessRange | null>(null)
 
     // Initialize config with localStorage defaults if available
     const [config, setConfig] = useState<VideoMatteConfig>(() => {
@@ -242,19 +389,167 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
         }
     }, [])
 
+    async function parseApiError(res: Response): Promise<string> {
+        try {
+            const data = await res.json()
+            if (typeof data?.detail === 'string') return data.detail
+            return JSON.stringify(data)
+        } catch {
+            return await res.text()
+        }
+    }
+
+    async function refreshProjectSummary(configOverride?: VideoMatteConfig): Promise<ProjectSummary> {
+        const cfg = configOverride ?? config
+        const res = await fetch('/api/project/state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ config: cfg })
+        })
+        if (!res.ok) {
+            throw new Error(await parseApiError(res))
+        }
+        const data = await res.json() as ProjectSummary
+        setProjectSummary(data)
+        return data
+    }
+
+    function applySuggestedRange(range: SuggestedReprocessRange) {
+        setConfig(prev => ({
+            ...prev,
+            io: {
+                ...prev.io,
+                frame_start: range.frame_start,
+                frame_end: range.frame_end,
+            }
+        }))
+    }
+
+    function applyMattePreset(preset: MatteTuningPreset) {
+        setConfig(prev => ({
+            ...prev,
+            refine: {
+                ...prev.refine,
+                unknown_band_px: preset.unknown_band_px,
+            },
+            matte_tuning: {
+                ...prev.matte_tuning,
+                enabled: true,
+                shrink_grow_px: preset.shrink_grow_px,
+                feather_px: preset.feather_px,
+                offset_x_px: preset.offset_x_px,
+                offset_y_px: preset.offset_y_px,
+            },
+        }))
+        setStatus(
+            `Applied matte preset '${preset.label}': band=${preset.unknown_band_px}, shrink/grow=${preset.shrink_grow_px}, feather=${preset.feather_px}, offset=(${preset.offset_x_px}, ${preset.offset_y_px}).`
+        )
+    }
+
+    function resetMattePreset() {
+        setConfig(prev => ({
+            ...prev,
+            refine: {
+                ...prev.refine,
+                unknown_band_px: DEFAULT_CONFIG.refine.unknown_band_px,
+            },
+            matte_tuning: {
+                ...prev.matte_tuning,
+                enabled: DEFAULT_CONFIG.matte_tuning.enabled,
+                shrink_grow_px: DEFAULT_CONFIG.matte_tuning.shrink_grow_px,
+                feather_px: DEFAULT_CONFIG.matte_tuning.feather_px,
+                offset_x_px: DEFAULT_CONFIG.matte_tuning.offset_x_px,
+                offset_y_px: DEFAULT_CONFIG.matte_tuning.offset_y_px,
+            },
+        }))
+        setStatus("Reset matte tuning controls to defaults.")
+    }
+
+    function isMattePresetActive(preset: MatteTuningPreset): boolean {
+        return (
+            config.refine.unknown_band_px === preset.unknown_band_px &&
+            config.matte_tuning.shrink_grow_px === preset.shrink_grow_px &&
+            config.matte_tuning.feather_px === preset.feather_px &&
+            config.matte_tuning.offset_x_px === preset.offset_x_px &&
+            config.matte_tuning.offset_y_px === preset.offset_y_px
+        )
+    }
+
+    async function handleImportAssignment() {
+        setError(null)
+        setStatus(null)
+        if (!assignmentMaskPath.trim()) {
+            setError("Mask path is required before import.")
+            return
+        }
+        setAssignmentLoading(true)
+        try {
+            const res = await fetch('/api/assignments/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config,
+                    frame: assignmentFrame,
+                    mask_path: assignmentMaskPath.trim(),
+                    source: "ui",
+                    kind: assignmentKind,
+                })
+            })
+            if (!res.ok) throw new Error(await parseApiError(res))
+            const data = await res.json()
+            const range = data.suggested_reprocess_range as SuggestedReprocessRange | undefined
+            setProjectSummary({
+                project_path: data.project_path,
+                keyframe_count: data.keyframe_count,
+                keyframes: data.keyframes || [],
+                require_assignment: data.require_assignment ?? true
+            })
+            if (range) {
+                setSuggestedRange(range)
+                if (assignmentKind === 'correction' && autoApplySuggestedRange) {
+                    applySuggestedRange(range)
+                    setStatus(
+                        `Imported correction anchor at frame ${assignmentFrame}. Applied reprocess range ${range.frame_start}..${range.frame_end}.`
+                    )
+                } else {
+                    setStatus(`Imported keyframe mask at frame ${assignmentFrame}. Suggested range: ${range.frame_start}..${range.frame_end}.`)
+                }
+            } else {
+                setStatus(`Imported keyframe mask at frame ${assignmentFrame}.`)
+            }
+        } catch (err: any) {
+            setError(err.message)
+        } finally {
+            setAssignmentLoading(false)
+        }
+    }
+
+    useEffect(() => {
+        refreshProjectSummary().catch(() => { })
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault()
         setLoading(true)
         setError(null)
+        setStatus(null)
 
         try {
+            if (config.assignment.require_assignment) {
+                const summary = await refreshProjectSummary(config)
+                if (!summary.keyframe_count) {
+                    throw new Error("Assignment required. Import at least one keyframe mask in 'Subject Assignment' before starting.")
+                }
+            }
+
             const res = await fetch('/api/jobs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ config })
             })
 
-            if (!res.ok) throw new Error(await res.text())
+            if (!res.ok) throw new Error(await parseApiError(res))
 
             onSuccess()
         } catch (err: any) {
@@ -282,6 +577,11 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                 <div className="bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-lg flex items-center gap-2 text-sm">
                     <FaExclamationCircle />
                     {error}
+                </div>
+            )}
+            {status && (
+                <div className="bg-green-500/20 border border-green-500/20 text-green-400 p-3 rounded-lg text-sm">
+                    {status}
                 </div>
             )}
 
@@ -394,7 +694,113 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                     </div>
                 </Section>
 
-                {/* 2. Background */}
+                {/* 2. Subject Assignment */}
+                <Section title="Subject Assignment (Mask-First)" defaultOpen={true} tooltip="Import one or more keyframe masks before running.">
+                    <div className="space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                            <Input
+                                label="Project File (.vmhqproj)"
+                                value={config.project.path}
+                                onChange={e => updateConfig('project', 'path', e.target.value)}
+                                placeholder="output/project.vmhqproj"
+                                tooltip="Optional explicit project path. Leave blank to auto-use output directory."
+                            />
+                            <Switch
+                                label="Require Assignment (--require-assignment/--allow-empty-assignment)"
+                                checked={config.assignment.require_assignment}
+                                onChange={v => updateConfig('assignment', 'require_assignment', v)}
+                                tooltip="CLI parity: --require-assignment / --allow-empty-assignment. Blocks run until at least one keyframe mask is imported."
+                            />
+                            <Input
+                                label="Keyframe Index"
+                                type="number"
+                                value={assignmentFrame}
+                                onChange={e => setAssignmentFrame(parseInt(e.target.value || "0"))}
+                                tooltip="Frame index this mask corresponds to."
+                            />
+                            <Select
+                                label="Anchor Type (--assign-kind)"
+                                value={assignmentKind}
+                                onChange={e => setAssignmentKind(e.target.value as 'initial' | 'correction')}
+                                options={[
+                                    { value: 'initial', label: 'Initial Anchor' },
+                                    { value: 'correction', label: 'Correction Anchor' },
+                                ]}
+                                tooltip="CLI parity: --assign-kind {initial,correction}. Use correction anchors to patch drift and reprocess only the affected range."
+                            />
+                            <Input
+                                label="Mask Path"
+                                value={assignmentMaskPath}
+                                onChange={e => setAssignmentMaskPath(e.target.value)}
+                                placeholder="D:\\path\\to\\mask.png"
+                                tooltip="Filesystem path to keyframe mask image."
+                            />
+                            <Switch
+                                label="Auto-Apply Suggested Range (--apply-suggested-range/--no-apply-suggested-range)"
+                                checked={autoApplySuggestedRange}
+                                onChange={setAutoApplySuggestedRange}
+                                tooltip="CLI parity: --apply-suggested-range / --no-apply-suggested-range when importing correction anchors."
+                            />
+                        </div>
+                        <div className="flex gap-2">
+                            <button
+                                type="button"
+                                onClick={handleImportAssignment}
+                                disabled={assignmentLoading}
+                                className="px-3 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                            >
+                                {assignmentLoading ? <FaSpinner className="animate-spin" /> : <FaUpload />}
+                                Import Mask
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setAssignmentLoading(true)
+                                    refreshProjectSummary().finally(() => setAssignmentLoading(false))
+                                }}
+                                disabled={assignmentLoading}
+                                className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                            >
+                                <FaSync />
+                                Refresh
+                            </button>
+                        </div>
+                        <div className="text-xs text-gray-400">
+                            Project: <span className="font-mono text-gray-300">{projectSummary?.project_path || "(not resolved yet)"}</span>
+                        </div>
+                        <div className="text-xs text-gray-400">
+                            Imported keyframes: <span className="font-semibold text-gray-200">{projectSummary?.keyframe_count ?? 0}</span>
+                        </div>
+                        {suggestedRange && (
+                            <div className="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/30 rounded p-2 flex items-center justify-between gap-2">
+                                <span>
+                                    Suggested reprocess range: <span className="font-mono">{suggestedRange.frame_start}..{suggestedRange.frame_end}</span>
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        applySuggestedRange(suggestedRange)
+                                        setStatus(`Applied suggested reprocess range ${suggestedRange.frame_start}..${suggestedRange.frame_end}.`)
+                                    }}
+                                    className="px-2 py-1 rounded bg-blue-500 hover:bg-blue-600 text-white text-xs font-medium"
+                                >
+                                    Apply Range
+                                </button>
+                            </div>
+                        )}
+                        {(projectSummary?.keyframes?.length ?? 0) > 0 && (
+                            <div className="max-h-32 overflow-auto border border-gray-700 rounded p-2 text-xs">
+                                {projectSummary!.keyframes.map(kf => (
+                                    <div key={`${kf.frame}:${kf.mask_asset}`} className="text-gray-300 font-mono">
+                                        frame={kf.frame} kind={kf.kind} mask={kf.mask_asset}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </Section>
+
+                {/* 3. Background */}
                 <Section title="Background Plate" tooltip="Settings for clean plate estimation and handling via inpainting.">
                     <div className="space-y-2">
                         <Switch
@@ -612,6 +1018,92 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                     </div>
                 </Section>
 
+                <Section
+                    title="Matte Tuning"
+                    tooltip="Artist-facing matte tuning: trimap width, choke/expand, feather, and XY offsets."
+                    defaultOpen={showAdvanced}
+                >
+                    <div className="space-y-2">
+                        <div className="rounded border border-gray-700/60 bg-gray-900/60 p-3">
+                            <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mb-2">
+                                Presets
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                                {MATTE_TUNING_PRESETS.map(preset => {
+                                    const active = isMattePresetActive(preset)
+                                    return (
+                                        <button
+                                            key={preset.id}
+                                            type="button"
+                                            onClick={() => applyMattePreset(preset)}
+                                            title={preset.description}
+                                            className={`px-3 py-2 rounded text-xs font-semibold border transition-colors ${active
+                                                ? 'bg-brand-500/20 border-brand-400 text-brand-200'
+                                                : 'bg-gray-800 border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-700'
+                                                }`}
+                                        >
+                                            {preset.label}
+                                        </button>
+                                    )
+                                })}
+                                <button
+                                    type="button"
+                                    onClick={resetMattePreset}
+                                    className="px-3 py-2 rounded text-xs font-semibold border border-gray-700 text-gray-200 bg-gray-800 hover:border-gray-500 transition-colors"
+                                >
+                                    Reset
+                                </button>
+                            </div>
+                            <div className="mt-2 text-xs text-gray-500">
+                                Presets set trimap width + matte tuning values together. You can edit any field afterward.
+                            </div>
+                        </div>
+                        <Switch
+                            label="Enable Matte Tuning (--matte-tuning/--no-matte-tuning)"
+                            checked={config.matte_tuning.enabled}
+                            onChange={v => updateConfig('matte_tuning', 'enabled', v)}
+                            tooltip="CLI parity: --matte-tuning / --no-matte-tuning."
+                        />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                            <Input
+                                label="Refine Trimap Width (--unknown-band-px / --mt-trimap-width-px)"
+                                type="number"
+                                value={config.refine.unknown_band_px}
+                                onChange={e => updateConfig('refine', 'unknown_band_px', parseInt(e.target.value || "0"))}
+                                tooltip="Controls boundary band width for high-res refinement (maps to refine.unknown_band_px)."
+                            />
+                            <Input
+                                label="Mask Shrink/Grow (--mt-shrink-grow-px)"
+                                type="number"
+                                value={config.matte_tuning.shrink_grow_px}
+                                onChange={e => updateConfig('matte_tuning', 'shrink_grow_px', parseInt(e.target.value || "0"))}
+                                tooltip="Positive grows matte, negative shrinks matte."
+                            />
+                            <Input
+                                label="Edge Feather (--mt-feather-px)"
+                                type="number"
+                                value={config.matte_tuning.feather_px}
+                                onChange={e => updateConfig('matte_tuning', 'feather_px', parseInt(e.target.value || "0"))}
+                                tooltip="Applies final Gaussian feather to matte edges."
+                            />
+                            <Input
+                                label="Offset X (--mt-offset-x-px)"
+                                type="number"
+                                value={config.matte_tuning.offset_x_px}
+                                onChange={e => updateConfig('matte_tuning', 'offset_x_px', parseInt(e.target.value || "0"))}
+                                tooltip="Shifts matte in X pixels."
+                            />
+                            <Input
+                                label="Offset Y (--mt-offset-y-px)"
+                                type="number"
+                                value={config.matte_tuning.offset_y_px}
+                                onChange={e => updateConfig('matte_tuning', 'offset_y_px', parseInt(e.target.value || "0"))}
+                                tooltip="Shifts matte in Y pixels."
+                            />
+                        </div>
+                    </div>
+                </Section>
+
 
                 {/* 8. Temporal Stability */}
                 {showAdvanced && (
@@ -751,6 +1243,113 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 )}
                             </div>
                         </div>
+                    </div>
+                </Section>
+
+                <Section
+                    title="QC & Regression Gates"
+                    tooltip="Option B QC metrics and regression thresholds. Enable hard-fail to stop runs that exceed limits."
+                    defaultOpen={showAdvanced}
+                >
+                    <div className="space-y-2">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                            <Switch
+                                label="Enable QC Metrics (--qc/--no-qc)"
+                                checked={config.qc.enabled}
+                                onChange={v => updateConfig('qc', 'enabled', v)}
+                                tooltip="CLI parity: --qc / --no-qc. Compute per-frame QC metrics and write QC artifacts."
+                            />
+                            <Switch
+                                label="Fail On Regression (--qc-fail-on-regression/--no-qc-fail-on-regression)"
+                                checked={config.qc.fail_on_regression}
+                                onChange={v => updateConfig('qc', 'fail_on_regression', v)}
+                                tooltip="CLI parity: --qc-fail-on-regression / --no-qc-fail-on-regression. If any QC gate fails, the job fails."
+                            />
+                        </div>
+                        {showAdvanced && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                <Input
+                                    label="QC Output Subdir (config: qc.output_subdir)"
+                                    value={config.qc.output_subdir}
+                                    onChange={e => updateConfig('qc', 'output_subdir', e.target.value)}
+                                    tooltip="Config field parity: qc.output_subdir (YAML/UI). No direct CLI flag."
+                                />
+                                <Input
+                                    label="Metrics Filename (config: qc.metrics_filename)"
+                                    value={config.qc.metrics_filename}
+                                    onChange={e => updateConfig('qc', 'metrics_filename', e.target.value)}
+                                    tooltip="Config field parity: qc.metrics_filename (YAML/UI). No direct CLI flag."
+                                />
+                                <Input
+                                    label="Report Filename (config: qc.report_filename)"
+                                    value={config.qc.report_filename}
+                                    onChange={e => updateConfig('qc', 'report_filename', e.target.value)}
+                                    tooltip="Config field parity: qc.report_filename (YAML/UI). No direct CLI flag."
+                                />
+                                <Input
+                                    label="Output Roundtrip Samples (--qc-sample-output-frames)"
+                                    type="number"
+                                    value={config.qc.sample_output_frames}
+                                    onChange={e => updateConfig('qc', 'sample_output_frames', parseInt(e.target.value || "0"))}
+                                    tooltip="CLI parity: --qc-sample-output-frames. Number of output frames to sample for roundtrip MAE checks."
+                                />
+                                <Input
+                                    label="Max Roundtrip MAE (--qc-max-output-roundtrip-mae)"
+                                    type="number"
+                                    step="0.0001"
+                                    value={config.qc.max_output_roundtrip_mae}
+                                    onChange={e => updateConfig('qc', 'max_output_roundtrip_mae', parseFloat(e.target.value))}
+                                    tooltip="CLI parity: --qc-max-output-roundtrip-mae. Maximum allowed MAE between in-memory alpha and written output."
+                                />
+                                <Input
+                                    label="Alpha Range Epsilon (--qc-alpha-range-eps)"
+                                    type="number"
+                                    step="0.0001"
+                                    value={config.qc.alpha_range_eps}
+                                    onChange={e => updateConfig('qc', 'alpha_range_eps', parseFloat(e.target.value))}
+                                    tooltip="CLI parity: --qc-alpha-range-eps. Allowed alpha range slack outside [0,1]."
+                                />
+                                <Input
+                                    label="Max P95 Flicker (--qc-max-p95-flicker)"
+                                    type="number"
+                                    step="0.0001"
+                                    value={config.qc.max_p95_flicker}
+                                    onChange={e => updateConfig('qc', 'max_p95_flicker', parseFloat(e.target.value))}
+                                    tooltip="CLI parity: --qc-max-p95-flicker. Maximum allowed 95th percentile frame-to-frame flicker."
+                                />
+                                <Input
+                                    label="Max P95 Edge Flicker (--qc-max-p95-edge-flicker)"
+                                    type="number"
+                                    step="0.0001"
+                                    value={config.qc.max_p95_edge_flicker}
+                                    onChange={e => updateConfig('qc', 'max_p95_edge_flicker', parseFloat(e.target.value))}
+                                    tooltip="CLI parity: --qc-max-p95-edge-flicker. Maximum allowed 95th percentile edge-band flicker."
+                                />
+                                <Input
+                                    label="Min Mean Edge Confidence (--qc-min-mean-edge-confidence)"
+                                    type="number"
+                                    step="0.0001"
+                                    value={config.qc.min_mean_edge_confidence}
+                                    onChange={e => updateConfig('qc', 'min_mean_edge_confidence', parseFloat(e.target.value))}
+                                    tooltip="CLI parity: --qc-min-mean-edge-confidence. Minimum allowed mean edge confidence."
+                                />
+                                <Input
+                                    label="Band Spike Ratio (--qc-band-spike-ratio)"
+                                    type="number"
+                                    step="0.1"
+                                    value={config.qc.band_spike_ratio}
+                                    onChange={e => updateConfig('qc', 'band_spike_ratio', parseFloat(e.target.value))}
+                                    tooltip="CLI parity: --qc-band-spike-ratio. Coverage ratio above running mean that counts as a spike."
+                                />
+                                <Input
+                                    label="Max Band Spike Frames (--qc-max-band-spike-frames)"
+                                    type="number"
+                                    value={config.qc.max_band_spike_frames}
+                                    onChange={e => updateConfig('qc', 'max_band_spike_frames', parseInt(e.target.value || "0"))}
+                                    tooltip="CLI parity: --qc-max-band-spike-frames. Maximum number of spike frames allowed before gate fail."
+                                />
+                            </div>
+                        )}
                     </div>
                 </Section>
 

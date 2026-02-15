@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { FaArrowsAltH } from 'react-icons/fa'
 
-type CompositeMode = 'alpha' | 'checker' | 'white' | 'black'
+type CompositeMode = 'alpha' | 'checker' | 'white' | 'black' | 'overlay'
 
 interface WipeProps {
     leftImage: string
@@ -9,9 +9,36 @@ interface WipeProps {
     leftLabel?: string
     rightLabel?: string
     compositeMode?: CompositeMode
+    overlayColor?: string
+    overlayOpacity?: number
 }
 
-export default function WipeComparison({ leftImage, rightImage, leftLabel = "RGB", rightLabel = "Alpha", compositeMode = 'alpha' }: WipeProps) {
+function parseHexColor(hex: string): [number, number, number] {
+    const normalized = hex.trim().replace(/^#/, '')
+    if (normalized.length === 3) {
+        const r = parseInt(normalized[0] + normalized[0], 16)
+        const g = parseInt(normalized[1] + normalized[1], 16)
+        const b = parseInt(normalized[2] + normalized[2], 16)
+        return [r, g, b]
+    }
+    if (normalized.length === 6) {
+        const r = parseInt(normalized.slice(0, 2), 16)
+        const g = parseInt(normalized.slice(2, 4), 16)
+        const b = parseInt(normalized.slice(4, 6), 16)
+        return [r, g, b]
+    }
+    return [0, 255, 0]
+}
+
+export default function WipeComparison({
+    leftImage,
+    rightImage,
+    leftLabel = "RGB",
+    rightLabel = "Alpha",
+    compositeMode = 'alpha',
+    overlayColor = '#00ff00',
+    overlayOpacity = 0.5,
+}: WipeProps) {
     const [position, setPosition] = useState(50)
     const containerRef = useRef<HTMLDivElement>(null)
     const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -83,7 +110,7 @@ export default function WipeComparison({ leftImage, rightImage, leftLabel = "RGB
 
         // Get RGB data if available
         let rgbData: ImageData | null = null
-        if (rgbImg && (compositeMode === 'checker' || compositeMode === 'white' || compositeMode === 'black')) {
+        if (rgbImg && (compositeMode === 'checker' || compositeMode === 'white' || compositeMode === 'black' || compositeMode === 'overlay')) {
             const tmpCanvas = document.createElement('canvas')
             tmpCanvas.width = canvas.width
             tmpCanvas.height = canvas.height
@@ -94,10 +121,25 @@ export default function WipeComparison({ leftImage, rightImage, leftLabel = "RGB
 
         const out = ctx.createImageData(canvas.width, canvas.height)
         const checkerSize = 16
+        const clampedOverlayOpacity = Math.max(0, Math.min(overlayOpacity, 1))
+        const [overlayR, overlayG, overlayB] = parseHexColor(overlayColor)
 
         for (let i = 0; i < alphaData.data.length; i += 4) {
             // Alpha is stored as grayscale in the alpha image (R=G=B=alpha value)
             const a = alphaData.data[i] / 255
+
+            const fgR = rgbData ? rgbData.data[i] : 255
+            const fgG = rgbData ? rgbData.data[i + 1] : 255
+            const fgB = rgbData ? rgbData.data[i + 2] : 255
+
+            if (compositeMode === 'overlay') {
+                const weight = clampedOverlayOpacity * a
+                out.data[i] = fgR * (1 - weight) + overlayR * weight
+                out.data[i + 1] = fgG * (1 - weight) + overlayG * weight
+                out.data[i + 2] = fgB * (1 - weight) + overlayB * weight
+                out.data[i + 3] = 255
+                continue
+            }
 
             let bgR: number, bgG: number, bgB: number
             if (compositeMode === 'white') {
@@ -112,11 +154,6 @@ export default function WipeComparison({ leftImage, rightImage, leftLabel = "RGB
                 bgR = bgG = bgB = isLight ? 200 : 140
             }
 
-            // Composite: fg * alpha + bg * (1 - alpha)
-            const fgR = rgbData ? rgbData.data[i] : 255
-            const fgG = rgbData ? rgbData.data[i + 1] : 255
-            const fgB = rgbData ? rgbData.data[i + 2] : 255
-
             out.data[i] = fgR * a + bgR * (1 - a)
             out.data[i + 1] = fgG * a + bgG * (1 - a)
             out.data[i + 2] = fgB * a + bgB * (1 - a)
@@ -124,14 +161,15 @@ export default function WipeComparison({ leftImage, rightImage, leftLabel = "RGB
         }
 
         ctx.putImageData(out, 0, 0)
-    }, [compositeMode, rightLoaded, rightImage, leftImage])
+    }, [compositeMode, rightLoaded, rightImage, leftImage, overlayColor, overlayOpacity])
 
     const useCanvas = compositeMode !== 'alpha' && rightLoaded
 
     const modeLabel = compositeMode === 'alpha' ? rightLabel
         : compositeMode === 'checker' ? 'Checker Composite'
         : compositeMode === 'white' ? 'White BG Composite'
-        : 'Black BG Composite'
+        : compositeMode === 'black' ? 'Black BG Composite'
+        : 'Color Overlay'
 
     return (
         <div

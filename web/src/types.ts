@@ -5,9 +5,37 @@ export interface IOConfig {
     frame_start: number;
     frame_end: number;
     shot_type: 'locked_off' | 'moving' | 'unknown';
-    alpha_format: 'png16' | 'png8' | 'dwaa';
+    alpha_format: 'png16' | 'png8' | 'dwaa' | 'exr_dwaa' | 'exr_dwaa_hq' | 'exr_lossless' | 'exr_raw';
     alpha_dwaa_quality: number;
     force_overwrite: boolean;
+}
+
+export interface ProjectConfig {
+    path: string;
+    masks_dir: string;
+    cache_dir: string;
+    autosave: boolean;
+}
+
+export interface AssignmentConfig {
+    mode: 'mask_first';
+    default_keyframe: number;
+    require_assignment: boolean;
+    unknown_radius_px: number;
+    fg_erosion_px: number;
+    bg_dilation_px: number;
+}
+
+export interface MemoryConfig {
+    backend: string;
+    memory_frames: number;
+    window: number;
+    max_anchors: number;
+    confidence_reanchor_threshold: number;
+    query_long_side?: number;
+    spatial_weight?: number;
+    temperature?: number;
+    auto_anchor_min_gap?: number;
 }
 
 export interface BackgroundConfig {
@@ -102,6 +130,19 @@ export interface RefineConfig {
     model: string;
     use_bg_plate: boolean;
     bg_confidence_gate: number;
+    enabled: boolean;
+    backend?: string;
+    unknown_band_px: number;
+    tile_size: number;
+    overlap: number;
+    alpha_bg_threshold?: number;
+    alpha_fg_threshold?: number;
+    min_confidence?: number;
+    guided_radius?: number;
+    guided_eps?: number;
+    edge_boost?: number;
+    confidence_gain?: number;
+    tile_min_coverage?: number;
 }
 
 export interface TemporalConfig {
@@ -144,6 +185,22 @@ export interface PreviewConfig {
     modes: string[];
 }
 
+export interface QCConfig {
+    enabled: boolean;
+    fail_on_regression: boolean;
+    output_subdir: string;
+    metrics_filename: string;
+    report_filename: string;
+    sample_output_frames: number;
+    max_output_roundtrip_mae: number;
+    alpha_range_eps: number;
+    max_p95_flicker: number;
+    max_p95_edge_flicker: number;
+    min_mean_edge_confidence: number;
+    band_spike_ratio: number;
+    max_band_spike_frames: number;
+}
+
 export interface RuntimeConfig {
     device: string;
     precision: string;
@@ -153,8 +210,34 @@ export interface RuntimeConfig {
     verbose: boolean;
 }
 
+export interface TemporalCleanupConfig {
+    enabled: boolean;
+    outside_band_ema: number;
+    min_confidence: number;
+    reset_on_new_anchor: boolean;
+    anchor_reset_frames?: number;
+    edge_bg_threshold?: number;
+    edge_fg_threshold?: number;
+    edge_band_radius_px?: number;
+    edge_snap_enabled?: boolean;
+    edge_snap_radius?: number;
+    edge_snap_eps?: number;
+    clamp_delta?: number;
+}
+
+export interface MatteTuningConfig {
+    enabled: boolean;
+    shrink_grow_px: number;
+    feather_px: number;
+    offset_x_px: number;
+    offset_y_px: number;
+}
+
 export interface VideoMatteConfig {
     io: IOConfig;
+    project: ProjectConfig;
+    assignment: AssignmentConfig;
+    memory: MemoryConfig;
     background: BackgroundConfig;
     roi: ROIConfig;
     global: GlobalConfig; // Note: 'global' in TS, mapped to 'global_' in Python via alias
@@ -167,5 +250,8 @@ export interface VideoMatteConfig {
     postprocess: PostprocessConfig;
     reference_frames: ReferenceFrameConfig;
     preview: PreviewConfig;
+    qc: QCConfig;
+    temporal_cleanup: TemporalCleanupConfig;
+    matte_tuning: MatteTuningConfig;
     runtime: RuntimeConfig;
 }

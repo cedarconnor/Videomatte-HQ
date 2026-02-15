@@ -7,13 +7,13 @@ interface JobProgressProps {
 }
 
 const STAGES = [
-    { id: 'init', label: 'Init', match: ['Stage 0:', 'Stage 0.5:'], color: 'bg-gray-500' },
-    { id: 'roi', label: 'Tracking', match: ['Stage 1:'], color: 'bg-blue-500' },
-    { id: 'global', label: 'Global', match: ['Stage 2:', 'Stage 2.5:', 'Stage 2.75:'], color: 'bg-purple-500' },
-    { id: 'band', label: 'Band', match: ['Stage 3:'], color: 'bg-cyan-500' },
-    { id: 'refine', label: 'Refine', match: ['Stage 4:'], color: 'bg-emerald-500' },
-    { id: 'temporal', label: 'Temporal', match: ['Stage 5:'], color: 'bg-orange-500' },
-    { id: 'output', label: 'Output', match: ['Stage 6:', 'Stage 7:'], color: 'bg-red-500' },
+    { id: 'load', label: 'Load', match: ['Stage 0:'], color: 'bg-gray-500' },
+    { id: 'assignment', label: 'Assign', match: ['Stage 1:'], color: 'bg-blue-500' },
+    { id: 'memory', label: 'Memory', match: ['Stage 2:'], color: 'bg-purple-500' },
+    { id: 'refine', label: 'Refine', match: ['Stage 3:'], color: 'bg-cyan-500' },
+    { id: 'temporal_cleanup', label: 'Temporal', match: ['Stage 4:'], color: 'bg-emerald-500' },
+    { id: 'matte_tuning', label: 'Matte', match: ['Stage 5:'], color: 'bg-orange-500' },
+    { id: 'output', label: 'Output', match: ['Stage 6:'], color: 'bg-red-500' },
 ]
 
 export default function JobProgress({ jobId }: JobProgressProps) {
@@ -61,8 +61,8 @@ export default function JobProgress({ jobId }: JobProgressProps) {
                 }
             }
 
-            // Check for frame progress (Stage 3+)
-            // e.g. "Stage 3: frame 10/100"
+            // Check for frame progress once per-frame stages start
+            // e.g. "Stage 2: frame 10/100"
             if (line.includes('frame ') && line.includes('/')) {
                 lastProgress = line.split('frame ')[1].split(']')[0] // extract "10/100" roughly
             }
@@ -73,7 +73,7 @@ export default function JobProgress({ jobId }: JobProgressProps) {
         }
 
         // Update progress text if we found relevant frame info
-        if (lastProgress && lastStageIdx >= 3) { // Only show frame counts for later stages
+        if (lastProgress && lastStageIdx >= 2) { // Show frame counts once per-frame processing starts
             setProgressText(lastProgress)
         } else if (lastStageIdx >= 0) {
             setProgressText(STAGES[lastStageIdx].label)

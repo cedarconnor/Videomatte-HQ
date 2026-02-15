@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { FaTerminal, FaArrowDown } from 'react-icons/fa'
-import { clsx } from 'clsx'
 
 export default function JobDetail({ jobId }: { jobId: string }) {
     const [logs, setLogs] = useState("")

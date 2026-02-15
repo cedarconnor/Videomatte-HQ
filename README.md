@@ -1,183 +1,241 @@
 # VideoMatte-HQ
 
-**High-quality offline 8K people video matting** — four-pass pipeline producing temporally stable alpha mattes at native resolution.
+Offline Option B video matting pipeline for people footage.
 
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)
-![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c)
-![License MIT](https://img.shields.io/badge/License-MIT-green)
+The current implementation is a mask-first, assignment-driven workflow:
+- Stage 0: load frames
+- Stage 1: load/create project and keyframe assignments
+- Stage 2: memory-query coarse alpha
+- Stage 3: boundary-band refinement
+- Stage 4: confidence-gated temporal cleanup
+- Stage 5: matte tuning (shrink/grow, feather, XY offset)
+- Stage 6: output write + QC metrics/gates
 
----
-
-## Features
-
-- **Four-pass architecture** — stable backbone → 4K refinement → 8K edge tiles → temporal stabilization
-- **Temporal consistency** — frequency-separation stabilization keeps edges stable without corrupting the silhouette
-- **Smart tiling** — boundary-only tiles with VRAM-aware sizing (auto backoff 2048 → 1536 → 1024)
-- **Adaptive band** — three-signal edge detection with directional alignment, area cap, and auto-tighten
-- **Background plate estimation** — temporal median with confidence map and photometric normalization
-- **Live preview** — 2×2 mosaic QC (checkerboard / alpha / white / flicker heatmap)
-- **Pluggable models** — swap backbone (RVM), refiner (ViTMatte), and flow (RAFT) independently
-- **Resume support** — config-hash-aware stage caching, picks up where it left off
-
-## Pipeline
-
-```
-Stage 0    → Load frames (PNG/EXR/video)
-Stage 0.5  → Background plate estimation (locked-off shots)
-Stage 1    → ROI tracking (person detection + motion mask)
-Stage 2    → Pass A  — Global matte backbone (RVM @ 2K, temporal chunks)
-Stage 2.5  → Pass A′ — Intermediate refinement (ViTMatte @ 4K, guided-filter delta)
-Stage 3    → Adaptive band + distance-transform trimap + tile planning
-Stage 4    → Pass B  — Edge refinement (ViTMatte tiles @ native res, logit stitching)
-Stage 5    → Pass C  — Temporal stabilization (RAFT flow, structural/detail split)
-Stage 6    → Post-processing (despill, foreground extraction)
-Stage 7    → Write outputs + QC report
-```
+## What Changed
+- Old multi-stage flow-stabilized pipeline is removed from runtime.
+- Project-backed mask-first assignment (`.vmhqproj`) is required by default.
+- Correction anchors support suggested partial reprocess ranges.
+- Built-in QC metrics and regression gates can fail runs automatically.
 
 ## Requirements
+- Python 3.10+
+- Windows/Linux/macOS
+- Optional CUDA GPU (CPU also supported)
 
-- **Python** 3.10+
-- **PyTorch** 2.0+ with CUDA
-- **GPU** with 8GB+ VRAM (24–48GB recommended for 8K)
-- **FFmpeg** (for preview video output)
-
-## Installation
-
+## Install
 ```bash
-# Clone
-git clone https://github.com/your-org/videomatte-hq.git
-cd videomatte-hq
-
-# Install (editable, with dev tools)
-pip install -e ".[dev]"
-
-# Or use the launcher
-run_videomatte.bat
+python -m venv .venv
+.venv\Scripts\pip install -e .
 ```
 
-## Quick Start
+## Quick Start (CLI)
 
-### Using the batch launcher
-
-Double-click **`run_videomatte.bat`** or run from terminal:
-
+1. Import an initial assignment mask:
 ```bash
-run_videomatte.bat
-```
-
-This will process the included test video and output alpha mattes to `out/alpha/`.
-
-### Command line
-
-```bash
-# Process a video file
-videomatte-hq --in video.mp4 --out out/alpha/%06d.png
-
-# Process an image sequence
-videomatte-hq --in frames/%06d.exr --out out/alpha/%06d.png --fps 24
-
-# EXR output (lossless)
-videomatte-hq --in video.mp4 --out out/alpha/%06d.exr --alpha-format exr_lossless
-
-# With config file
-videomatte-hq --in video.mp4 --config my_config.yaml
-
-# Handheld shot (disables BG estimation)
-videomatte-hq --in video.mp4 --out out/alpha/%06d.png --shot-type handheld
-
-# Custom settings
 videomatte-hq \
-  --in video.mp4 \
-  --out out/alpha/%06d.png \
-  --global-long-side 2048 \
-  --tile-size 1536 \
-  --temporal frequency_separation \
-  --temporal-detail-strength 0.7 \
-  --preview \
-  --preview-modes checker,alpha,white,flicker
+  --input input_frames/frame_%05d.png \
+  --project output/project.vmhqproj \
+  --assign-mask masks/mask_00000.png \
+  --assign-frame 0 \
+  --assign-kind initial \
+  --assign-only
 ```
 
-### Dump resolved config
-
+2. Run the Option B pipeline with QC gates enabled:
 ```bash
-videomatte-hq --in video.mp4 --dump-config
+videomatte-hq \
+  --input input_frames/frame_%05d.png \
+  --out output/alpha/%05d.png \
+  --project output/project.vmhqproj \
+  --require-assignment \
+  --qc \
+  --qc-fail-on-regression
 ```
 
-## Configuration
+3. Add a correction anchor and auto-apply suggested reprocess range:
+```bash
+videomatte-hq \
+  --input input_frames/frame_%05d.png \
+  --project output/project.vmhqproj \
+  --assign-mask masks/mask_00120.png \
+  --assign-frame 120 \
+  --assign-kind correction \
+  --apply-suggested-range
+```
 
-All settings can be specified via YAML config file or CLI flags. CLI flags override config file values.
+4. Apply matte tuning (trimap width, grow, feather, offset):
+```bash
+videomatte-hq \
+  --input input_frames/frame_%05d.png \
+  --out output/alpha/%05d.png \
+  --project output/project.vmhqproj \
+  --unknown-band-px 64 \
+  --mt-shrink-grow-px 1 \
+  --mt-feather-px 1 \
+  --mt-offset-x-px 0 \
+  --mt-offset-y-px 0
+```
 
-<details>
-<summary><strong>Full YAML config reference</strong></summary>
+## Launcher
+`run_videomatte.bat` includes tuned QC defaults and hard gating:
+- `QC_FAIL_ON_REGRESSION=1`
+- `QC_MAX_P95_FLICKER=0.005`
+- `QC_MAX_P95_EDGE_FLICKER=0.02`
+- `QC_MIN_MEAN_EDGE_CONFIDENCE=0.22`
+- `QC_BAND_SPIKE_RATIO=1.8`
+- `QC_MAX_BAND_SPIKE_FRAMES=3`
+- `QC_MAX_OUTPUT_ROUNDTRIP_MAE=0.002`
 
+## Key CLI Flags
+
+### I/O and run control
+- `--input`, `--out`, `--project`
+- `--start`, `--end`
+- `--device`, `--precision`, `--workers`
+- `--resume/--no-resume`
+
+### Assignment workflow
+- `--require-assignment/--allow-empty-assignment`
+- `--assign-mask`, `--assign-frame`
+- `--assign-kind {initial,correction}`
+- `--apply-suggested-range/--no-apply-suggested-range`
+- `--assign-only`
+
+### Memory core
+- `--memory-backend`
+- `--memory-frames`
+- `--window`
+
+### QC and regression gates
+- `--qc/--no-qc`
+- `--qc-fail-on-regression/--no-qc-fail-on-regression`
+- `--qc-sample-output-frames`
+- `--qc-max-output-roundtrip-mae`
+- `--qc-alpha-range-eps`
+- `--qc-max-p95-flicker`
+- `--qc-max-p95-edge-flicker`
+- `--qc-min-mean-edge-confidence`
+- `--qc-band-spike-ratio`
+- `--qc-max-band-spike-frames`
+
+### Matte tuning
+- `--unknown-band-px` (alias: `--mt-trimap-width-px`)
+- `--matte-tuning/--no-matte-tuning`
+- `--mt-shrink-grow-px`
+- `--mt-feather-px`
+- `--mt-offset-x-px`
+- `--mt-offset-y-px`
+
+## QC Outputs
+When QC is enabled, artifacts are written under:
+- `output_dir/qc/optionb_metrics.json`
+- `output_dir/qc/optionb_report.md`
+
+Metrics include:
+- alpha validity/range checks
+- p95 temporal flicker
+- p95 edge-band flicker
+- mean edge confidence
+- band coverage spike detection
+- sampled output roundtrip MAE (written output vs in-memory alpha)
+
+If `fail_on_regression` is enabled, any failed gate causes a non-zero run exit.
+
+## Web UI
+Run:
+```bash
+run_web.bat
+```
+Then open `http://localhost:5173`.
+
+### Run Job tab
+- Input/output + frame range
+- Mask-first assignment import
+- Anchor type: `initial` / `correction`
+- Auto-apply suggested reprocess range
+- One-click matte tuning presets: `Subtle`, `Balanced`, `Aggressive`, plus `Reset`
+- Matte tuning controls (trimap width, shrink/grow, feather, offset X/Y)
+- Runtime settings
+- QC & regression-gate settings (all QC thresholds exposed)
+
+### Quality Control tab
+- A/B wipe comparison
+- Alpha/checker/white/black/overlay composite modes
+- Overlay color + opacity controls for matte inspection
+- Dynamic path discovery from recent jobs (`/api/qc/info`)
+
+## API Endpoints (current)
+- `POST /api/jobs`
+- `GET /api/jobs`
+- `GET /api/jobs/{job_id}`
+- `GET /api/jobs/{job_id}/logs`
+- `POST /api/jobs/{job_id}/cancel`
+- `POST /api/project/state`
+- `POST /api/assignments/import`
+- `POST /api/assignments/suggest-range`
+- `GET /api/qc/info`
+
+## Config Schema (runtime)
+Top-level sections used by Option B runtime:
+- `io`
+- `project`
+- `assignment`
+- `memory`
+- `refine`
+- `temporal_cleanup`
+- `matte_tuning`
+- `preview`
+- `qc`
+- `runtime`
+
+Example (`my_config.yaml`):
 ```yaml
 io:
-  input: "frames/%06d.png"
-  output_alpha: "out/alpha/%06d.png"
-  output_fg: null
-  fps: 30
-  shot_type: "locked_off"        # locked_off | handheld | unknown
-  alpha_format: "png16"          # png16 | exr_dwaa | exr_lossless | exr_raw
-  alpha_dwaa_quality: 45.0
+  input: "input_frames/frame_%05d.png"
+  output_dir: "output"
+  output_alpha: "alpha/%05d.png"
+  frame_start: 0
+  frame_end: -1
 
-background:
-  enabled: true
-  sample_count: 60
-  variance_threshold: 0.05
-  photometric_normalize: true
+project:
+  path: "output/project.vmhqproj"
 
-roi:
-  mode: "auto_person_track"
-  detect_every: 15
-  pad_ratio: 0.25
-  context_px: 256
+assignment:
+  require_assignment: true
 
-global:
-  model: "rvm"
-  long_side: 2048
-  chunk_len: 24
-  chunk_overlap: 6
-
-intermediate:
-  enabled: true
-  long_side: 4096
-  model: "vitmatte"
-  guide_filter_radius: 8
-
-band:
-  mode: "adaptive"
-  band_max_coverage: 0.35
-  auto_tighten: true
-  hair_aware: true
-
-trimap:
-  method: "distance_transform"
-  unknown_width: 32
-
-tiles:
-  tile_size: 2048               # auto backoff: 2048 → 1536 → 1024
-  overlap: 384
-  vram_headroom: 0.85
+memory:
+  backend: "appearance_memory_bank"
+  memory_frames: 12
+  window: 120
 
 refine:
-  model: "vitmatte"
-
-temporal:
-  method: "frequency_separation"
-  structural_blend_strength: 0.3
-  detail_blend_strength: 0.7
-  flow_model: "raft"
-
-postprocess:
-  despill:
-    enabled: true
-    strength: 1.0
-
-preview:
   enabled: true
-  scale: 1080
-  every: 10
-  modes: ["checker", "alpha", "white", "flicker"]
+  backend: "guided_band"
+  unknown_band_px: 64
+  tile_size: 1536
+  overlap: 96
+
+temporal_cleanup:
+  enabled: true
+  outside_band_ema: 0.15
+  min_confidence: 0.5
+
+matte_tuning:
+  enabled: true
+  shrink_grow_px: 0
+  feather_px: 0
+  offset_x_px: 0
+  offset_y_px: 0
+
+qc:
+  enabled: true
+  fail_on_regression: true
+  max_p95_flicker: 0.005
+  max_p95_edge_flicker: 0.02
+  min_mean_edge_confidence: 0.22
+  band_spike_ratio: 1.8
+  max_band_spike_frames: 3
+  max_output_roundtrip_mae: 0.002
 
 runtime:
   device: "cuda"
@@ -186,105 +244,19 @@ runtime:
   resume: true
 ```
 
-</details>
-
-## Web UI
-
-VideoMatte-HQ includes a browser-based interface for configuring jobs, monitoring progress, and inspecting output quality.
-
-### Launching
-
+Run with config:
 ```bash
-run_web.bat
+videomatte-hq --config my_config.yaml
 ```
 
-This starts the backend API on `http://localhost:8000` and the frontend dev server on `http://localhost:5173`. Open `http://localhost:5173` in your browser.
-
-### Tabs
-
-The UI has four tabs, switchable via the sidebar or keyboard shortcuts (`Ctrl+1` through `Ctrl+4`).
-
-**Run Job** (`Ctrl+1`) — Configure and launch a matting pipeline run. All pipeline parameters are exposed in collapsible sections matching the YAML config (I/O, Background Plate, ROI, Global Pass, Intermediate, Band & Trimap, Detail Refinement, Temporal Stability, Runtime & Preview). The input field supports drag-and-drop for video files. Click **Start Pipeline** to submit the job.
-
-**Job Queue** (`Ctrl+2`) — Lists all submitted jobs with their status (queued, running, completed, failed). Selecting a job opens the **Console Output** log viewer, which streams logs in real time. Auto-scroll keeps the view at the bottom during active runs, disables when you scroll up manually, and provides a floating button to jump back to the latest output.
-
-**Quality Control** (`Ctrl+3`) — Side-by-side inspection of input frames vs. output alpha mattes using an interactive wipe comparison. Features:
-
-- **Wipe slider** — drag the divider left/right to compare input RGB against the matte output
-- **Frame scrubber** — slider, step buttons (+/-1, +/-10, first/last), and direct frame number input
-- **Keyboard navigation** — `J`/`Left Arrow` for previous frame, `K`/`Right Arrow` for next, `Shift` modifier for 10-frame jumps, `Home`/`End` for first/last
-- **Composite view modes** — dropdown to switch between Alpha (raw grayscale matte), Checkerboard (transparency pattern), White BG, and Black BG composites
-
-**Settings** (`Ctrl+4`) — Persistent preferences stored in your browser (default output directory, device, precision). Toggle "Show Advanced Options" to reveal additional parameters in the Run Job form.
-
-### Notifications
-
-Toast notifications appear when jobs complete or fail, so you can leave the UI on any tab and still be alerted to status changes.
-
-## Output
-
-| Output | Path | Description |
-|---|---|---|
-| Alpha matte | `out/alpha/%06d.png` | 16-bit PNG (default) or EXR |
-| Foreground | `out/fg/%06d.png` | Optional premultiplied RGB |
-| Preview | `out/preview/live_preview.mp4` | 2×2 QC mosaic |
-| QC report | `out/qc/report.html` | Metrics, problem frames, stats |
-| ROI track | `out/qc/roi.json` | Per-frame bounding boxes |
-
-## Models
-
-| Pass | Model | Role | License |
-|---|---|---|---|
-| A (backbone) | **RVM** (RobustVideoMatting) | Temporal matte @ 2K | Apache 2.0 |
-| A′ + B (refiner) | **ViTMatte** | Detail matte @ 4K/8K | MIT |
-| C (flow) | **RAFT** | Optical flow for stabilization | BSD-3 |
-| ROI | **Faster R-CNN** | Person detection | BSD-3 |
-
-Model weights are downloaded automatically on first run.
-
-## Project Structure
-
-```
-videomatte-hq/
-├── pyproject.toml
-├── run_videomatte.bat
-├── run_web.bat
-├── README.md
-├── TestFiles/
-│   └── 6138680-uhd_3840_2160_24fps.mp4
-├── src/videomatte_hq_web/
-│   └── server.py              # FastAPI backend (API + static file serving)
-├── web/                        # React frontend (Vite + Tailwind)
-│   └── src/
-│       ├── App.tsx             # Root layout, sidebar, tab routing, shortcuts
-│       └── components/
-│           ├── RunTab.tsx      # Job configuration form with drag-and-drop
-│           ├── JobsTab.tsx     # Job queue list
-│           ├── JobDetail.tsx   # Log viewer with auto-scroll
-│           ├── JobProgress.tsx # Header progress bar for active jobs
-│           ├── QCTab.tsx       # Frame scrubber + composite mode selector
-│           ├── WipeComparison.tsx  # A/B wipe slider with canvas compositing
-│           ├── SettingsTab.tsx # Persistent user preferences
-│           └── Toast.tsx       # Notification system
-└── src/videomatte_hq/
-    ├── cli.py                  # CLI entry point
-    ├── config.py               # YAML config schema
-    ├── safe_math.py            # Logit/sigmoid utilities
-    ├── io/                     # Frame read/write, colorspace, EXR compression
-    ├── background/             # BG plate, confidence, photometric normalization
-    ├── roi/                    # Person detection, tracking, motion mask
-    ├── models/                 # RVM, ViTMatte, RAFT wrappers
-    ├── intermediate/           # Pass A′ + guided filter
-    ├── band/                   # Adaptive band, trimap, feather
-    ├── tiling/                 # Tile planning, VRAM probe, stitching
-    ├── temporal/               # Flow, frequency separation, stabilization
-    ├── postprocess/            # Despill, foreground extraction
-    ├── preview/                # Checkerboard, mosaic compositor
-    ├── qc/                     # Metrics, problem detector, report
-    ├── reference/              # Reference frame selection & propagation
-    └── pipeline/               # Orchestrator, Pass A, Pass B execution
+## Development
+Run tests:
+```bash
+.venv\Scripts\python -m pytest -q
 ```
 
-## License
-
-MIT
+Frontend build:
+```bash
+cd web
+npm run build
+```
