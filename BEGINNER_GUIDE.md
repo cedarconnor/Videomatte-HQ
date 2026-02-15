@@ -46,6 +46,11 @@ In the **Run Job** tab:
    - **Anchor Type**: `Initial`
    - **Mask Path**: your mask image path
    - Click **Import Mask**
+   - If you do not already have a mask file, use **Initial Mask Builder (Phase 1)**:
+     - Click **Load Frame**
+     - Draw one box around the subject
+     - Add a few FG points on the subject and BG points on the background (if needed)
+     - Click **Build + Import Mask**
 4. In **Matte Tuning**:
    - Start with preset **Balanced**
 5. Click **Start Pipeline**
@@ -99,4 +104,3 @@ Use a correction keyframe:
   - Increase feather slightly (for example 1 to 2)
 - If output looks too loose:
   - Use a small negative shrink/grow (for example `-1`)
-

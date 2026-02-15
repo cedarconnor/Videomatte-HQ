@@ -31,10 +31,6 @@ set QC_MIN_MEAN_EDGE_CONFIDENCE=0.22
 set QC_BAND_SPIKE_RATIO=1.8
 set QC_MAX_BAND_SPIKE_FRAMES=3
 
-:: Fast preset (1=on, 0=off)
-:: For Option B bootstrap this only relaxes assignment requirement if no mask is available.
-set FAST_PRESET=1
-
 :: ---- Locate venv Python ----
 set VENV_PYTHON=%~dp0.venv\Scripts\python.exe
 if not exist "%VENV_PYTHON%" (
@@ -93,6 +89,28 @@ if not exist "%INPUT%" (
     exit /b 1
 )
 
+:: ---- Validate assignment config ----
+if not "%ASSIGN_MASK%"=="" if not exist "%ASSIGN_MASK%" (
+    echo [ERROR] ASSIGN_MASK file not found: %ASSIGN_MASK%
+    echo.
+    echo Fix this line near the top of the launcher:
+    echo   set ASSIGN_MASK=path\to\your_mask.png
+    pause
+    exit /b 1
+)
+
+if "%REQUIRE_ASSIGNMENT%"=="1" if "%ASSIGN_MASK%"=="" (
+    echo [ERROR] REQUIRE_ASSIGNMENT is enabled, but ASSIGN_MASK is empty.
+    echo.
+    echo Set a keyframe mask path near the top of this file, for example:
+    echo   set ASSIGN_MASK=masks\mask_00000.png
+    echo   set ASSIGN_FRAME=0
+    echo.
+    echo Then run this launcher again.
+    pause
+    exit /b 1
+)
+
 :: ---- Create output directory ----
 if not exist "out\alpha" mkdir "out\alpha"
 
@@ -100,7 +118,7 @@ if not exist "out\alpha" mkdir "out\alpha"
 echo [START] Processing: %INPUT%
 echo [CONFIG] Format=%ALPHA_FORMAT%  Shot=%SHOT_TYPE%  Device=%DEVICE%  Precision=%PRECISION%
 echo [CONFIG] Project=%PROJECT%  AssignMask=%ASSIGN_MASK%  RequireAssignment=%REQUIRE_ASSIGNMENT%
-echo [CONFIG] FrameRange=%FRAME_START%..%FRAME_END%  FastPreset=%FAST_PRESET%
+echo [CONFIG] FrameRange=%FRAME_START%..%FRAME_END%
 echo [CONFIG] QC=%QC_ENABLE%  QCFailOnRegression=%QC_FAIL_ON_REGRESSION%
 echo [CONFIG] QCTuned maxFlicker=%QC_MAX_P95_FLICKER% maxEdgeFlicker=%QC_MAX_P95_EDGE_FLICKER% minEdgeConf=%QC_MIN_MEAN_EDGE_CONFIDENCE%
 echo.
@@ -111,7 +129,6 @@ if not "%FRAME_END%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --end %FRAME_END%
 if not "%PROJECT%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --project "%PROJECT%"
 if not "%ASSIGN_MASK%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --assign-mask "%ASSIGN_MASK%" --assign-frame %ASSIGN_FRAME%
 if "%REQUIRE_ASSIGNMENT%"=="0" set EXTRA_ARGS=%EXTRA_ARGS% --allow-empty-assignment
-if "%FAST_PRESET%"=="1" if "%ASSIGN_MASK%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --allow-empty-assignment
 if "%QC_ENABLE%"=="1" set EXTRA_ARGS=%EXTRA_ARGS% --qc
 if "%QC_ENABLE%"=="0" set EXTRA_ARGS=%EXTRA_ARGS% --no-qc
 if "%QC_FAIL_ON_REGRESSION%"=="1" set EXTRA_ARGS=%EXTRA_ARGS% --qc-fail-on-regression

@@ -1,17 +1,27 @@
 """FastAPI Server definition."""
 
+import base64
 import logging
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import cv2
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from videomatte_hq.config import VideoMatteConfig
-from videomatte_hq.project import ensure_project, import_keyframe_mask, suggest_reprocess_range
+from videomatte_hq.io.reader import FrameSource
+from videomatte_hq.mask_builder import build_prompt_mask_grabcut
+from videomatte_hq.project import (
+    ensure_project,
+    import_keyframe_mask,
+    suggest_reprocess_range,
+    upsert_keyframe_alpha,
+)
 from videomatte_hq_web.jobs import JobManager, JobStatus
 
 logger = logging.getLogger(__name__)
@@ -69,6 +79,35 @@ class SuggestReprocessRangeRequest(BaseModel):
     frame: int = 0
 
 
+class PromptPoint(BaseModel):
+    x: float
+    y: float
+
+
+class PromptBox(BaseModel):
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+class AssignmentFramePreviewRequest(BaseModel):
+    config: dict
+    frame: int = 0
+
+
+class BuildAssignmentMaskRequest(BaseModel):
+    config: dict
+    frame: int = 0
+    box: PromptBox
+    fg_points: list[PromptPoint] = Field(default_factory=list)
+    bg_points: list[PromptPoint] = Field(default_factory=list)
+    point_radius: int = Field(default=8, ge=1, le=128)
+    iter_count: int = Field(default=5, ge=1, le=20)
+    source: str = "ui_builder"
+    kind: str = "initial"
+
+
 def _build_project_summary(cfg: VideoMatteConfig) -> dict:
     project_path, project = ensure_project(cfg)
     keyframes = [
@@ -87,6 +126,66 @@ def _build_project_summary(cfg: VideoMatteConfig) -> dict:
         "keyframes": keyframes,
         "require_assignment": bool(cfg.assignment.require_assignment),
     }
+
+
+def _resolve_local_frame_index(cfg: VideoMatteConfig, source: FrameSource, requested_frame: int) -> int:
+    """Map a requested absolute frame number to a local source index."""
+    num_frames = int(source.num_frames)
+    if num_frames <= 0:
+        raise ValueError("Input has no frames.")
+
+    start = int(getattr(cfg.io, "frame_start", 0))
+    candidates = [int(requested_frame) - start, int(requested_frame)]
+    seen: set[int] = set()
+    for idx in candidates:
+        if idx in seen:
+            continue
+        seen.add(idx)
+        if 0 <= idx < num_frames:
+            return idx
+    raise ValueError(
+        f"Requested frame {requested_frame} is outside loaded range "
+        f"[{start}:{start + num_frames - 1}]"
+    )
+
+
+def _load_input_frame_rgb_u8(cfg: VideoMatteConfig, requested_frame: int) -> tuple[np.ndarray, int]:
+    source = FrameSource(
+        pattern=cfg.io.input,
+        frame_start=cfg.io.frame_start,
+        frame_end=cfg.io.frame_end,
+        prefetch_workers=0,
+    )
+    try:
+        local_idx = _resolve_local_frame_index(cfg=cfg, source=source, requested_frame=requested_frame)
+        frame = source[local_idx]
+        rgb = np.asarray(frame, dtype=np.float32)
+        if rgb.ndim != 3:
+            raise ValueError("Input frame must be RGB-like for mask builder.")
+        if rgb.shape[2] > 3:
+            rgb = rgb[..., :3]
+        rgb = np.clip(rgb, 0.0, 1.0)
+        rgb_u8 = (rgb * 255.0).round().astype(np.uint8)
+        return rgb_u8, local_idx
+    finally:
+        source.close()
+
+
+def _png_data_url_from_gray_u8(gray: np.ndarray) -> str:
+    ok, encoded = cv2.imencode(".png", gray)
+    if not ok:
+        raise ValueError("Failed to encode grayscale preview PNG.")
+    payload = base64.b64encode(encoded.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{payload}"
+
+
+def _png_data_url_from_rgb_u8(rgb: np.ndarray) -> str:
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    ok, encoded = cv2.imencode(".png", bgr)
+    if not ok:
+        raise ValueError("Failed to encode frame preview PNG.")
+    payload = base64.b64encode(encoded.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{payload}"
 
 
 @app.get("/api/jobs")
@@ -194,6 +293,88 @@ async def suggest_assignment_range(req: SuggestReprocessRangeRequest):
         }
     except Exception as e:
         logger.exception("Failed to suggest assignment range")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/assignments/frame-preview")
+async def assignment_frame_preview(req: AssignmentFramePreviewRequest):
+    """Load a frame for interactive assignment mask building."""
+    try:
+        cfg = VideoMatteConfig(**req.config)
+        frame_rgb_u8, local_idx = _load_input_frame_rgb_u8(cfg=cfg, requested_frame=req.frame)
+        h, w = frame_rgb_u8.shape[:2]
+        return {
+            "status": "ok",
+            "frame": int(req.frame),
+            "local_index": int(local_idx),
+            "width": int(w),
+            "height": int(h),
+            "data_url": _png_data_url_from_rgb_u8(frame_rgb_u8),
+        }
+    except Exception as e:
+        logger.exception("Failed to load assignment frame preview")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/assignments/build-mask")
+async def build_assignment_mask(req: BuildAssignmentMaskRequest):
+    """Build and import a keyframe mask from box/point prompts."""
+    try:
+        cfg = VideoMatteConfig(**req.config)
+        frame_rgb_u8, local_idx = _load_input_frame_rgb_u8(cfg=cfg, requested_frame=req.frame)
+
+        alpha = build_prompt_mask_grabcut(
+            frame_rgb_u8=frame_rgb_u8,
+            box_xyxy=(req.box.x0, req.box.y0, req.box.x1, req.box.y1),
+            fg_points=[(p.x, p.y) for p in req.fg_points],
+            bg_points=[(p.x, p.y) for p in req.bg_points],
+            point_radius=req.point_radius,
+            iter_count=req.iter_count,
+        )
+
+        project_path, project = ensure_project(cfg)
+        assignment = upsert_keyframe_alpha(
+            cfg=cfg,
+            project_path=project_path,
+            project=project,
+            frame=req.frame,
+            alpha=alpha,
+            source=req.source,
+            kind=req.kind if req.kind in ("initial", "correction") else "initial",
+        )
+        suggested_start, suggested_end = suggest_reprocess_range(
+            project=project,
+            anchor_frame=req.frame,
+            memory_window=cfg.memory.window,
+            clip_start=cfg.io.frame_start,
+            clip_end=cfg.io.frame_end,
+        )
+        summary = _build_project_summary(cfg)
+
+        mask_u8 = (np.clip(alpha, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+        coverage = float(mask_u8.mean()) / 255.0
+        return {
+            "status": "ok",
+            "frame": int(req.frame),
+            "local_index": int(local_idx),
+            "coverage": coverage,
+            "assignment": {
+                "frame": assignment.frame,
+                "mask_asset": assignment.mask_asset,
+                "source": assignment.source,
+                "kind": assignment.kind,
+                "updated_at": assignment.updated_at,
+            },
+            "suggested_reprocess_range": {
+                "frame_start": suggested_start,
+                "frame_end": suggested_end,
+                "reason": "neighbor_midpoint_window",
+            },
+            "mask_preview_data_url": _png_data_url_from_gray_u8(mask_u8),
+            **summary,
+        }
+    except Exception as e:
+        logger.exception("Failed to build assignment mask")
         raise HTTPException(status_code=400, detail=str(e))
 
 

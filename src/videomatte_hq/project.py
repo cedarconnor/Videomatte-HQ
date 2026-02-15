@@ -142,6 +142,43 @@ def _mask_asset_rel_path(cfg: VideoMatteConfig, frame: int) -> str:
     return str(Path(cfg.project.masks_dir) / f"keyframe_{frame:06d}.png")
 
 
+def upsert_keyframe_alpha(
+    cfg: VideoMatteConfig,
+    project_path: Path,
+    project: ProjectState,
+    frame: int,
+    alpha: np.ndarray,
+    source: str = "user",
+    kind: Literal["initial", "correction"] = "initial",
+) -> KeyframeAssignment:
+    """Upsert a keyframe assignment from an in-memory alpha/mask array."""
+    alpha_norm = _normalize_mask(alpha)
+    mask_rel = _mask_asset_rel_path(cfg, frame)
+    mask_abs = project_path.parent / mask_rel
+    mask_abs.parent.mkdir(parents=True, exist_ok=True)
+
+    alpha_u16 = (alpha_norm * 65535.0).round().astype(np.uint16)
+    ok = cv2.imwrite(str(mask_abs), alpha_u16)
+    if not ok:
+        raise IOError(f"Failed to write project mask asset: {mask_abs}")
+
+    existing = project.get_assignment(frame)
+    assignment = KeyframeAssignment(
+        frame=frame,
+        mask_asset=mask_rel,
+        source=source,
+        kind=kind,
+        created_at=(existing.created_at if existing else _utc_now_iso()),
+        updated_at=_utc_now_iso(),
+    )
+    project.upsert_assignment(assignment)
+
+    if cfg.project.autosave:
+        save_project(project_path, project)
+
+    return assignment
+
+
 def import_keyframe_mask(
     cfg: VideoMatteConfig,
     project_path: Path,
@@ -166,33 +203,15 @@ def import_keyframe_mask(
             mask = cv2.cvtColor(mask, cv2.COLOR_BGRA2RGBA)
         else:
             mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)
-    alpha = _normalize_mask(mask)
-
-    mask_rel = _mask_asset_rel_path(cfg, frame)
-    mask_abs = project_path.parent / mask_rel
-    mask_abs.parent.mkdir(parents=True, exist_ok=True)
-
-    # Store canonical assignment mask as 16-bit grayscale PNG.
-    alpha_u16 = (alpha * 65535.0).round().astype(np.uint16)
-    ok = cv2.imwrite(str(mask_abs), alpha_u16)
-    if not ok:
-        raise IOError(f"Failed to write project mask asset: {mask_abs}")
-
-    existing = project.get_assignment(frame)
-    assignment = KeyframeAssignment(
+    return upsert_keyframe_alpha(
+        cfg=cfg,
+        project_path=project_path,
+        project=project,
         frame=frame,
-        mask_asset=mask_rel,
+        alpha=mask,
         source=source,
         kind=kind,
-        created_at=(existing.created_at if existing else _utc_now_iso()),
-        updated_at=_utc_now_iso(),
     )
-    project.upsert_assignment(assignment)
-
-    if cfg.project.autosave:
-        save_project(project_path, project)
-
-    return assignment
 
 
 def load_keyframe_masks(

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { FaPlay, FaSpinner, FaExclamationCircle, FaFileVideo, FaUpload, FaSync } from 'react-icons/fa'
 import { VideoMatteConfig } from '../types'
 import { Section } from './ui/Section'
@@ -26,6 +26,20 @@ interface SuggestedReprocessRange {
     frame_end: number
     reason: string
 }
+
+interface BuilderPoint {
+    x: number
+    y: number
+}
+
+interface BuilderBox {
+    x0: number
+    y0: number
+    x1: number
+    y1: number
+}
+
+type BuilderTool = 'box' | 'fg' | 'bg'
 
 interface MatteTuningPreset {
     id: string
@@ -302,6 +316,20 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     const [assignmentKind, setAssignmentKind] = useState<'initial' | 'correction'>('initial')
     const [autoApplySuggestedRange, setAutoApplySuggestedRange] = useState(true)
     const [suggestedRange, setSuggestedRange] = useState<SuggestedReprocessRange | null>(null)
+    const [builderTool, setBuilderTool] = useState<BuilderTool>('box')
+    const [builderFrameDataUrl, setBuilderFrameDataUrl] = useState<string | null>(null)
+    const [builderMaskPreviewUrl, setBuilderMaskPreviewUrl] = useState<string | null>(null)
+    const [builderFrameSize, setBuilderFrameSize] = useState<{ width: number; height: number } | null>(null)
+    const [builderBox, setBuilderBox] = useState<BuilderBox | null>(null)
+    const [builderDraftBox, setBuilderDraftBox] = useState<BuilderBox | null>(null)
+    const [builderFgPoints, setBuilderFgPoints] = useState<BuilderPoint[]>([])
+    const [builderBgPoints, setBuilderBgPoints] = useState<BuilderPoint[]>([])
+    const [builderPointRadius, setBuilderPointRadius] = useState(8)
+    const [builderIterCount, setBuilderIterCount] = useState(5)
+    const [builderLoadingFrame, setBuilderLoadingFrame] = useState(false)
+    const [builderBuildingMask, setBuilderBuildingMask] = useState(false)
+    const [builderDragStart, setBuilderDragStart] = useState<BuilderPoint | null>(null)
+    const builderImgRef = useRef<HTMLImageElement | null>(null)
 
     // Initialize config with localStorage defaults if available
     const [config, setConfig] = useState<VideoMatteConfig>(() => {
@@ -423,6 +451,204 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                 frame_end: range.frame_end,
             }
         }))
+    }
+
+    function clampBuilderPoint(x: number, y: number, width: number, height: number): BuilderPoint {
+        return {
+            x: Math.max(0, Math.min(width - 1, x)),
+            y: Math.max(0, Math.min(height - 1, y)),
+        }
+    }
+
+    function normalizeBuilderBox(box: BuilderBox): BuilderBox {
+        return {
+            x0: Math.min(box.x0, box.x1),
+            y0: Math.min(box.y0, box.y1),
+            x1: Math.max(box.x0, box.x1),
+            y1: Math.max(box.y0, box.y1),
+        }
+    }
+
+    function getBuilderPointFromMouse(e: React.MouseEvent<HTMLDivElement>): BuilderPoint | null {
+        const img = builderImgRef.current
+        const size = builderFrameSize
+        if (!img || !size) return null
+        const rect = img.getBoundingClientRect()
+        if (rect.width <= 0 || rect.height <= 0) return null
+        const px = ((e.clientX - rect.left) * size.width) / rect.width
+        const py = ((e.clientY - rect.top) * size.height) / rect.height
+        return clampBuilderPoint(px, py, size.width, size.height)
+    }
+
+    function clearBuilderPrompts() {
+        setBuilderBox(null)
+        setBuilderDraftBox(null)
+        setBuilderFgPoints([])
+        setBuilderBgPoints([])
+        setBuilderMaskPreviewUrl(null)
+    }
+
+    async function handleLoadBuilderFrame() {
+        setError(null)
+        setStatus(null)
+        setBuilderLoadingFrame(true)
+        try {
+            const res = await fetch('/api/assignments/frame-preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config,
+                    frame: assignmentFrame,
+                }),
+            })
+            if (!res.ok) throw new Error(await parseApiError(res))
+            const data = await res.json() as {
+                data_url: string
+                width: number
+                height: number
+            }
+            setBuilderFrameDataUrl(data.data_url)
+            setBuilderFrameSize({ width: data.width, height: data.height })
+            clearBuilderPrompts()
+            setStatus(`Loaded frame ${assignmentFrame} for prompt-based mask building.`)
+        } catch (err: any) {
+            setError(err.message)
+        } finally {
+            setBuilderLoadingFrame(false)
+        }
+    }
+
+    async function handleBuildMaskFromPrompts() {
+        setError(null)
+        setStatus(null)
+        if (!builderFrameDataUrl || !builderFrameSize) {
+            setError("Load a frame in the mask builder first.")
+            return
+        }
+        if (!builderBox) {
+            setError("Draw a box around the subject first.")
+            return
+        }
+
+        setBuilderBuildingMask(true)
+        try {
+            const res = await fetch('/api/assignments/build-mask', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config,
+                    frame: assignmentFrame,
+                    kind: assignmentKind,
+                    source: "ui_builder",
+                    box: builderBox,
+                    fg_points: builderFgPoints,
+                    bg_points: builderBgPoints,
+                    point_radius: builderPointRadius,
+                    iter_count: builderIterCount,
+                }),
+            })
+            if (!res.ok) throw new Error(await parseApiError(res))
+            const data = await res.json() as {
+                project_path: string
+                keyframe_count: number
+                keyframes: ProjectKeyframe[]
+                require_assignment: boolean
+                suggested_reprocess_range?: SuggestedReprocessRange
+                mask_preview_data_url?: string
+                coverage?: number
+            }
+            const range = data.suggested_reprocess_range
+            setProjectSummary({
+                project_path: data.project_path,
+                keyframe_count: data.keyframe_count,
+                keyframes: data.keyframes || [],
+                require_assignment: data.require_assignment ?? true,
+            })
+            if (data.mask_preview_data_url) {
+                setBuilderMaskPreviewUrl(data.mask_preview_data_url)
+            }
+            if (range) {
+                setSuggestedRange(range)
+                if (assignmentKind === 'correction' && autoApplySuggestedRange) {
+                    applySuggestedRange(range)
+                    setStatus(
+                        `Built and imported correction mask at frame ${assignmentFrame}. Applied reprocess range ${range.frame_start}..${range.frame_end}.`
+                    )
+                } else {
+                    const covPct = Math.round((data.coverage ?? 0) * 1000) / 10
+                    setStatus(
+                        `Built and imported mask at frame ${assignmentFrame} (coverage ${covPct}%). Suggested range: ${range.frame_start}..${range.frame_end}.`
+                    )
+                }
+            } else {
+                setStatus(`Built and imported mask at frame ${assignmentFrame}.`)
+            }
+        } catch (err: any) {
+            setError(err.message)
+        } finally {
+            setBuilderBuildingMask(false)
+        }
+    }
+
+    function handleBuilderMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+        if (builderTool !== 'box' || !builderFrameSize) return
+        const p = getBuilderPointFromMouse(e)
+        if (!p) return
+        setBuilderDragStart(p)
+        setBuilderDraftBox({ x0: p.x, y0: p.y, x1: p.x, y1: p.y })
+    }
+
+    function handleBuilderMouseMove(e: React.MouseEvent<HTMLDivElement>) {
+        if (builderTool !== 'box' || !builderFrameSize || !builderDragStart) return
+        const p = getBuilderPointFromMouse(e)
+        if (!p) return
+        setBuilderDraftBox({
+            x0: builderDragStart.x,
+            y0: builderDragStart.y,
+            x1: p.x,
+            y1: p.y,
+        })
+    }
+
+    function finalizeBuilderBox(p: BuilderPoint | null) {
+        if (!builderDragStart || !builderFrameSize) return
+        const end = p ?? builderDragStart
+        const normalized = normalizeBuilderBox({
+            x0: builderDragStart.x,
+            y0: builderDragStart.y,
+            x1: end.x,
+            y1: end.y,
+        })
+        setBuilderDragStart(null)
+        setBuilderDraftBox(null)
+        if ((normalized.x1 - normalized.x0) < 3 || (normalized.y1 - normalized.y0) < 3) {
+            return
+        }
+        setBuilderBox(normalized)
+        setBuilderMaskPreviewUrl(null)
+    }
+
+    function handleBuilderMouseUp(e: React.MouseEvent<HTMLDivElement>) {
+        if (builderTool !== 'box') return
+        const p = getBuilderPointFromMouse(e)
+        finalizeBuilderBox(p)
+    }
+
+    function handleBuilderMouseLeave() {
+        if (builderTool !== 'box') return
+        finalizeBuilderBox(null)
+    }
+
+    function handleBuilderClick(e: React.MouseEvent<HTMLDivElement>) {
+        if (!builderFrameSize || builderTool === 'box') return
+        const p = getBuilderPointFromMouse(e)
+        if (!p) return
+        if (builderTool === 'fg') {
+            setBuilderFgPoints(prev => [...prev, p])
+        } else if (builderTool === 'bg') {
+            setBuilderBgPoints(prev => [...prev, p])
+        }
+        setBuilderMaskPreviewUrl(null)
     }
 
     function applyMattePreset(preset: MatteTuningPreset) {
@@ -558,6 +784,9 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
             setLoading(false)
         }
     }
+
+    const activeBuilderBox = builderDraftBox ?? builderBox
+    const assignmentBusy = assignmentLoading || builderLoadingFrame || builderBuildingMask
 
     return (
         <div className="space-y-4 pb-20">
@@ -746,7 +975,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                             <button
                                 type="button"
                                 onClick={handleImportAssignment}
-                                disabled={assignmentLoading}
+                                disabled={assignmentBusy}
                                 className="px-3 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                             >
                                 {assignmentLoading ? <FaSpinner className="animate-spin" /> : <FaUpload />}
@@ -758,12 +987,156 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     setAssignmentLoading(true)
                                     refreshProjectSummary().finally(() => setAssignmentLoading(false))
                                 }}
-                                disabled={assignmentLoading}
+                                disabled={assignmentBusy}
                                 className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                             >
                                 <FaSync />
                                 Refresh
                             </button>
+                        </div>
+                        <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
+                            <div className="flex flex-wrap gap-2 items-center justify-between">
+                                <div className="text-sm font-semibold text-gray-200">Initial Mask Builder (Phase 1)</div>
+                                <div className="flex gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={handleLoadBuilderFrame}
+                                        disabled={assignmentBusy}
+                                        className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-100 text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {builderLoadingFrame ? "Loading..." : "Load Frame"}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleBuildMaskFromPrompts}
+                                        disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
+                                        className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {builderBuildingMask ? "Building..." : "Build + Import Mask"}
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                <Select
+                                    label="Builder Tool"
+                                    value={builderTool}
+                                    onChange={e => setBuilderTool(e.target.value as BuilderTool)}
+                                    options={[
+                                        { value: 'box', label: 'Draw Box' },
+                                        { value: 'fg', label: 'Add FG Points' },
+                                        { value: 'bg', label: 'Add BG Points' },
+                                    ]}
+                                    tooltip="Draw one rough subject box first, then add positive/negative points."
+                                />
+                                <Input
+                                    label="Point Radius (px)"
+                                    type="number"
+                                    value={builderPointRadius}
+                                    onChange={e => setBuilderPointRadius(parseInt(e.target.value || "8"))}
+                                    tooltip="Brush size for FG/BG point prompts."
+                                />
+                                <Input
+                                    label="Iterations"
+                                    type="number"
+                                    value={builderIterCount}
+                                    onChange={e => setBuilderIterCount(parseInt(e.target.value || "5"))}
+                                    tooltip="Higher can improve difficult edges (slower)."
+                                />
+                                <div className="flex items-end">
+                                    <button
+                                        type="button"
+                                        onClick={clearBuilderPrompts}
+                                        disabled={assignmentBusy}
+                                        className="w-full px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-100 text-xs font-semibold border border-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        Clear Prompts
+                                    </button>
+                                </div>
+                            </div>
+                            {builderFrameDataUrl && builderFrameSize ? (
+                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                                    <div>
+                                        <div className="text-xs text-gray-400 mb-1">
+                                            Step 1: Draw a box around the subject. Step 2: Add FG/BG points if needed.
+                                        </div>
+                                        <div
+                                            className={`relative inline-block border border-gray-700 rounded overflow-hidden ${builderTool === 'box' ? 'cursor-crosshair' : 'cursor-cell'}`}
+                                            onMouseDown={handleBuilderMouseDown}
+                                            onMouseMove={handleBuilderMouseMove}
+                                            onMouseUp={handleBuilderMouseUp}
+                                            onMouseLeave={handleBuilderMouseLeave}
+                                            onClick={handleBuilderClick}
+                                        >
+                                            <img
+                                                ref={builderImgRef}
+                                                src={builderFrameDataUrl}
+                                                alt="Assignment frame preview"
+                                                className="block max-h-[420px] w-auto select-none"
+                                                draggable={false}
+                                            />
+                                            <svg
+                                                className="absolute inset-0 w-full h-full pointer-events-none"
+                                                viewBox={`0 0 ${builderFrameSize.width} ${builderFrameSize.height}`}
+                                                preserveAspectRatio="xMinYMin meet"
+                                            >
+                                                {activeBuilderBox && (
+                                                    <rect
+                                                        x={Math.min(activeBuilderBox.x0, activeBuilderBox.x1)}
+                                                        y={Math.min(activeBuilderBox.y0, activeBuilderBox.y1)}
+                                                        width={Math.max(1, Math.abs(activeBuilderBox.x1 - activeBuilderBox.x0))}
+                                                        height={Math.max(1, Math.abs(activeBuilderBox.y1 - activeBuilderBox.y0))}
+                                                        fill="rgba(56, 189, 248, 0.18)"
+                                                        stroke="rgb(56, 189, 248)"
+                                                        strokeWidth={2}
+                                                    />
+                                                )}
+                                                {builderFgPoints.map((p, idx) => (
+                                                    <circle
+                                                        key={`fg-${idx}`}
+                                                        cx={p.x}
+                                                        cy={p.y}
+                                                        r={Math.max(2, builderPointRadius)}
+                                                        fill="rgba(34, 197, 94, 0.55)"
+                                                        stroke="rgb(34, 197, 94)"
+                                                        strokeWidth={1.5}
+                                                    />
+                                                ))}
+                                                {builderBgPoints.map((p, idx) => (
+                                                    <circle
+                                                        key={`bg-${idx}`}
+                                                        cx={p.x}
+                                                        cy={p.y}
+                                                        r={Math.max(2, builderPointRadius)}
+                                                        fill="rgba(239, 68, 68, 0.55)"
+                                                        stroke="rgb(239, 68, 68)"
+                                                        strokeWidth={1.5}
+                                                    />
+                                                ))}
+                                            </svg>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-xs text-gray-400 mb-1">
+                                            Prompt summary: box={builderBox ? "yes" : "no"}, FG points={builderFgPoints.length}, BG points={builderBgPoints.length}
+                                        </div>
+                                        {builderMaskPreviewUrl ? (
+                                            <img
+                                                src={builderMaskPreviewUrl}
+                                                alt="Built mask preview"
+                                                className="block max-h-[420px] w-auto border border-gray-700 rounded"
+                                            />
+                                        ) : (
+                                            <div className="h-[220px] border border-dashed border-gray-700 rounded flex items-center justify-center text-xs text-gray-500 px-3 text-center">
+                                                Built mask preview appears here after you click "Build + Import Mask".
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="text-xs text-gray-500">
+                                    Click "Load Frame" to start building an initial mask from box and points.
+                                </div>
+                            )}
                         </div>
                         <div className="text-xs text-gray-400">
                             Project: <span className="font-mono text-gray-300">{projectSummary?.project_path || "(not resolved yet)"}</span>
