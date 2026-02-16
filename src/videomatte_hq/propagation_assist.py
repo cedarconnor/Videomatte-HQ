@@ -61,14 +61,21 @@ def _to_gray_small(frame_rgb_u8: np.ndarray, downscale: float) -> np.ndarray:
     return cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
-def _warp_mask_with_flow(mask_small: np.ndarray, flow: np.ndarray) -> np.ndarray:
+def _warp_mask_with_backward_flow(mask_small: np.ndarray, flow_backward: np.ndarray) -> np.ndarray:
+    """Warp a source mask into destination frame coordinates.
+
+    Args:
+        mask_small: Source-frame mask (at previous time step).
+        flow_backward: Backward flow defined on destination pixels, mapping
+            destination -> source coordinates.
+    """
     h, w = mask_small.shape[:2]
     grid_x, grid_y = np.meshgrid(
         np.arange(w, dtype=np.float32),
         np.arange(h, dtype=np.float32),
     )
-    map_x = grid_x - flow[..., 0]
-    map_y = grid_y - flow[..., 1]
+    map_x = grid_x + flow_backward[..., 0]
+    map_y = grid_y + flow_backward[..., 1]
     return cv2.remap(
         mask_small.astype(np.float32),
         map_x,
@@ -122,9 +129,10 @@ def _propagate_flow_backend(
         cur_gray = _to_gray_small(frame_loader(idx), downscale=downscale)
         if cur_gray.shape[:2] != prev_gray.shape[:2]:
             cur_gray = cv2.resize(cur_gray, (prev_gray.shape[1], prev_gray.shape[0]), interpolation=cv2.INTER_AREA)
-        flow = cv2.calcOpticalFlowFarneback(
-            prev=prev_gray,
-            next=cur_gray,
+        # Compute backward flow on destination (current) grid for accurate remap.
+        flow_backward = cv2.calcOpticalFlowFarneback(
+            prev=cur_gray,
+            next=prev_gray,
             flow=None,
             pyr_scale=0.5,
             levels=3,
@@ -134,7 +142,7 @@ def _propagate_flow_backend(
             poly_sigma=1.2,
             flags=0,
         )
-        cur_mask = _warp_mask_with_flow(prev_mask, flow)
+        cur_mask = _warp_mask_with_backward_flow(prev_mask, flow_backward)
         cur_mask = _postprocess_small_mask(cur_mask, feather_px=feather_px)
         cov = float(cur_mask.mean())
         if cov < float(flow_min_coverage) or cov > float(flow_max_coverage):
@@ -150,9 +158,10 @@ def _propagate_flow_backend(
         cur_gray = _to_gray_small(frame_loader(idx), downscale=downscale)
         if cur_gray.shape[:2] != prev_gray.shape[:2]:
             cur_gray = cv2.resize(cur_gray, (prev_gray.shape[1], prev_gray.shape[0]), interpolation=cv2.INTER_AREA)
-        flow = cv2.calcOpticalFlowFarneback(
-            prev=prev_gray,
-            next=cur_gray,
+        # Compute backward flow on destination (current) grid for accurate remap.
+        flow_backward = cv2.calcOpticalFlowFarneback(
+            prev=cur_gray,
+            next=prev_gray,
             flow=None,
             pyr_scale=0.5,
             levels=3,
@@ -162,7 +171,7 @@ def _propagate_flow_backend(
             poly_sigma=1.2,
             flags=0,
         )
-        cur_mask = _warp_mask_with_flow(prev_mask, flow)
+        cur_mask = _warp_mask_with_backward_flow(prev_mask, flow_backward)
         cur_mask = _postprocess_small_mask(cur_mask, feather_px=feather_px)
         cov = float(cur_mask.mean())
         if cov < float(flow_min_coverage) or cov > float(flow_max_coverage):

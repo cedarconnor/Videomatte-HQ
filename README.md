@@ -394,6 +394,11 @@ Run tests:
 .venv\Scripts\python -m pytest -q
 ```
 
+Or use the Windows helper (always uses local `.venv`):
+```bat
+run_tests.bat
+```
+
 Frontend build:
 ```bash
 cd web

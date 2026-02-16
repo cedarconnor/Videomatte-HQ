@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -13,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from videomatte_hq.config import VideoMatteConfig
 
+
+logger = logging.getLogger(__name__)
 
 PROJECT_VERSION = 1
 PROJECT_FILENAME = "project.vmhqproj"
@@ -139,7 +142,14 @@ def _normalize_mask(mask: np.ndarray) -> np.ndarray:
 
 
 def _mask_asset_rel_path(cfg: VideoMatteConfig, frame: int) -> str:
-    return str(Path(cfg.project.masks_dir) / f"keyframe_{frame:06d}.png")
+    masks_dir = Path(cfg.project.masks_dir)
+    if masks_dir.is_absolute():
+        logger.warning(
+            "project.masks_dir is absolute (%s); forcing project-relative 'masks/' for portability.",
+            masks_dir,
+        )
+        masks_dir = Path("masks")
+    return str((masks_dir / f"keyframe_{frame:06d}.png").as_posix())
 
 
 def upsert_keyframe_alpha(
@@ -223,7 +233,8 @@ def load_keyframe_masks(
 
     masks: dict[int, np.ndarray] = {}
     for item in project.keyframes:
-        abs_path = project_path.parent / item.mask_asset
+        asset_path = Path(item.mask_asset)
+        abs_path = asset_path if asset_path.is_absolute() else (project_path.parent / asset_path)
         if not abs_path.exists():
             continue
         raw = cv2.imread(str(abs_path), cv2.IMREAD_UNCHANGED)

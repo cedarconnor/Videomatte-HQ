@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from videomatte_hq.config import VideoMatteConfig
+from videomatte_hq.utils.image import frame_to_rgb_u8 as _shared_frame_to_rgb_u8
 
 logger = logging.getLogger(__name__)
 
@@ -245,19 +246,7 @@ def _source_resolution(source: Any) -> tuple[int, int]:
 
 
 def _frame_to_rgb_u8(frame: np.ndarray) -> np.ndarray:
-    rgb = frame
-    if rgb.ndim == 2:
-        rgb = np.repeat(rgb[..., None], 3, axis=2)
-    if rgb.ndim == 3 and rgb.shape[2] == 4:
-        rgb = rgb[..., :3]
-    if rgb.dtype == np.uint8:
-        return rgb
-    out = rgb.astype(np.float32)
-    if np.issubdtype(rgb.dtype, np.integer):
-        out = out / float(np.iinfo(rgb.dtype).max)
-    elif out.max() > 1.0:
-        out = out / max(float(out.max()), 1.0)
-    return np.clip(np.round(out * 255.0), 0, 255).astype(np.uint8)
+    return _shared_frame_to_rgb_u8(frame, error_context="memory pass")
 
 
 def _normalize_mask_u8(mask: np.ndarray) -> np.ndarray:

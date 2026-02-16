@@ -24,6 +24,7 @@ from videomatte_hq.propagation_assist import (
 )
 from videomatte_hq.prompt_boxes import suggest_prompt_boxes
 from videomatte_hq.sam_builder import build_prompt_mask_sam, DEFAULT_SAM_MODEL_ID
+from videomatte_hq.utils.image import frame_to_rgb_u8
 from videomatte_hq.project import (
     ensure_project,
     import_keyframe_mask,
@@ -234,13 +235,7 @@ def _load_input_frame_rgb_u8(cfg: VideoMatteConfig, requested_frame: int) -> tup
 
 
 def _frame_to_rgb_u8(frame: np.ndarray, error_context: str = "frame IO") -> np.ndarray:
-    rgb = np.asarray(frame, dtype=np.float32)
-    if rgb.ndim != 3:
-        raise ValueError(f"Input frame must be RGB-like for {error_context}.")
-    if rgb.shape[2] > 3:
-        rgb = rgb[..., :3]
-    rgb = np.clip(rgb, 0.0, 1.0)
-    return (rgb * 255.0).round().astype(np.uint8)
+    return frame_to_rgb_u8(frame, error_context=error_context)
 
 
 def _png_data_url_from_gray_u8(gray: np.ndarray) -> str:

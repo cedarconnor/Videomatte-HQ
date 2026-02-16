@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import sys
+from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import click
 import numpy as np
@@ -19,6 +21,7 @@ from videomatte_hq.project import (
     suggest_reprocess_range,
     upsert_keyframe_alpha,
 )
+from videomatte_hq.utils.image import frame_to_rgb_u8
 
 logger = logging.getLogger("videomatte_hq")
 
@@ -32,6 +35,460 @@ def setup_logging(verbose: bool = False) -> None:
         datefmt="%H:%M:%S",
         stream=sys.stderr,
     )
+
+
+def _coerce_assignment_kind(
+    value: str | None,
+    *,
+    default: Literal["initial", "correction"] = "initial",
+) -> Literal["initial", "correction"]:
+    normalized = str(value or default).strip().lower()
+    if normalized == "correction":
+        return "correction"
+    if normalized == "initial":
+        return "initial"
+    return default
+
+
+def _import_assignment_if_requested(
+    *,
+    cfg: VideoMatteConfig,
+    project_file: Path,
+    project_state,
+    assign_mask: str | None,
+    assign_frame: int,
+    assign_kind: str,
+    apply_suggested_range: bool,
+) -> None:
+    if not assign_mask:
+        return
+
+    normalized_kind = _coerce_assignment_kind(assign_kind, default="initial")
+    assignment = import_keyframe_mask(
+        cfg=cfg,
+        project_path=project_file,
+        project=project_state,
+        frame=assign_frame,
+        mask_path=Path(assign_mask),
+        source="cli",
+        kind=normalized_kind,
+    )
+    logger.info(
+        "Imported keyframe mask frame=%d asset=%s project=%s",
+        int(assignment.frame),
+        assignment.mask_asset,
+        project_file,
+    )
+    if normalized_kind == "correction" and apply_suggested_range:
+        start, end = suggest_reprocess_range(
+            project=project_state,
+            anchor_frame=assign_frame,
+            memory_window=cfg.memory.window,
+            clip_start=cfg.io.frame_start,
+            clip_end=cfg.io.frame_end,
+        )
+        cfg.io.frame_start = start
+        cfg.io.frame_end = end
+        logger.info(
+            "Applied suggested reprocess range for correction anchor: start=%d end=%d",
+            start,
+            end,
+        )
+
+
+def _run_propagation_assist_if_requested(
+    *,
+    cfg: VideoMatteConfig,
+    project_file: Path,
+    project_state,
+    propagate_from_frame: int,
+    propagate_range_start: int | None,
+    propagate_range_end: int | None,
+    propagate_backend: str,
+    propagate_fallback_to_flow: bool,
+    propagate_stride: int,
+    propagate_max_new_keyframes: int,
+    propagate_overwrite_existing: bool,
+    propagate_flow_downscale: float,
+    propagate_flow_min_coverage: float,
+    propagate_flow_max_coverage: float,
+    propagate_flow_feather_px: int,
+    propagate_samurai_model_cfg: str | None,
+    propagate_samurai_checkpoint: str | None,
+    propagate_samurai_offload_video_to_cpu: bool | None,
+    propagate_samurai_offload_state_to_cpu: bool | None,
+    propagate_kind: str,
+    propagate_source: str,
+) -> None:
+    source = FrameSource(
+        pattern=cfg.io.input,
+        frame_start=cfg.io.frame_start,
+        frame_end=cfg.io.frame_end,
+        prefetch_workers=0,
+    )
+    try:
+        num_frames = int(source.num_frames)
+        if num_frames <= 0:
+            raise ValueError("Input has no frames for propagation.")
+
+        clip_abs_start = int(cfg.io.frame_start)
+        clip_abs_end = int(cfg.io.frame_end) if int(cfg.io.frame_end) >= 0 else (clip_abs_start + num_frames - 1)
+
+        anchor_candidates = [int(propagate_from_frame), int(propagate_from_frame) - clip_abs_start]
+        local_anchor: int | None = None
+        for candidate in anchor_candidates:
+            if 0 <= candidate < num_frames:
+                local_anchor = int(candidate)
+                break
+        if local_anchor is None:
+            raise ValueError(
+                f"Propagation anchor frame {propagate_from_frame} is outside loaded range "
+                f"[{clip_abs_start}:{clip_abs_end}]"
+            )
+
+        anchor_abs = int(propagate_from_frame)
+        if project_state.get_assignment(anchor_abs) is None:
+            alt_abs = int(clip_abs_start + local_anchor)
+            if project_state.get_assignment(alt_abs) is not None:
+                anchor_abs = alt_abs
+            else:
+                raise ValueError(
+                    f"Anchor frame {propagate_from_frame} has no assignment. "
+                    "Import/build a keyframe first."
+                )
+
+        start_abs = clip_abs_start if propagate_range_start is None else int(propagate_range_start)
+        end_abs = clip_abs_end if propagate_range_end is None else int(propagate_range_end)
+        start_abs = max(clip_abs_start, min(clip_abs_end, start_abs))
+        end_abs = max(clip_abs_start, min(clip_abs_end, end_abs))
+        if end_abs < start_abs:
+            raise ValueError(f"Invalid propagation range: {start_abs}..{end_abs}")
+
+        local_start = int(start_abs - clip_abs_start)
+        local_end = int(end_abs - clip_abs_start)
+        if local_anchor < local_start or local_anchor > local_end:
+            raise ValueError(
+                f"Anchor frame {anchor_abs} is outside propagation range {start_abs}..{end_abs}"
+            )
+
+        anchor_rgb = frame_to_rgb_u8(source[local_anchor], error_context="propagation anchor")
+        h, w = anchor_rgb.shape[:2]
+        keyframe_masks = load_keyframe_masks(project_file, project_state, target_shape=(h, w))
+        anchor_alpha = keyframe_masks.get(anchor_abs)
+        if anchor_alpha is None:
+            raise ValueError(f"Failed to load anchor mask for frame {anchor_abs}")
+
+        @lru_cache(maxsize=64)
+        def _load_local_rgb(idx: int) -> np.ndarray:
+            if idx < local_start or idx > local_end:
+                raise ValueError(f"Local frame {idx} outside range {local_start}..{local_end}")
+            return frame_to_rgb_u8(source[idx], error_context="propagation frame")
+
+        prop_result = propagate_masks_assist(
+            frame_loader=_load_local_rgb,
+            frame_start=local_start,
+            frame_end=local_end,
+            anchor_frame=local_anchor,
+            anchor_mask=anchor_alpha,
+            backend=propagate_backend,
+            fallback_to_flow=bool(propagate_fallback_to_flow),
+            flow_downscale=float(propagate_flow_downscale),
+            flow_min_coverage=float(propagate_flow_min_coverage),
+            flow_max_coverage=float(propagate_flow_max_coverage),
+            flow_feather_px=max(0, int(propagate_flow_feather_px)),
+            samurai_model_cfg=str(propagate_samurai_model_cfg or ""),
+            samurai_checkpoint=str(propagate_samurai_checkpoint or ""),
+            samurai_offload_video_to_cpu=bool(propagate_samurai_offload_video_to_cpu),
+            samurai_offload_state_to_cpu=bool(propagate_samurai_offload_state_to_cpu),
+            device_hint=str(cfg.runtime.device or "cuda"),
+        )
+
+        selected_local = select_propagation_frames(
+            frame_start=local_start,
+            frame_end=local_end,
+            anchor_frame=local_anchor,
+            stride=max(1, int(propagate_stride)),
+            max_new_keyframes=max(1, int(propagate_max_new_keyframes)),
+        )
+
+        existing_frames = {int(item.frame) for item in project_state.keyframes}
+        inserted = 0
+        propagate_kind_normalized = _coerce_assignment_kind(propagate_kind, default="correction")
+        for local_idx in selected_local:
+            abs_frame = int(clip_abs_start + local_idx)
+            if abs_frame == anchor_abs:
+                continue
+            if abs_frame in existing_frames and not bool(propagate_overwrite_existing):
+                continue
+            alpha = prop_result.masks.get(int(local_idx))
+            if alpha is None:
+                continue
+            alpha = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
+            if float(alpha.mean()) < float(propagate_flow_min_coverage):
+                continue
+            upsert_keyframe_alpha(
+                cfg=cfg,
+                project_path=project_file,
+                project=project_state,
+                frame=abs_frame,
+                alpha=alpha,
+                source=f"{str(propagate_source).strip() or 'cli_propagate'}:{prop_result.backend_used}",
+                kind=propagate_kind_normalized,
+            )
+            existing_frames.add(abs_frame)
+            inserted += 1
+
+        logger.info(
+            "Phase 4 propagation complete: backend=%s inserted=%d range=%d..%d anchor=%d",
+            prop_result.backend_used,
+            inserted,
+            start_abs,
+            end_abs,
+            anchor_abs,
+        )
+        if prop_result.note:
+            logger.warning("Propagation note: %s", prop_result.note)
+    finally:
+        source.close()
+
+
+def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> None:
+    input_path = options.get("input_path")
+    output_path = options.get("output_path")
+    project_path = options.get("project_path")
+    frame_start = options.get("frame_start")
+    frame_end = options.get("frame_end")
+    shot_type = options.get("shot_type")
+    alpha_format = options.get("alpha_format")
+    alpha_dwaa_quality = options.get("alpha_dwaa_quality")
+    memory_backend = options.get("memory_backend")
+    memory_frames = options.get("memory_frames")
+    window = options.get("window")
+    memory_region_constraint = options.get("memory_region_constraint")
+    memory_region_source = options.get("memory_region_source")
+    memory_region_anchor_frame = options.get("memory_region_anchor_frame")
+    memory_region_backend = options.get("memory_region_backend")
+    memory_region_fallback_to_flow = options.get("memory_region_fallback_to_flow")
+    memory_region_flow_downscale = options.get("memory_region_flow_downscale")
+    memory_region_flow_min_coverage = options.get("memory_region_flow_min_coverage")
+    memory_region_flow_max_coverage = options.get("memory_region_flow_max_coverage")
+    memory_region_flow_feather_px = options.get("memory_region_flow_feather_px")
+    memory_region_samurai_model_cfg = options.get("memory_region_samurai_model_cfg")
+    memory_region_samurai_checkpoint = options.get("memory_region_samurai_checkpoint")
+    memory_region_samurai_offload_video_to_cpu = options.get("memory_region_samurai_offload_video_to_cpu")
+    memory_region_samurai_offload_state_to_cpu = options.get("memory_region_samurai_offload_state_to_cpu")
+    memory_region_threshold = options.get("memory_region_threshold")
+    memory_region_bbox_margin_px = options.get("memory_region_bbox_margin_px")
+    memory_region_bbox_expand_ratio = options.get("memory_region_bbox_expand_ratio")
+    memory_region_dilate_px = options.get("memory_region_dilate_px")
+    memory_region_soften_px = options.get("memory_region_soften_px")
+    memory_region_outside_conf_cap = options.get("memory_region_outside_conf_cap")
+    refine_backend = options.get("refine_backend")
+    unknown_band_px = options.get("unknown_band_px")
+    refine_mematte_repo_dir = options.get("refine_mematte_repo_dir")
+    refine_mematte_checkpoint = options.get("refine_mematte_checkpoint")
+    refine_mematte_max_number_token = options.get("refine_mematte_max_number_token")
+    refine_mematte_patch_decoder = options.get("refine_mematte_patch_decoder")
+    refine_region_trimap = options.get("refine_region_trimap")
+    refine_region_trimap_threshold = options.get("refine_region_trimap_threshold")
+    refine_region_trimap_fg_erode_px = options.get("refine_region_trimap_fg_erode_px")
+    refine_region_trimap_bg_dilate_px = options.get("refine_region_trimap_bg_dilate_px")
+    refine_region_trimap_cleanup_px = options.get("refine_region_trimap_cleanup_px")
+    refine_region_trimap_keep_largest = options.get("refine_region_trimap_keep_largest")
+    refine_region_trimap_min_coverage = options.get("refine_region_trimap_min_coverage")
+    refine_region_trimap_max_coverage = options.get("refine_region_trimap_max_coverage")
+    matte_tuning = options.get("matte_tuning")
+    mt_shrink_grow_px = options.get("mt_shrink_grow_px")
+    mt_feather_px = options.get("mt_feather_px")
+    mt_offset_x_px = options.get("mt_offset_x_px")
+    mt_offset_y_px = options.get("mt_offset_y_px")
+    require_assignment = options.get("require_assignment")
+    debug_stage_samples = options.get("debug_stage_samples")
+    debug_sample_count = options.get("debug_sample_count")
+    debug_sample_frames = options.get("debug_sample_frames")
+    debug_stage_dir = options.get("debug_stage_dir")
+    resume = options.get("resume")
+    qc = options.get("qc")
+    qc_fail_on_regression = options.get("qc_fail_on_regression")
+    qc_sample_output_frames = options.get("qc_sample_output_frames")
+    qc_max_output_roundtrip_mae = options.get("qc_max_output_roundtrip_mae")
+    qc_alpha_range_eps = options.get("qc_alpha_range_eps")
+    qc_max_p95_flicker = options.get("qc_max_p95_flicker")
+    qc_max_p95_edge_flicker = options.get("qc_max_p95_edge_flicker")
+    qc_min_mean_edge_confidence = options.get("qc_min_mean_edge_confidence")
+    qc_band_spike_ratio = options.get("qc_band_spike_ratio")
+    qc_max_band_spike_frames = options.get("qc_max_band_spike_frames")
+    device = options.get("device")
+    precision = options.get("precision")
+    workers = options.get("workers")
+    verbose = options.get("verbose")
+
+    if input_path:
+        cfg.io.input = str(input_path)
+
+    if output_path:
+        out_p = Path(str(output_path))
+        if out_p.suffix == "":
+            cfg.io.output_dir = str(out_p)
+        else:
+            parent = out_p.parent if str(out_p.parent) not in ("", ".") else Path(cfg.io.output_dir)
+            cfg.io.output_dir = str(parent)
+            cfg.io.output_alpha = out_p.name
+
+    if project_path:
+        cfg.project.path = str(project_path)
+
+    if frame_start is not None:
+        cfg.io.frame_start = int(frame_start)
+    if frame_end is not None:
+        cfg.io.frame_end = int(frame_end)
+
+    if shot_type:
+        cfg.io.shot_type = ShotType(str(shot_type))
+
+    if alpha_format:
+        cfg.io.alpha_format = AlphaFormat(str(alpha_format))
+    if alpha_dwaa_quality is not None:
+        cfg.io.alpha_dwaa_quality = float(alpha_dwaa_quality)
+
+    if memory_backend:
+        cfg.memory.backend = str(memory_backend)
+    if memory_frames is not None:
+        cfg.memory.memory_frames = int(memory_frames)
+    if window is not None:
+        cfg.memory.window = int(window)
+    if memory_region_constraint is not None:
+        cfg.memory.region_constraint_enabled = bool(memory_region_constraint)
+    if memory_region_source:
+        cfg.memory.region_constraint_source = str(memory_region_source).lower()
+    if memory_region_anchor_frame is not None:
+        cfg.memory.region_constraint_anchor_frame = int(memory_region_anchor_frame)
+    if memory_region_backend:
+        cfg.memory.region_constraint_backend = str(memory_region_backend)
+    if memory_region_fallback_to_flow is not None:
+        cfg.memory.region_constraint_fallback_to_flow = bool(memory_region_fallback_to_flow)
+    if memory_region_flow_downscale is not None:
+        cfg.memory.region_constraint_flow_downscale = float(memory_region_flow_downscale)
+    if memory_region_flow_min_coverage is not None:
+        cfg.memory.region_constraint_flow_min_coverage = float(memory_region_flow_min_coverage)
+    if memory_region_flow_max_coverage is not None:
+        cfg.memory.region_constraint_flow_max_coverage = float(memory_region_flow_max_coverage)
+    if memory_region_flow_feather_px is not None:
+        cfg.memory.region_constraint_flow_feather_px = int(memory_region_flow_feather_px)
+    if memory_region_samurai_model_cfg:
+        cfg.memory.region_constraint_samurai_model_cfg = str(memory_region_samurai_model_cfg)
+    if memory_region_samurai_checkpoint:
+        cfg.memory.region_constraint_samurai_checkpoint = str(memory_region_samurai_checkpoint)
+    if memory_region_samurai_offload_video_to_cpu is not None:
+        cfg.memory.region_constraint_samurai_offload_video_to_cpu = bool(memory_region_samurai_offload_video_to_cpu)
+    if memory_region_samurai_offload_state_to_cpu is not None:
+        cfg.memory.region_constraint_samurai_offload_state_to_cpu = bool(memory_region_samurai_offload_state_to_cpu)
+    if memory_region_threshold is not None:
+        cfg.memory.region_constraint_threshold = float(memory_region_threshold)
+    if memory_region_bbox_margin_px is not None:
+        cfg.memory.region_constraint_bbox_margin_px = int(memory_region_bbox_margin_px)
+    if memory_region_bbox_expand_ratio is not None:
+        cfg.memory.region_constraint_bbox_expand_ratio = float(memory_region_bbox_expand_ratio)
+    if memory_region_dilate_px is not None:
+        cfg.memory.region_constraint_dilate_px = int(memory_region_dilate_px)
+    if memory_region_soften_px is not None:
+        cfg.memory.region_constraint_soften_px = int(memory_region_soften_px)
+    if memory_region_outside_conf_cap is not None:
+        cfg.memory.region_constraint_outside_confidence_cap = float(memory_region_outside_conf_cap)
+
+    if refine_backend:
+        cfg.refine.backend = str(refine_backend)
+    if unknown_band_px is not None:
+        cfg.refine.unknown_band_px = int(unknown_band_px)
+    if refine_mematte_repo_dir:
+        cfg.refine.mematte_repo_dir = str(refine_mematte_repo_dir)
+    if refine_mematte_checkpoint:
+        cfg.refine.mematte_checkpoint = str(refine_mematte_checkpoint)
+    if refine_mematte_max_number_token is not None:
+        cfg.refine.mematte_max_number_token = int(refine_mematte_max_number_token)
+    if refine_mematte_patch_decoder is not None:
+        cfg.refine.mematte_patch_decoder = bool(refine_mematte_patch_decoder)
+    if refine_region_trimap is not None:
+        cfg.refine.region_trimap_enabled = bool(refine_region_trimap)
+    if refine_region_trimap_threshold is not None:
+        cfg.refine.region_trimap_threshold = float(refine_region_trimap_threshold)
+    if refine_region_trimap_fg_erode_px is not None:
+        cfg.refine.region_trimap_fg_erode_px = int(refine_region_trimap_fg_erode_px)
+    if refine_region_trimap_bg_dilate_px is not None:
+        cfg.refine.region_trimap_bg_dilate_px = int(refine_region_trimap_bg_dilate_px)
+    if refine_region_trimap_cleanup_px is not None:
+        cfg.refine.region_trimap_cleanup_px = int(refine_region_trimap_cleanup_px)
+    if refine_region_trimap_keep_largest is not None:
+        cfg.refine.region_trimap_keep_largest = bool(refine_region_trimap_keep_largest)
+    if refine_region_trimap_min_coverage is not None:
+        cfg.refine.region_trimap_min_coverage = float(refine_region_trimap_min_coverage)
+    if refine_region_trimap_max_coverage is not None:
+        cfg.refine.region_trimap_max_coverage = float(refine_region_trimap_max_coverage)
+
+    if matte_tuning is not None:
+        cfg.matte_tuning.enabled = bool(matte_tuning)
+    if mt_shrink_grow_px is not None:
+        cfg.matte_tuning.shrink_grow_px = int(mt_shrink_grow_px)
+    if mt_feather_px is not None:
+        cfg.matte_tuning.feather_px = int(mt_feather_px)
+    if mt_offset_x_px is not None:
+        cfg.matte_tuning.offset_x_px = int(mt_offset_x_px)
+    if mt_offset_y_px is not None:
+        cfg.matte_tuning.offset_y_px = int(mt_offset_y_px)
+
+    if require_assignment is not None:
+        cfg.assignment.require_assignment = bool(require_assignment)
+
+    if debug_stage_samples is not None:
+        cfg.debug.export_stage_samples = bool(debug_stage_samples)
+    if debug_sample_count is not None:
+        cfg.debug.sample_count = max(1, int(debug_sample_count))
+    if debug_sample_frames:
+        parsed_frames: list[int] = []
+        for tok in str(debug_sample_frames).split(","):
+            t = tok.strip()
+            if not t:
+                continue
+            try:
+                parsed_frames.append(int(t))
+            except ValueError as exc:
+                raise click.BadParameter(
+                    f"Invalid --debug-sample-frames token '{t}'. Use comma-separated integers."
+                ) from exc
+        cfg.debug.sample_frames = parsed_frames
+    if debug_stage_dir:
+        cfg.debug.stage_dir = str(debug_stage_dir)
+
+    if resume is not None:
+        cfg.runtime.resume = bool(resume)
+    if qc is not None:
+        cfg.qc.enabled = bool(qc)
+    if qc_fail_on_regression is not None:
+        cfg.qc.fail_on_regression = bool(qc_fail_on_regression)
+    if qc_sample_output_frames is not None:
+        cfg.qc.sample_output_frames = int(qc_sample_output_frames)
+    if qc_max_output_roundtrip_mae is not None:
+        cfg.qc.max_output_roundtrip_mae = float(qc_max_output_roundtrip_mae)
+    if qc_alpha_range_eps is not None:
+        cfg.qc.alpha_range_eps = float(qc_alpha_range_eps)
+    if qc_max_p95_flicker is not None:
+        cfg.qc.max_p95_flicker = float(qc_max_p95_flicker)
+    if qc_max_p95_edge_flicker is not None:
+        cfg.qc.max_p95_edge_flicker = float(qc_max_p95_edge_flicker)
+    if qc_min_mean_edge_confidence is not None:
+        cfg.qc.min_mean_edge_confidence = float(qc_min_mean_edge_confidence)
+    if qc_band_spike_ratio is not None:
+        cfg.qc.band_spike_ratio = float(qc_band_spike_ratio)
+    if qc_max_band_spike_frames is not None:
+        cfg.qc.max_band_spike_frames = int(qc_max_band_spike_frames)
+    if device:
+        cfg.runtime.device = str(device)
+    if precision:
+        cfg.runtime.precision = str(precision)
+    if workers is not None:
+        cfg.runtime.workers_io = int(workers)
+    if verbose:
+        cfg.runtime.verbose = True
 
 
 @click.command("videomatte-hq")
@@ -487,172 +944,7 @@ def main(
         logger.info(f"Loading config from {config_path}")
         cfg = VideoMatteConfig.from_yaml(config_path)
 
-    # CLI overrides.
-    if input_path:
-        cfg.io.input = input_path
-
-    if output_path:
-        out_p = Path(output_path)
-        if out_p.suffix == "":
-            cfg.io.output_dir = str(out_p)
-        else:
-            parent = out_p.parent if str(out_p.parent) not in ("", ".") else Path(cfg.io.output_dir)
-            cfg.io.output_dir = str(parent)
-            cfg.io.output_alpha = out_p.name
-
-    if project_path:
-        cfg.project.path = project_path
-
-    if frame_start is not None:
-        cfg.io.frame_start = frame_start
-    if frame_end is not None:
-        cfg.io.frame_end = frame_end
-
-    if shot_type:
-        cfg.io.shot_type = ShotType(shot_type)
-
-    if alpha_format:
-        cfg.io.alpha_format = AlphaFormat(alpha_format)
-    if alpha_dwaa_quality is not None:
-        cfg.io.alpha_dwaa_quality = alpha_dwaa_quality
-
-    if memory_backend:
-        cfg.memory.backend = memory_backend
-    if memory_frames is not None:
-        cfg.memory.memory_frames = memory_frames
-    if window is not None:
-        cfg.memory.window = window
-    if memory_region_constraint is not None:
-        cfg.memory.region_constraint_enabled = bool(memory_region_constraint)
-    if memory_region_source:
-        cfg.memory.region_constraint_source = str(memory_region_source).lower()
-    if memory_region_anchor_frame is not None:
-        cfg.memory.region_constraint_anchor_frame = int(memory_region_anchor_frame)
-    if memory_region_backend:
-        cfg.memory.region_constraint_backend = str(memory_region_backend)
-    if memory_region_fallback_to_flow is not None:
-        cfg.memory.region_constraint_fallback_to_flow = bool(memory_region_fallback_to_flow)
-    if memory_region_flow_downscale is not None:
-        cfg.memory.region_constraint_flow_downscale = float(memory_region_flow_downscale)
-    if memory_region_flow_min_coverage is not None:
-        cfg.memory.region_constraint_flow_min_coverage = float(memory_region_flow_min_coverage)
-    if memory_region_flow_max_coverage is not None:
-        cfg.memory.region_constraint_flow_max_coverage = float(memory_region_flow_max_coverage)
-    if memory_region_flow_feather_px is not None:
-        cfg.memory.region_constraint_flow_feather_px = int(memory_region_flow_feather_px)
-    if memory_region_samurai_model_cfg:
-        cfg.memory.region_constraint_samurai_model_cfg = str(memory_region_samurai_model_cfg)
-    if memory_region_samurai_checkpoint:
-        cfg.memory.region_constraint_samurai_checkpoint = str(memory_region_samurai_checkpoint)
-    if memory_region_samurai_offload_video_to_cpu is not None:
-        cfg.memory.region_constraint_samurai_offload_video_to_cpu = bool(memory_region_samurai_offload_video_to_cpu)
-    if memory_region_samurai_offload_state_to_cpu is not None:
-        cfg.memory.region_constraint_samurai_offload_state_to_cpu = bool(memory_region_samurai_offload_state_to_cpu)
-    if memory_region_threshold is not None:
-        cfg.memory.region_constraint_threshold = float(memory_region_threshold)
-    if memory_region_bbox_margin_px is not None:
-        cfg.memory.region_constraint_bbox_margin_px = int(memory_region_bbox_margin_px)
-    if memory_region_bbox_expand_ratio is not None:
-        cfg.memory.region_constraint_bbox_expand_ratio = float(memory_region_bbox_expand_ratio)
-    if memory_region_dilate_px is not None:
-        cfg.memory.region_constraint_dilate_px = int(memory_region_dilate_px)
-    if memory_region_soften_px is not None:
-        cfg.memory.region_constraint_soften_px = int(memory_region_soften_px)
-    if memory_region_outside_conf_cap is not None:
-        cfg.memory.region_constraint_outside_confidence_cap = float(memory_region_outside_conf_cap)
-    if refine_backend:
-        cfg.refine.backend = str(refine_backend)
-    if unknown_band_px is not None:
-        cfg.refine.unknown_band_px = unknown_band_px
-    if refine_mematte_repo_dir:
-        cfg.refine.mematte_repo_dir = str(refine_mematte_repo_dir)
-    if refine_mematte_checkpoint:
-        cfg.refine.mematte_checkpoint = str(refine_mematte_checkpoint)
-    if refine_mematte_max_number_token is not None:
-        cfg.refine.mematte_max_number_token = int(refine_mematte_max_number_token)
-    if refine_mematte_patch_decoder is not None:
-        cfg.refine.mematte_patch_decoder = bool(refine_mematte_patch_decoder)
-    if refine_region_trimap is not None:
-        cfg.refine.region_trimap_enabled = bool(refine_region_trimap)
-    if refine_region_trimap_threshold is not None:
-        cfg.refine.region_trimap_threshold = float(refine_region_trimap_threshold)
-    if refine_region_trimap_fg_erode_px is not None:
-        cfg.refine.region_trimap_fg_erode_px = int(refine_region_trimap_fg_erode_px)
-    if refine_region_trimap_bg_dilate_px is not None:
-        cfg.refine.region_trimap_bg_dilate_px = int(refine_region_trimap_bg_dilate_px)
-    if refine_region_trimap_cleanup_px is not None:
-        cfg.refine.region_trimap_cleanup_px = int(refine_region_trimap_cleanup_px)
-    if refine_region_trimap_keep_largest is not None:
-        cfg.refine.region_trimap_keep_largest = bool(refine_region_trimap_keep_largest)
-    if refine_region_trimap_min_coverage is not None:
-        cfg.refine.region_trimap_min_coverage = float(refine_region_trimap_min_coverage)
-    if refine_region_trimap_max_coverage is not None:
-        cfg.refine.region_trimap_max_coverage = float(refine_region_trimap_max_coverage)
-    if matte_tuning is not None:
-        cfg.matte_tuning.enabled = matte_tuning
-    if mt_shrink_grow_px is not None:
-        cfg.matte_tuning.shrink_grow_px = mt_shrink_grow_px
-    if mt_feather_px is not None:
-        cfg.matte_tuning.feather_px = mt_feather_px
-    if mt_offset_x_px is not None:
-        cfg.matte_tuning.offset_x_px = mt_offset_x_px
-    if mt_offset_y_px is not None:
-        cfg.matte_tuning.offset_y_px = mt_offset_y_px
-
-    if require_assignment is not None:
-        cfg.assignment.require_assignment = require_assignment
-
-    if debug_stage_samples is not None:
-        cfg.debug.export_stage_samples = bool(debug_stage_samples)
-    if debug_sample_count is not None:
-        cfg.debug.sample_count = max(1, int(debug_sample_count))
-    if debug_sample_frames:
-        parsed_frames: list[int] = []
-        for tok in str(debug_sample_frames).split(","):
-            t = tok.strip()
-            if not t:
-                continue
-            try:
-                parsed_frames.append(int(t))
-            except ValueError as exc:
-                raise click.BadParameter(
-                    f"Invalid --debug-sample-frames token '{t}'. Use comma-separated integers."
-                ) from exc
-        cfg.debug.sample_frames = parsed_frames
-    if debug_stage_dir:
-        cfg.debug.stage_dir = str(debug_stage_dir)
-
-    if resume is not None:
-        cfg.runtime.resume = resume
-    if qc is not None:
-        cfg.qc.enabled = qc
-    if qc_fail_on_regression is not None:
-        cfg.qc.fail_on_regression = qc_fail_on_regression
-    if qc_sample_output_frames is not None:
-        cfg.qc.sample_output_frames = qc_sample_output_frames
-    if qc_max_output_roundtrip_mae is not None:
-        cfg.qc.max_output_roundtrip_mae = qc_max_output_roundtrip_mae
-    if qc_alpha_range_eps is not None:
-        cfg.qc.alpha_range_eps = qc_alpha_range_eps
-    if qc_max_p95_flicker is not None:
-        cfg.qc.max_p95_flicker = qc_max_p95_flicker
-    if qc_max_p95_edge_flicker is not None:
-        cfg.qc.max_p95_edge_flicker = qc_max_p95_edge_flicker
-    if qc_min_mean_edge_confidence is not None:
-        cfg.qc.min_mean_edge_confidence = qc_min_mean_edge_confidence
-    if qc_band_spike_ratio is not None:
-        cfg.qc.band_spike_ratio = qc_band_spike_ratio
-    if qc_max_band_spike_frames is not None:
-        cfg.qc.max_band_spike_frames = qc_max_band_spike_frames
-    if device:
-        cfg.runtime.device = device
-    if precision:
-        cfg.runtime.precision = precision
-    if workers is not None:
-        cfg.runtime.workers_io = workers
-
-    if verbose:
-        cfg.runtime.verbose = True
+    _apply_cli_overrides(cfg=cfg, options=dict(locals()))
 
     if dump_config:
         import yaml
@@ -660,180 +952,45 @@ def main(
         click.echo(yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False))
         return
 
-    def _to_rgb_u8(frame: np.ndarray) -> np.ndarray:
-        rgb = np.asarray(frame, dtype=np.float32)
-        if rgb.ndim != 3:
-            raise ValueError("Input frame must be RGB-like for propagation.")
-        if rgb.shape[2] > 3:
-            rgb = rgb[..., :3]
-        rgb = np.clip(rgb, 0.0, 1.0)
-        return (rgb * 255.0).round().astype(np.uint8)
-
     # Optional assignment import path.
     project_file, project_state = ensure_project(cfg)
-    if assign_mask:
-        normalized_kind = str(assign_kind).lower()
-        assignment = import_keyframe_mask(
-            cfg=cfg,
-            project_path=project_file,
-            project=project_state,
-            frame=assign_frame,
-            mask_path=Path(assign_mask),
-            source="cli",
-            kind=normalized_kind,  # type: ignore[arg-type]
-        )
-        logger.info(
-            f"Imported keyframe mask frame={assignment.frame} asset={assignment.mask_asset} "
-            f"project={project_file}"
-        )
-        if normalized_kind == "correction" and apply_suggested_range:
-            start, end = suggest_reprocess_range(
-                project=project_state,
-                anchor_frame=assign_frame,
-                memory_window=cfg.memory.window,
-                clip_start=cfg.io.frame_start,
-                clip_end=cfg.io.frame_end,
-            )
-            cfg.io.frame_start = start
-            cfg.io.frame_end = end
-            logger.info(
-                "Applied suggested reprocess range for correction anchor: start=%d end=%d",
-                start,
-                end,
-            )
+    _import_assignment_if_requested(
+        cfg=cfg,
+        project_file=project_file,
+        project_state=project_state,
+        assign_mask=assign_mask,
+        assign_frame=assign_frame,
+        assign_kind=assign_kind,
+        apply_suggested_range=bool(apply_suggested_range),
+    )
 
     if assign_only and propagate_from_frame is None:
         return
 
     if propagate_from_frame is not None:
-        source = FrameSource(
-            pattern=cfg.io.input,
-            frame_start=cfg.io.frame_start,
-            frame_end=cfg.io.frame_end,
-            prefetch_workers=0,
+        _run_propagation_assist_if_requested(
+            cfg=cfg,
+            project_file=project_file,
+            project_state=project_state,
+            propagate_from_frame=int(propagate_from_frame),
+            propagate_range_start=(None if propagate_range_start is None else int(propagate_range_start)),
+            propagate_range_end=(None if propagate_range_end is None else int(propagate_range_end)),
+            propagate_backend=str(propagate_backend),
+            propagate_fallback_to_flow=bool(propagate_fallback_to_flow),
+            propagate_stride=int(propagate_stride),
+            propagate_max_new_keyframes=int(propagate_max_new_keyframes),
+            propagate_overwrite_existing=bool(propagate_overwrite_existing),
+            propagate_flow_downscale=float(propagate_flow_downscale),
+            propagate_flow_min_coverage=float(propagate_flow_min_coverage),
+            propagate_flow_max_coverage=float(propagate_flow_max_coverage),
+            propagate_flow_feather_px=int(propagate_flow_feather_px),
+            propagate_samurai_model_cfg=(None if not propagate_samurai_model_cfg else str(propagate_samurai_model_cfg)),
+            propagate_samurai_checkpoint=(None if not propagate_samurai_checkpoint else str(propagate_samurai_checkpoint)),
+            propagate_samurai_offload_video_to_cpu=propagate_samurai_offload_video_to_cpu,
+            propagate_samurai_offload_state_to_cpu=propagate_samurai_offload_state_to_cpu,
+            propagate_kind=str(propagate_kind),
+            propagate_source=str(propagate_source),
         )
-        try:
-            num_frames = int(source.num_frames)
-            if num_frames <= 0:
-                raise ValueError("Input has no frames for propagation.")
-
-            clip_abs_start = int(cfg.io.frame_start)
-            clip_abs_end = int(cfg.io.frame_end) if int(cfg.io.frame_end) >= 0 else (clip_abs_start + num_frames - 1)
-
-            anchor_candidates = [int(propagate_from_frame), int(propagate_from_frame) - clip_abs_start]
-            local_anchor: int | None = None
-            for candidate in anchor_candidates:
-                if 0 <= candidate < num_frames:
-                    local_anchor = int(candidate)
-                    break
-            if local_anchor is None:
-                raise ValueError(
-                    f"Propagation anchor frame {propagate_from_frame} is outside loaded range "
-                    f"[{clip_abs_start}:{clip_abs_end}]"
-                )
-
-            anchor_abs = int(propagate_from_frame)
-            if project_state.get_assignment(anchor_abs) is None:
-                alt_abs = int(clip_abs_start + local_anchor)
-                if project_state.get_assignment(alt_abs) is not None:
-                    anchor_abs = alt_abs
-                else:
-                    raise ValueError(
-                        f"Anchor frame {propagate_from_frame} has no assignment. "
-                        "Import/build a keyframe first."
-                    )
-
-            start_abs = clip_abs_start if propagate_range_start is None else int(propagate_range_start)
-            end_abs = clip_abs_end if propagate_range_end is None else int(propagate_range_end)
-            start_abs = max(clip_abs_start, min(clip_abs_end, start_abs))
-            end_abs = max(clip_abs_start, min(clip_abs_end, end_abs))
-            if end_abs < start_abs:
-                raise ValueError(f"Invalid propagation range: {start_abs}..{end_abs}")
-
-            local_start = int(start_abs - clip_abs_start)
-            local_end = int(end_abs - clip_abs_start)
-            if local_anchor < local_start or local_anchor > local_end:
-                raise ValueError(
-                    f"Anchor frame {anchor_abs} is outside propagation range {start_abs}..{end_abs}"
-                )
-
-            anchor_rgb = _to_rgb_u8(source[local_anchor])
-            h, w = anchor_rgb.shape[:2]
-            keyframe_masks = load_keyframe_masks(project_file, project_state, target_shape=(h, w))
-            anchor_alpha = keyframe_masks.get(anchor_abs)
-            if anchor_alpha is None:
-                raise ValueError(f"Failed to load anchor mask for frame {anchor_abs}")
-
-            def _load_local_rgb(idx: int) -> np.ndarray:
-                if idx < local_start or idx > local_end:
-                    raise ValueError(f"Local frame {idx} outside range {local_start}..{local_end}")
-                return _to_rgb_u8(source[idx])
-
-            prop_result = propagate_masks_assist(
-                frame_loader=_load_local_rgb,
-                frame_start=local_start,
-                frame_end=local_end,
-                anchor_frame=local_anchor,
-                anchor_mask=anchor_alpha,
-                backend=propagate_backend,
-                fallback_to_flow=bool(propagate_fallback_to_flow),
-                flow_downscale=float(propagate_flow_downscale),
-                flow_min_coverage=float(propagate_flow_min_coverage),
-                flow_max_coverage=float(propagate_flow_max_coverage),
-                flow_feather_px=max(0, int(propagate_flow_feather_px)),
-                samurai_model_cfg=str(propagate_samurai_model_cfg or ""),
-                samurai_checkpoint=str(propagate_samurai_checkpoint or ""),
-                samurai_offload_video_to_cpu=bool(propagate_samurai_offload_video_to_cpu),
-                samurai_offload_state_to_cpu=bool(propagate_samurai_offload_state_to_cpu),
-                device_hint=str(cfg.runtime.device or "cuda"),
-            )
-
-            selected_local = select_propagation_frames(
-                frame_start=local_start,
-                frame_end=local_end,
-                anchor_frame=local_anchor,
-                stride=max(1, int(propagate_stride)),
-                max_new_keyframes=max(1, int(propagate_max_new_keyframes)),
-            )
-
-            existing_frames = {int(item.frame) for item in project_state.keyframes}
-            inserted = 0
-            for local_idx in selected_local:
-                abs_frame = int(clip_abs_start + local_idx)
-                if abs_frame == anchor_abs:
-                    continue
-                if abs_frame in existing_frames and not bool(propagate_overwrite_existing):
-                    continue
-                alpha = prop_result.masks.get(int(local_idx))
-                if alpha is None:
-                    continue
-                alpha = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
-                if float(alpha.mean()) < float(propagate_flow_min_coverage):
-                    continue
-                upsert_keyframe_alpha(
-                    cfg=cfg,
-                    project_path=project_file,
-                    project=project_state,
-                    frame=abs_frame,
-                    alpha=alpha,
-                    source=f"{str(propagate_source).strip() or 'cli_propagate'}:{prop_result.backend_used}",
-                    kind=(str(propagate_kind).lower() if str(propagate_kind).lower() in ("initial", "correction") else "correction"),  # type: ignore[arg-type]
-                )
-                existing_frames.add(abs_frame)
-                inserted += 1
-
-            logger.info(
-                "Phase 4 propagation complete: backend=%s inserted=%d range=%d..%d anchor=%d",
-                prop_result.backend_used,
-                inserted,
-                start_abs,
-                end_abs,
-                anchor_abs,
-            )
-            if prop_result.note:
-                logger.warning("Propagation note: %s", prop_result.note)
-        finally:
-            source.close()
 
     if assign_only or propagate_only:
         return
