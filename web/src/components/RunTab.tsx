@@ -47,7 +47,8 @@ interface BuilderCandidate extends BuilderBox {
 
 type BuilderTool = 'box' | 'fg' | 'bg'
 type BuilderBackend = 'grabcut' | 'sam'
-type PropagationBackend = 'flow' | 'sam2_video_predictor' | 'cutie'
+type RangeBuilderBackend = 'sam' | 'samurai_video_predictor'
+type PropagationBackend = 'flow' | 'samurai_video_predictor' | 'sam2_video_predictor' | 'cutie'
 
 interface MatteTuningPreset {
     id: string
@@ -129,7 +130,26 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         query_long_side: 960,
         spatial_weight: 0.1,
         temperature: 1.0,
-        auto_anchor_min_gap: 0
+        auto_anchor_min_gap: 0,
+        region_constraint_enabled: true,
+        region_constraint_source: "propagated_bbox",
+        region_constraint_anchor_frame: -1,
+        region_constraint_backend: "sam2_video_predictor",
+        region_constraint_fallback_to_flow: true,
+        region_constraint_flow_downscale: 0.5,
+        region_constraint_flow_min_coverage: 0.002,
+        region_constraint_flow_max_coverage: 0.98,
+        region_constraint_flow_feather_px: 1,
+        region_constraint_samurai_model_cfg: "",
+        region_constraint_samurai_checkpoint: "",
+        region_constraint_samurai_offload_video_to_cpu: false,
+        region_constraint_samurai_offload_state_to_cpu: false,
+        region_constraint_threshold: 0.2,
+        region_constraint_bbox_margin_px: 96,
+        region_constraint_bbox_expand_ratio: 0.15,
+        region_constraint_dilate_px: 24,
+        region_constraint_soften_px: 0,
+        region_constraint_outside_confidence_cap: 0.05,
     },
     background: {
         enabled: true,
@@ -215,7 +235,19 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
     refine: {
         enabled: true,
         backend: "guided_band",
+        mematte_repo_dir: "third_party/MEMatte",
+        mematte_checkpoint: "third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth",
+        mematte_max_number_token: 18500,
+        mematte_patch_decoder: true,
         unknown_band_px: 64,
+        region_trimap_enabled: true,
+        region_trimap_threshold: 0.5,
+        region_trimap_fg_erode_px: 3,
+        region_trimap_bg_dilate_px: 16,
+        region_trimap_cleanup_px: 1,
+        region_trimap_keep_largest: true,
+        region_trimap_min_coverage: 0.002,
+        region_trimap_max_coverage: 0.98,
         tile_size: 1536,
         overlap: 96,
         alpha_bg_threshold: 0.05,
@@ -309,7 +341,15 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         cache_dir: ".cache",
         resume: true,
         verbose: false
-    }
+    },
+    debug: {
+        export_stage_samples: false,
+        sample_count: 5,
+        sample_frames: [],
+        stage_dir: "debug_stages",
+        save_rgb: true,
+        save_overlay: true,
+    },
 }
 
 export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
@@ -340,6 +380,20 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     const [builderBackend, setBuilderBackend] = useState<BuilderBackend>('grabcut')
     const [builderSamModelId, setBuilderSamModelId] = useState("facebook/sam-vit-base")
     const [builderSamLocalOnly, setBuilderSamLocalOnly] = useState(true)
+    const [builderSamFallbackToGrabcut, setBuilderSamFallbackToGrabcut] = useState(false)
+    const [builderRangeBackend, setBuilderRangeBackend] = useState<RangeBuilderBackend>('samurai_video_predictor')
+    const [builderRangeStart, setBuilderRangeStart] = useState<number>(DEFAULT_CONFIG.io.frame_start)
+    const [builderRangeEnd, setBuilderRangeEnd] = useState<number>(DEFAULT_CONFIG.io.frame_end)
+    const [builderRangeStride, setBuilderRangeStride] = useState(1)
+    const [builderRangeTrackPrompts, setBuilderRangeTrackPrompts] = useState(false)
+    const [builderRangeTrackBgPoints, setBuilderRangeTrackBgPoints] = useState(false)
+    const [builderRangeFlowDownscale, setBuilderRangeFlowDownscale] = useState(0.5)
+    const [builderSamuraiModelCfg, setBuilderSamuraiModelCfg] = useState("")
+    const [builderSamuraiCheckpoint, setBuilderSamuraiCheckpoint] = useState("")
+    const [builderSamuraiOffloadVideoToCpu, setBuilderSamuraiOffloadVideoToCpu] = useState(false)
+    const [builderSamuraiOffloadStateToCpu, setBuilderSamuraiOffloadStateToCpu] = useState(false)
+    const [builderRangeOverwriteExisting, setBuilderRangeOverwriteExisting] = useState(false)
+    const [builderBuildingRange, setBuilderBuildingRange] = useState(false)
     const [propagateBackend, setPropagateBackend] = useState<PropagationBackend>('flow')
     const [propagateFrameStart, setPropagateFrameStart] = useState<number>(DEFAULT_CONFIG.io.frame_start)
     const [propagateFrameEnd, setPropagateFrameEnd] = useState<number>(DEFAULT_CONFIG.io.frame_end)
@@ -351,6 +405,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     const [propagateFlowMinCoverage, setPropagateFlowMinCoverage] = useState(0.002)
     const [propagateFlowMaxCoverage, setPropagateFlowMaxCoverage] = useState(0.98)
     const [propagateFlowFeatherPx, setPropagateFlowFeatherPx] = useState(1)
+    const [propagateSamuraiModelCfg, setPropagateSamuraiModelCfg] = useState("")
+    const [propagateSamuraiCheckpoint, setPropagateSamuraiCheckpoint] = useState("")
+    const [propagateSamuraiOffloadVideoToCpu, setPropagateSamuraiOffloadVideoToCpu] = useState(false)
+    const [propagateSamuraiOffloadStateToCpu, setPropagateSamuraiOffloadStateToCpu] = useState(false)
     const [propagateRunning, setPropagateRunning] = useState(false)
     const [builderLoadingFrame, setBuilderLoadingFrame] = useState(false)
     const [builderBuildingMask, setBuilderBuildingMask] = useState(false)
@@ -630,7 +688,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                     iter_count: builderIterCount,
                     sam_model_id: builderSamModelId,
                     sam_local_files_only: builderSamLocalOnly,
-                    sam_fallback_to_grabcut: true,
+                    sam_fallback_to_grabcut: builderSamFallbackToGrabcut,
                 }),
             })
             if (!res.ok) throw new Error(await parseApiError(res))
@@ -682,6 +740,97 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
         }
     }
 
+    async function handleBuildMaskRangeFromPrompts() {
+        setError(null)
+        setStatus(null)
+        if (!builderFrameDataUrl || !builderFrameSize) {
+            setError("Load an anchor frame in the mask builder first.")
+            return
+        }
+        if (!builderBox) {
+            setError("Draw a box around the subject first.")
+            return
+        }
+        setBuilderBuildingRange(true)
+        try {
+            const res = await fetch('/api/assignments/build-mask-range', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config,
+                    anchor_frame: assignmentFrame,
+                    frame_start: builderRangeStart,
+                    frame_end: builderRangeEnd,
+                    box: builderBox,
+                    fg_points: builderFgPoints,
+                    bg_points: builderBgPoints,
+                    backend: builderRangeBackend,
+                    point_radius: builderPointRadius,
+                    iter_count: builderIterCount,
+                    sam_model_id: builderSamModelId,
+                    sam_local_files_only: builderSamLocalOnly,
+                    sam_fallback_to_grabcut: builderSamFallbackToGrabcut,
+                    samurai_model_cfg: builderSamuraiModelCfg,
+                    samurai_checkpoint: builderSamuraiCheckpoint,
+                    samurai_offload_video_to_cpu: builderSamuraiOffloadVideoToCpu,
+                    samurai_offload_state_to_cpu: builderSamuraiOffloadStateToCpu,
+                    track_prompts_with_flow: builderRangeTrackPrompts,
+                    track_bg_points_with_flow: builderRangeTrackBgPoints,
+                    flow_downscale: builderRangeFlowDownscale,
+                    save_stride: builderRangeStride,
+                    kind: assignmentKind,
+                    source: "ui_builder_range",
+                    overwrite_existing: builderRangeOverwriteExisting,
+                }),
+            })
+            if (!res.ok) throw new Error(await parseApiError(res))
+            const data = await res.json() as {
+                project_path: string
+                keyframe_count: number
+                keyframes: ProjectKeyframe[]
+                require_assignment: boolean
+                inserted_count?: number
+                inserted_frames?: number[]
+                skipped_existing_frames?: number[]
+                backend_used?: string
+                builder_note?: string | null
+                suggested_reprocess_range?: SuggestedReprocessRange
+                frame_start?: number
+                frame_end?: number
+            }
+
+            setProjectSummary({
+                project_path: data.project_path,
+                keyframe_count: data.keyframe_count,
+                keyframes: data.keyframes || [],
+                require_assignment: data.require_assignment ?? true,
+            })
+
+            const inserted = data.inserted_count ?? (data.inserted_frames?.length ?? 0)
+            const backendUsedLabel = data.backend_used ? ` (${data.backend_used})` : ""
+            const rangeMsg = `range ${data.frame_start ?? builderRangeStart}..${data.frame_end ?? builderRangeEnd}`
+            let msg = `Prompt mask range build${backendUsedLabel} inserted ${inserted} keyframe(s) from anchor ${assignmentFrame} over ${rangeMsg}.`
+            if ((data.skipped_existing_frames?.length ?? 0) > 0) {
+                msg += ` Skipped existing: ${data.skipped_existing_frames!.length}.`
+            }
+            if (data.builder_note) {
+                msg += ` ${data.builder_note}`
+            }
+            setStatus(msg)
+
+            if (data.suggested_reprocess_range) {
+                setSuggestedRange(data.suggested_reprocess_range)
+                if (autoApplySuggestedRange) {
+                    applySuggestedRange(data.suggested_reprocess_range)
+                }
+            }
+        } catch (err: any) {
+            setError(err.message)
+        } finally {
+            setBuilderBuildingRange(false)
+        }
+    }
+
     async function handlePropagateAssignments() {
         setError(null)
         setStatus(null)
@@ -703,6 +852,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                     flow_min_coverage: propagateFlowMinCoverage,
                     flow_max_coverage: propagateFlowMaxCoverage,
                     flow_feather_px: propagateFlowFeatherPx,
+                    samurai_model_cfg: propagateSamuraiModelCfg,
+                    samurai_checkpoint: propagateSamuraiCheckpoint,
+                    samurai_offload_video_to_cpu: propagateSamuraiOffloadVideoToCpu,
+                    samurai_offload_state_to_cpu: propagateSamuraiOffloadStateToCpu,
                     kind: 'correction',
                     source: 'ui_propagate',
                     overwrite_existing: propagateOverwriteExisting,
@@ -954,7 +1107,12 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
 
     const activeBuilderBox = builderDraftBox ?? builderBox
     const assignmentBusy =
-        assignmentLoading || builderLoadingFrame || builderBuildingMask || builderSuggestingBoxes || propagateRunning
+        assignmentLoading ||
+        builderLoadingFrame ||
+        builderBuildingMask ||
+        builderBuildingRange ||
+        builderSuggestingBoxes ||
+        propagateRunning
 
     return (
         <div className="space-y-4 pb-20">
@@ -1182,6 +1340,15 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     >
                                         {builderBuildingMask ? "Building..." : "Build + Import Mask"}
                                     </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleBuildMaskRangeFromPrompts}
+                                        disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
+                                        className="px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                        title="Build masks across a frame range using the selected range backend."
+                                    >
+                                        {builderBuildingRange ? "Building Range..." : "Build + Import Range"}
+                                    </button>
                                 </div>
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
@@ -1272,23 +1439,149 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     </button>
                                 </div>
                             </div>
-                            {builderBackend === 'sam' && (
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 rounded border border-gray-700/70 bg-gray-900/70 p-2">
-                                    <Input
-                                        label="SAM Model ID / Path"
-                                        value={builderSamModelId}
-                                        onChange={e => setBuilderSamModelId(e.target.value)}
-                                        placeholder="facebook/sam-vit-base"
-                                        tooltip="Use a local path or HuggingFace model id for SAM."
-                                    />
-                                    <Switch
-                                        label="Local Files Only"
-                                        checked={builderSamLocalOnly}
-                                        onChange={setBuilderSamLocalOnly}
-                                        tooltip="Recommended: ON. Avoids downloads and uses only local model files."
-                                    />
+                            <div className="space-y-2 rounded border border-gray-700/70 bg-gray-900/70 p-2">
+                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                        <Select
+                                            label="Range Backend"
+                                            value={builderRangeBackend}
+                                            onChange={e => setBuilderRangeBackend(e.target.value as RangeBuilderBackend)}
+                                            options={[
+                                                { value: 'samurai_video_predictor', label: 'Samurai Video Predictor' },
+                                                { value: 'sam', label: 'Per-Frame SAM' },
+                                            ]}
+                                            tooltip="Stage 1 range backend. Samurai runs a video predictor pass; SAM runs per-frame prompt segmentation."
+                                        />
+                                        {builderRangeBackend === 'sam' ? (
+                                            <>
+                                                <Input
+                                                    label="SAM Model ID / Path"
+                                                    value={builderSamModelId}
+                                                    onChange={e => setBuilderSamModelId(e.target.value)}
+                                                    placeholder="facebook/sam-vit-base"
+                                                    tooltip="Use a local path or HuggingFace model id for SAM."
+                                                />
+                                                <Switch
+                                                    label="Local Files Only"
+                                                    checked={builderSamLocalOnly}
+                                                    onChange={setBuilderSamLocalOnly}
+                                                    tooltip="Recommended: ON. Avoids downloads and uses only local model files."
+                                                />
+                                                <Switch
+                                                    label="Allow GrabCut Fallback"
+                                                    checked={builderSamFallbackToGrabcut}
+                                                    onChange={setBuilderSamFallbackToGrabcut}
+                                                    tooltip="If OFF, SAM failures return an error instead of silently switching to GrabCut."
+                                                />
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Input
+                                                    label="Samurai Model Cfg Path"
+                                                    value={builderSamuraiModelCfg}
+                                                    onChange={e => setBuilderSamuraiModelCfg(e.target.value)}
+                                                    placeholder="sam2.1_hiera_l.yaml"
+                                                    tooltip="Path to Samurai/SAM2 model config."
+                                                />
+                                                <Input
+                                                    label="Samurai Checkpoint Path"
+                                                    value={builderSamuraiCheckpoint}
+                                                    onChange={e => setBuilderSamuraiCheckpoint(e.target.value)}
+                                                    placeholder="checkpoints/sam2.1_hiera_large.pt"
+                                                    tooltip="Path to Samurai/SAM2 checkpoint file."
+                                                />
+                                                <div className="grid grid-cols-1 gap-2">
+                                                    <Switch
+                                                        label="Offload Video To CPU"
+                                                        checked={builderSamuraiOffloadVideoToCpu}
+                                                        onChange={setBuilderSamuraiOffloadVideoToCpu}
+                                                        tooltip="Reduce VRAM by keeping decoded video buffers on CPU."
+                                                    />
+                                                    <Switch
+                                                        label="Offload State To CPU"
+                                                        checked={builderSamuraiOffloadStateToCpu}
+                                                        onChange={setBuilderSamuraiOffloadStateToCpu}
+                                                        tooltip="Reduce VRAM by offloading predictor state to CPU."
+                                                    />
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+                                    <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold">
+                                        Range Build (Stage 1 Subject Propagation Across Shot)
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                        <Input
+                                            label="Range Start"
+                                            type="number"
+                                            value={builderRangeStart}
+                                            onChange={e => setBuilderRangeStart(parseInt(e.target.value || "0"))}
+                                            tooltip="Absolute frame index to start range build."
+                                        />
+                                        <Input
+                                            label="Range End"
+                                            type="number"
+                                            value={builderRangeEnd}
+                                            onChange={e => setBuilderRangeEnd(parseInt(e.target.value || "-1"))}
+                                            tooltip="Absolute frame index to end range build."
+                                        />
+                                        <Input
+                                            label="Save Stride"
+                                            type="number"
+                                            value={builderRangeStride}
+                                            onChange={e => setBuilderRangeStride(parseInt(e.target.value || "1"))}
+                                            tooltip="Save every Nth built frame as keyframe assignment. 1 = every frame."
+                                        />
+                                        {builderRangeBackend === 'sam' ? (
+                                            <Input
+                                                label="Prompt Flow Downscale"
+                                                type="number"
+                                                step="0.05"
+                                                value={builderRangeFlowDownscale}
+                                                onChange={e => setBuilderRangeFlowDownscale(parseFloat(e.target.value || "0.5"))}
+                                                tooltip="Downscale for optical-flow prompt tracking."
+                                            />
+                                        ) : (
+                                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2 flex items-center">
+                                                Samurai uses video memory tracking from anchor prompts; per-frame prompt flow is not needed.
+                                            </div>
+                                        )}
+                                    </div>
+                                    {builderRangeBackend === 'sam' && (
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                            <Switch
+                                                label="Track Prompts With Flow"
+                                                checked={builderRangeTrackPrompts}
+                                                onChange={setBuilderRangeTrackPrompts}
+                                                tooltip="Optional. ON moves box/FG/BG points frame-to-frame using optical flow; OFF matches anchor-only prompt behavior."
+                                            />
+                                            <Switch
+                                                label="Track BG Points With Flow"
+                                                checked={builderRangeTrackBgPoints}
+                                                onChange={setBuilderRangeTrackBgPoints}
+                                                tooltip="OFF recommended for locked-off shots to keep negative points pinned."
+                                            />
+                                            <Switch
+                                                label="Overwrite Existing Frames"
+                                                checked={builderRangeOverwriteExisting}
+                                                onChange={setBuilderRangeOverwriteExisting}
+                                                tooltip="Replace existing assignments if frame indices collide."
+                                            />
+                                        </div>
+                                    )}
+                                    {builderRangeBackend === 'samurai_video_predictor' && (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                            <Switch
+                                                label="Overwrite Existing Frames"
+                                                checked={builderRangeOverwriteExisting}
+                                                onChange={setBuilderRangeOverwriteExisting}
+                                                tooltip="Replace existing assignments if frame indices collide."
+                                            />
+                                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2 flex items-center">
+                                                Tip: add strong FG/BG anchor points on frame 0 and optionally mid/end before rerunning range build.
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
-                            )}
                             {builderFrameDataUrl && builderFrameSize ? (
                                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
                                     <div>
@@ -1395,10 +1688,11 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     onChange={e => setPropagateBackend(e.target.value as PropagationBackend)}
                                     options={[
                                         { value: 'flow', label: 'Flow (Built-in)' },
+                                        { value: 'samurai_video_predictor', label: 'Samurai Video Predictor' },
                                         { value: 'sam2_video_predictor', label: 'SAM2VideoPredictor' },
                                         { value: 'cutie', label: 'Cutie' },
                                     ]}
-                                    tooltip="Phase 4 backend. SAM2/Cutie currently fallback to flow when unavailable."
+                                    tooltip="Phase 4 backend. Samurai uses a true video predictor; unsupported backends can fallback to flow."
                                 />
                                 <Input
                                     label="Range Start"
@@ -1462,12 +1756,42 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     tooltip="Softening applied during propagation smoothing."
                                 />
                             </div>
+                            {propagateBackend === 'samurai_video_predictor' && (
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                    <Input
+                                        label="Samurai Model Cfg Path"
+                                        value={propagateSamuraiModelCfg}
+                                        onChange={e => setPropagateSamuraiModelCfg(e.target.value)}
+                                        placeholder="sam2.1_hiera_l.yaml"
+                                        tooltip="Path to Samurai/SAM2 model config file."
+                                    />
+                                    <Input
+                                        label="Samurai Checkpoint Path"
+                                        value={propagateSamuraiCheckpoint}
+                                        onChange={e => setPropagateSamuraiCheckpoint(e.target.value)}
+                                        placeholder="checkpoints/sam2.1_hiera_large.pt"
+                                        tooltip="Path to Samurai/SAM2 checkpoint file."
+                                    />
+                                    <Switch
+                                        label="Offload Video To CPU"
+                                        checked={propagateSamuraiOffloadVideoToCpu}
+                                        onChange={setPropagateSamuraiOffloadVideoToCpu}
+                                        tooltip="Reduce VRAM by storing decoded frames on CPU."
+                                    />
+                                    <Switch
+                                        label="Offload State To CPU"
+                                        checked={propagateSamuraiOffloadStateToCpu}
+                                        onChange={setPropagateSamuraiOffloadStateToCpu}
+                                        tooltip="Reduce VRAM by offloading predictor state."
+                                    />
+                                </div>
+                            )}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                 <Switch
                                     label="Fallback To Flow"
                                     checked={propagateFallbackToFlow}
                                     onChange={setPropagateFallbackToFlow}
-                                    tooltip="If SAM2/Cutie is unavailable, continue with flow backend."
+                                    tooltip="If Samurai/SAM2/Cutie is unavailable, continue with flow backend."
                                 />
                                 <Switch
                                     label="Overwrite Existing Frames"
@@ -1515,7 +1839,219 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                     </div>
                 </Section>
 
-                {/* 3. Background */}
+                {/* 3. Memory Propagation */}
+                <Section
+                    title="Memory Propagation (Stage 2)"
+                    defaultOpen={true}
+                    tooltip="Coarse alpha generation from keyframe memory anchors. Includes optional propagated region constraint."
+                >
+                    <div className="space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                            <Select
+                                label="Memory Backend (--memory-backend)"
+                                value={config.memory.backend}
+                                onChange={e => updateConfig('memory', 'backend', e.target.value)}
+                                options={[
+                                    { value: 'appearance_memory_bank', label: 'Appearance Memory Bank' },
+                                    { value: 'placeholder_nearest_keyframe', label: 'Nearest Keyframe (Placeholder)' },
+                                ]}
+                                tooltip="Main Stage-2 algorithm for coarse alpha."
+                            />
+                            <Input
+                                label="Memory Frames (--memory-frames)"
+                                type="number"
+                                value={config.memory.memory_frames}
+                                onChange={e => updateConfig('memory', 'memory_frames', parseInt(e.target.value || "1"))}
+                                tooltip="Target number of anchors kept in memory."
+                            />
+                            <Input
+                                label="Temporal Window (--window)"
+                                type="number"
+                                value={config.memory.window}
+                                onChange={e => updateConfig('memory', 'window', parseInt(e.target.value || "1"))}
+                                tooltip="Frame distance weight for anchor influence."
+                            />
+                            <Input
+                                label="Max Anchors"
+                                type="number"
+                                value={config.memory.max_anchors}
+                                onChange={e => updateConfig('memory', 'max_anchors', parseInt(e.target.value || "1"))}
+                                tooltip="Hard cap on total memory anchors."
+                            />
+                            <Input
+                                label="Reanchor Threshold"
+                                type="number"
+                                step="0.01"
+                                value={config.memory.confidence_reanchor_threshold}
+                                onChange={e => updateConfig('memory', 'confidence_reanchor_threshold', parseFloat(e.target.value))}
+                                tooltip="If mean confidence drops below this, memory pass can auto-add anchor candidates."
+                            />
+                            <Input
+                                label="Auto Anchor Min Gap"
+                                type="number"
+                                value={config.memory.auto_anchor_min_gap || 0}
+                                onChange={e => updateConfig('memory', 'auto_anchor_min_gap', parseInt(e.target.value || "0"))}
+                                tooltip="Minimum frame gap between automatically-added anchors."
+                            />
+                        </div>
+
+                        <div className="border-t border-gray-700/50 pt-3 space-y-2">
+                            <Switch
+                                label="Enable Region Constraint (--memory-region-constraint/--no-memory-region-constraint)"
+                                checked={Boolean(config.memory.region_constraint_enabled)}
+                                onChange={v => updateConfig('memory', 'region_constraint_enabled', v)}
+                                tooltip="Build a full-range subject region prior and clamp Stage-2 alpha outside it."
+                            />
+                            {config.memory.region_constraint_enabled && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                    <Select
+                                        label="Region Source (--memory-region-source)"
+                                        value={config.memory.region_constraint_source || 'none'}
+                                        onChange={e => updateConfig('memory', 'region_constraint_source', e.target.value)}
+                                        options={[
+                                            { value: 'propagated_bbox', label: 'Propagated BBox (Recommended)' },
+                                            { value: 'propagated_mask', label: 'Propagated Mask' },
+                                            { value: 'nearest_keyframe_bbox', label: 'Nearest Keyframe BBox' },
+                                            { value: 'none', label: 'Disabled' },
+                                        ]}
+                                        tooltip="How the foreground region prior is generated."
+                                    />
+                                    <Input
+                                        label="Anchor Frame (--memory-region-anchor-frame)"
+                                        type="number"
+                                        value={config.memory.region_constraint_anchor_frame ?? -1}
+                                        onChange={e => updateConfig('memory', 'region_constraint_anchor_frame', parseInt(e.target.value || "-1"))}
+                                        tooltip="-1 means first available keyframe anchor."
+                                    />
+                                    <Select
+                                        label="Propagation Backend (--memory-region-backend)"
+                                        value={config.memory.region_constraint_backend || 'sam2_video_predictor'}
+                                        onChange={e => updateConfig('memory', 'region_constraint_backend', e.target.value)}
+                                        options={[
+                                            { value: 'samurai_video_predictor', label: 'Samurai Video Predictor' },
+                                            { value: 'sam2_video_predictor', label: 'SAM2 Video Predictor' },
+                                            { value: 'cutie', label: 'Cutie' },
+                                            { value: 'flow', label: 'Flow' },
+                                        ]}
+                                        tooltip="Backend used for dense region prior propagation."
+                                    />
+                                    <Switch
+                                        label="Fallback To Flow (--memory-region-fallback-to-flow/--no-memory-region-fallback-to-flow)"
+                                        checked={Boolean(config.memory.region_constraint_fallback_to_flow)}
+                                        onChange={v => updateConfig('memory', 'region_constraint_fallback_to_flow', v)}
+                                        tooltip="Use flow propagation if Samurai/SAM2/Cutie runtime is unavailable."
+                                    />
+                                    {config.memory.region_constraint_backend === 'samurai_video_predictor' && (
+                                        <>
+                                            <Input
+                                                label="Samurai Model Cfg (--memory-region-samurai-model-cfg)"
+                                                value={config.memory.region_constraint_samurai_model_cfg || ""}
+                                                onChange={e => updateConfig('memory', 'region_constraint_samurai_model_cfg', e.target.value)}
+                                                tooltip="Path to Samurai/SAM2 model config file."
+                                            />
+                                            <Input
+                                                label="Samurai Checkpoint (--memory-region-samurai-checkpoint)"
+                                                value={config.memory.region_constraint_samurai_checkpoint || ""}
+                                                onChange={e => updateConfig('memory', 'region_constraint_samurai_checkpoint', e.target.value)}
+                                                tooltip="Path to Samurai/SAM2 checkpoint file."
+                                            />
+                                            <Switch
+                                                label="Offload Video (--memory-region-samurai-offload-video-to-cpu)"
+                                                checked={Boolean(config.memory.region_constraint_samurai_offload_video_to_cpu)}
+                                                onChange={v => updateConfig('memory', 'region_constraint_samurai_offload_video_to_cpu', v)}
+                                                tooltip="Reduce VRAM by keeping video buffers on CPU."
+                                            />
+                                            <Switch
+                                                label="Offload State (--memory-region-samurai-offload-state-to-cpu)"
+                                                checked={Boolean(config.memory.region_constraint_samurai_offload_state_to_cpu)}
+                                                onChange={v => updateConfig('memory', 'region_constraint_samurai_offload_state_to_cpu', v)}
+                                                tooltip="Reduce VRAM by offloading predictor state to CPU."
+                                            />
+                                        </>
+                                    )}
+                                    <Input
+                                        label="Flow Downscale (--memory-region-flow-downscale)"
+                                        type="number"
+                                        step="0.01"
+                                        value={config.memory.region_constraint_flow_downscale ?? 0.5}
+                                        onChange={e => updateConfig('memory', 'region_constraint_flow_downscale', parseFloat(e.target.value))}
+                                        tooltip="Lower = faster but less precise propagation."
+                                    />
+                                    <Input
+                                        label="Flow Min Coverage (--memory-region-flow-min-coverage)"
+                                        type="number"
+                                        step="0.0001"
+                                        value={config.memory.region_constraint_flow_min_coverage ?? 0.002}
+                                        onChange={e => updateConfig('memory', 'region_constraint_flow_min_coverage', parseFloat(e.target.value))}
+                                        tooltip="Reject unstable prior frames that become too small."
+                                    />
+                                    <Input
+                                        label="Flow Max Coverage (--memory-region-flow-max-coverage)"
+                                        type="number"
+                                        step="0.0001"
+                                        value={config.memory.region_constraint_flow_max_coverage ?? 0.98}
+                                        onChange={e => updateConfig('memory', 'region_constraint_flow_max_coverage', parseFloat(e.target.value))}
+                                        tooltip="Reject unstable prior frames that become unrealistically large."
+                                    />
+                                    <Input
+                                        label="Flow Feather (--memory-region-flow-feather-px)"
+                                        type="number"
+                                        value={config.memory.region_constraint_flow_feather_px ?? 1}
+                                        onChange={e => updateConfig('memory', 'region_constraint_flow_feather_px', parseInt(e.target.value || "0"))}
+                                        tooltip="Smoothing during flow-based prior propagation."
+                                    />
+                                    <Input
+                                        label="Mask Threshold (--memory-region-threshold)"
+                                        type="number"
+                                        step="0.01"
+                                        value={config.memory.region_constraint_threshold ?? 0.2}
+                                        onChange={e => updateConfig('memory', 'region_constraint_threshold', parseFloat(e.target.value))}
+                                        tooltip="Foreground threshold used when converting propagated masks to prior regions."
+                                    />
+                                    <Input
+                                        label="BBox Margin (--memory-region-bbox-margin-px)"
+                                        type="number"
+                                        value={config.memory.region_constraint_bbox_margin_px ?? 96}
+                                        onChange={e => updateConfig('memory', 'region_constraint_bbox_margin_px', parseInt(e.target.value || "0"))}
+                                        tooltip="Extra margin around detected subject bbox."
+                                    />
+                                    <Input
+                                        label="BBox Expand Ratio (--memory-region-bbox-expand-ratio)"
+                                        type="number"
+                                        step="0.01"
+                                        value={config.memory.region_constraint_bbox_expand_ratio ?? 0.15}
+                                        onChange={e => updateConfig('memory', 'region_constraint_bbox_expand_ratio', parseFloat(e.target.value))}
+                                        tooltip="Relative bbox expansion based on subject size."
+                                    />
+                                    <Input
+                                        label="Dilate Prior (--memory-region-dilate-px)"
+                                        type="number"
+                                        value={config.memory.region_constraint_dilate_px ?? 24}
+                                        onChange={e => updateConfig('memory', 'region_constraint_dilate_px', parseInt(e.target.value || "0"))}
+                                        tooltip="Morphological expansion to avoid accidental limb cropping."
+                                    />
+                                    <Input
+                                        label="Soften Prior (--memory-region-soften-px)"
+                                        type="number"
+                                        value={config.memory.region_constraint_soften_px ?? 0}
+                                        onChange={e => updateConfig('memory', 'region_constraint_soften_px', parseInt(e.target.value || "0"))}
+                                        tooltip="Gaussian soft edge on the region prior."
+                                    />
+                                    <Input
+                                        label="Outside Conf Cap (--memory-region-outside-conf-cap)"
+                                        type="number"
+                                        step="0.01"
+                                        value={config.memory.region_constraint_outside_confidence_cap ?? 0.05}
+                                        onChange={e => updateConfig('memory', 'region_constraint_outside_confidence_cap', parseFloat(e.target.value))}
+                                        tooltip="Maximum confidence outside constrained region."
+                                    />
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </Section>
+
+                {/* 4. Background */}
                 <Section title="Background Plate" tooltip="Settings for clean plate estimation and handling via inpainting.">
                     <div className="space-y-2">
                         <Switch
@@ -1704,33 +2240,70 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                 )}
 
                 {/* 7. Refine */}
-                <Section title="Detail Refinement (Pass B)" tooltip="Second pass: High-resolution matting on image tiles.">
+                <Section title="Edge Refinement (Stage 3)" tooltip="Boundary-focused refinement. Use guided_band for default stability, or mematte for neural edge detail recovery.">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         <Select
-                            label="Refine Model"
-                            value={config.refine.model}
-                            onChange={e => updateConfig('refine', 'model', e.target.value)}
+                            label="Refine Backend"
+                            value={config.refine.backend || 'guided_band'}
+                            onChange={e => updateConfig('refine', 'backend', e.target.value)}
                             options={[
-                                { value: 'vitmatte', label: 'ViTMatte' },
-                                { value: 'matformer', label: 'MatteFormer' }
+                                { value: 'guided_band', label: 'Guided Band (Default)' },
+                                { value: 'mematte', label: 'MEMatte (Neural)' },
                             ]}
-                            tooltip="High-quality matting model for detail refinement."
+                            tooltip="Main Stage-3 refiner backend."
                         />
-                        <div className="grid grid-cols-2 gap-2">
+                        <Input
+                            label="Unknown Band (px)" type="number"
+                            value={config.refine.unknown_band_px}
+                            onChange={e => updateConfig('refine', 'unknown_band_px', parseInt(e.target.value))}
+                            tooltip="Width of the unknown band to refine."
+                        />
+                        <Input
+                            label="Tile Size" type="number"
+                            value={config.refine.tile_size}
+                            onChange={e => updateConfig('refine', 'tile_size', parseInt(e.target.value))}
+                            tooltip="Refinement tile size in pixels."
+                        />
+                        <Input
+                            label="Tile Overlap" type="number"
+                            value={config.refine.overlap}
+                            onChange={e => updateConfig('refine', 'overlap', parseInt(e.target.value))}
+                            tooltip="Tile overlap in pixels for seam blending."
+                        />
+                    </div>
+                    {config.refine.backend === 'mematte' && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 mt-3">
                             <Input
-                                label="Tile Size" type="number"
-                                value={config.tiles.tile_size}
-                                onChange={e => updateConfig('tiles', 'tile_size', parseInt(e.target.value))}
-                                tooltip="Size of image tiles (e.g., 1024, 2048)."
+                                label="MEMatte Repo Dir"
+                                value={config.refine.mematte_repo_dir || ''}
+                                onChange={e => updateConfig('refine', 'mematte_repo_dir', e.target.value)}
+                                tooltip="Path to the MEMatte repository folder."
                             />
                             <Input
-                                label="Tile Overlap" type="number"
-                                value={config.tiles.overlap}
-                                onChange={e => updateConfig('tiles', 'overlap', parseInt(e.target.value))}
-                                tooltip="Pixel overlap between tiles to prevent seams."
+                                label="MEMatte Checkpoint"
+                                value={config.refine.mematte_checkpoint || ''}
+                                onChange={e => updateConfig('refine', 'mematte_checkpoint', e.target.value)}
+                                tooltip="Path to MEMatte checkpoint (.pth)."
+                            />
+                            <Input
+                                label="MEMatte Max Tokens"
+                                type="number"
+                                value={config.refine.mematte_max_number_token ?? 18500}
+                                onChange={e => updateConfig('refine', 'mematte_max_number_token', parseInt(e.target.value))}
+                                tooltip="Max global-attention tokens in MEMatte."
+                            />
+                            <Select
+                                label="Patch Decoder"
+                                value={(config.refine.mematte_patch_decoder ?? true) ? 'true' : 'false'}
+                                onChange={e => updateConfig('refine', 'mematte_patch_decoder', e.target.value === 'true')}
+                                options={[
+                                    { value: 'true', label: 'On' },
+                                    { value: 'false', label: 'Off' },
+                                ]}
+                                tooltip="Enable MEMatte patch decoder mode."
                             />
                         </div>
-                    </div>
+                    )}
                 </Section>
 
                 <Section
@@ -1787,6 +2360,67 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 onChange={e => updateConfig('refine', 'unknown_band_px', parseInt(e.target.value || "0"))}
                                 tooltip="Controls boundary band width for high-res refinement (maps to refine.unknown_band_px)."
                             />
+                            <Switch
+                                label="Guided Region Trimap (--refine-region-trimap/--no-refine-region-trimap)"
+                                checked={Boolean(config.refine.region_trimap_enabled)}
+                                onChange={v => updateConfig('refine', 'region_trimap_enabled', v)}
+                                tooltip="Uses propagated Samurai/Stage-1 mask to build sure-FG/unknown/loose-FG constraints in refinement."
+                            />
+                            {showAdvanced && (
+                                <>
+                                    <Input
+                                        label="Guided Threshold (--refine-region-trimap-threshold)"
+                                        type="number"
+                                        step="0.01"
+                                        value={config.refine.region_trimap_threshold ?? 0.5}
+                                        onChange={e => updateConfig('refine', 'region_trimap_threshold', parseFloat(e.target.value))}
+                                        tooltip="Binarization threshold applied to propagated guidance masks."
+                                    />
+                                    <Input
+                                        label="Sure FG Erode Px (--refine-region-trimap-fg-erode-px)"
+                                        type="number"
+                                        value={config.refine.region_trimap_fg_erode_px ?? 3}
+                                        onChange={e => updateConfig('refine', 'region_trimap_fg_erode_px', parseInt(e.target.value || "0"))}
+                                        tooltip="Pixels to erode guidance for sure-foreground lock."
+                                    />
+                                    <Input
+                                        label="Loose FG Dilate Px (--refine-region-trimap-bg-dilate-px)"
+                                        type="number"
+                                        value={config.refine.region_trimap_bg_dilate_px ?? 16}
+                                        onChange={e => updateConfig('refine', 'region_trimap_bg_dilate_px', parseInt(e.target.value || "0"))}
+                                        tooltip="Pixels to dilate guidance so refinement has room for soft edges."
+                                    />
+                                    <Input
+                                        label="Cleanup Px (--refine-region-trimap-cleanup-px)"
+                                        type="number"
+                                        value={config.refine.region_trimap_cleanup_px ?? 1}
+                                        onChange={e => updateConfig('refine', 'region_trimap_cleanup_px', parseInt(e.target.value || "0"))}
+                                        tooltip="Morphological cleanup radius for guidance masks."
+                                    />
+                                    <Switch
+                                        label="Keep Largest Component (--refine-region-trimap-keep-largest/--no-refine-region-trimap-keep-largest)"
+                                        checked={Boolean(config.refine.region_trimap_keep_largest)}
+                                        onChange={v => updateConfig('refine', 'region_trimap_keep_largest', v)}
+                                        tooltip="Helps reject background clusters and keep the dominant tracked subject."
+                                    />
+                                    <Input
+                                        label="Min Guided Coverage (--refine-region-trimap-min-coverage)"
+                                        type="number"
+                                        step="0.0001"
+                                        value={config.refine.region_trimap_min_coverage ?? 0.002}
+                                        onChange={e => updateConfig('refine', 'region_trimap_min_coverage', parseFloat(e.target.value))}
+                                        tooltip="Reject guided trimap frame if coverage drops below this value."
+                                    />
+                                    <Input
+                                        label="Max Guided Coverage (--refine-region-trimap-max-coverage)"
+                                        type="number"
+                                        step="0.0001"
+                                        value={config.refine.region_trimap_max_coverage ?? 0.98}
+                                        onChange={e => updateConfig('refine', 'region_trimap_max_coverage', parseFloat(e.target.value))}
+                                        tooltip="Reject guided trimap frame if coverage rises above this value."
+                                    />
+                                </>
+                            )}
                             <Input
                                 label="Mask Shrink/Grow (--mt-shrink-grow-px)"
                                 type="number"
@@ -1957,6 +2591,55 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     </>
                                 )}
                             </div>
+                        </div>
+                    </div>
+                </Section>
+
+                <Section
+                    title="Debug Stage Exports"
+                    tooltip="Export per-stage sample frames and diagnosis artifacts to isolate where matte quality breaks."
+                    defaultOpen={showAdvanced}
+                >
+                    <div className="space-y-2">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                            <Switch
+                                label="Enable Stage Samples (--debug-stage-samples/--no-debug-stage-samples)"
+                                checked={config.debug.export_stage_samples}
+                                onChange={v => updateConfig('debug', 'export_stage_samples', v)}
+                                tooltip="Writes sampled alpha/rgb/overlay images for each stage."
+                            />
+                            <Input
+                                label="Sample Count (--debug-sample-count)"
+                                type="number"
+                                value={config.debug.sample_count}
+                                onChange={e => updateConfig('debug', 'sample_count', parseInt(e.target.value || "1"))}
+                                tooltip="How many sample frames to export when sample list is empty."
+                            />
+                            <Input
+                                label="Sample Frames (--debug-sample-frames)"
+                                value={(config.debug.sample_frames || []).join(',')}
+                                onChange={e => updateConfig('debug', 'sample_frames', e.target.value.split(',').map(s => s.trim()).filter(Boolean).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v)))}
+                                placeholder="0,40,81,122,162"
+                                tooltip="Comma-separated absolute frame indices."
+                            />
+                            <Input
+                                label="Debug Stage Dir (--debug-stage-dir)"
+                                value={config.debug.stage_dir}
+                                onChange={e => updateConfig('debug', 'stage_dir', e.target.value)}
+                                tooltip="Subdirectory under output_dir where debug artifacts are written."
+                            />
+                            <Switch
+                                label="Save RGB Samples"
+                                checked={config.debug.save_rgb}
+                                onChange={v => updateConfig('debug', 'save_rgb', v)}
+                                tooltip="Write sampled source RGB frames to debug folder."
+                            />
+                            <Switch
+                                label="Save Overlay Samples"
+                                checked={config.debug.save_overlay}
+                                onChange={v => updateConfig('debug', 'save_overlay', v)}
+                                tooltip="Write sampled alpha-over-RGB overlays."
+                            />
                         </div>
                     </div>
                 </Section>

@@ -21,6 +21,12 @@ from typing import Any, Optional
 import numpy as np
 
 from videomatte_hq.config import VideoMatteConfig
+from videomatte_hq.diagnostics.stage_debug import (
+    export_stage_samples,
+    resolve_sample_local_frames,
+    write_stage_diagnosis_report,
+)
+from videomatte_hq.pipeline.memory_region_constraint import build_memory_region_priors
 from videomatte_hq.pipeline.pass_memory import run_pass_memory
 from videomatte_hq.pipeline.pass_matte_tuning import run_pass_matte_tuning
 from videomatte_hq.pipeline.pass_refine import run_pass_refine
@@ -151,6 +157,24 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
     num_frames = source.num_frames
     height, width = source.resolution
     logger.info(f"Loaded {num_frames} frames at {width}x{height}")
+    write_index_start = max(int(cfg.io.frame_start), 0)
+
+    debug_enabled = bool(getattr(cfg, "debug", None) and cfg.debug.export_stage_samples)
+    sample_local_frames: list[int] = []
+    stage_metrics: dict[str, dict[int, dict[str, float]]] = {}
+    stage_order: list[str] = ["stage2_memory", "stage3_refine", "stage4_temporal", "stage5_tuned"]
+    if debug_enabled:
+        sample_local_frames = resolve_sample_local_frames(
+            num_frames=int(num_frames),
+            frame_start=write_index_start,
+            sample_frames=list(getattr(cfg.debug, "sample_frames", []) or []),
+            sample_count=int(getattr(cfg.debug, "sample_count", 5)),
+        )
+        logger.info(
+            "Debug stage samples enabled: %d frame(s) -> %s",
+            len(sample_local_frames),
+            [int(write_index_start + i) for i in sample_local_frames],
+        )
 
     # ------------------------------------------------------------------
     # Stage 1: Project + assignments
@@ -175,6 +199,47 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
     stage_cache.mark_stage_complete("project")
     stage_cache.mark_stage_complete("assignment")
 
+    memory_region_priors = None
+    refine_region_guidance_masks = None
+    memory_region_result = build_memory_region_priors(
+        source=source,
+        keyframe_masks=keyframe_masks,
+        cfg=cfg,
+    )
+    if memory_region_result is not None:
+        memory_region_priors = memory_region_result.priors
+        refine_region_guidance_masks = memory_region_result.guidance_masks
+        logger.info(
+            "Memory region prior: mode=%s anchor=%d backend=%s mean_cov=%.3f range=[%.3f, %.3f]",
+            memory_region_result.mode,
+            int(memory_region_result.anchor_absolute_frame),
+            memory_region_result.backend_used or memory_region_result.backend_requested or "n/a",
+            float(memory_region_result.mean_coverage),
+            float(memory_region_result.min_coverage),
+            float(memory_region_result.max_coverage),
+        )
+        if memory_region_result.note:
+            logger.warning("Memory region prior note: %s", memory_region_result.note)
+        if refine_region_guidance_masks:
+            logger.info(
+                "Refine guidance: using %d propagated guidance mask(s) for trimap constraints.",
+                len(refine_region_guidance_masks),
+            )
+        if debug_enabled and sample_local_frames:
+            stage_metrics["stage1_region_prior"] = export_stage_samples(
+                output_dir=output_dir,
+                stage_dir_name=str(cfg.debug.stage_dir),
+                stage_name="stage1_region_prior",
+                source=source,
+                alphas=memory_region_priors,
+                sample_local_frames=sample_local_frames,
+                frame_start=write_index_start,
+                confidences=None,
+                save_rgb=bool(cfg.debug.save_rgb),
+                save_overlay=bool(cfg.debug.save_overlay),
+            )
+            stage_order = ["stage1_region_prior"] + stage_order
+
     # ------------------------------------------------------------------
     # Stage 2: Memory coarse alpha
     # ------------------------------------------------------------------
@@ -192,9 +257,28 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
             logger.info("Loaded memory coarse alpha/confidence from cache")
 
     if coarse_alphas is None or confidence_maps is None:
-        coarse_alphas, confidence_maps = run_pass_memory(source, keyframe_masks, cfg)
+        coarse_alphas, confidence_maps = run_pass_memory(
+            source=source,
+            keyframe_masks=keyframe_masks,
+            cfg=cfg,
+            region_priors=memory_region_priors,
+        )
         _save_cache(cache_dir, "memory_alpha", coarse_alphas)
         _save_cache(cache_dir, "memory_conf", confidence_maps)
+
+    if debug_enabled and sample_local_frames:
+        stage_metrics["stage2_memory"] = export_stage_samples(
+            output_dir=output_dir,
+            stage_dir_name=str(cfg.debug.stage_dir),
+            stage_name="stage2_memory",
+            source=source,
+            alphas=coarse_alphas,
+            sample_local_frames=sample_local_frames,
+            frame_start=write_index_start,
+            confidences=confidence_maps,
+            save_rgb=bool(cfg.debug.save_rgb),
+            save_overlay=bool(cfg.debug.save_overlay),
+        )
 
     stage_cache.mark_stage_complete("memory")
 
@@ -212,8 +296,28 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
             logger.info("Loaded refined alpha from cache")
 
     if refined_alphas is None:
-        refined_alphas = run_pass_refine(source, coarse_alphas, confidence_maps, cfg)
+        refined_alphas = run_pass_refine(
+            source,
+            coarse_alphas,
+            confidence_maps,
+            cfg,
+            region_guidance_masks=refine_region_guidance_masks,
+        )
         _save_cache(cache_dir, "refined_alpha", refined_alphas)
+
+    if debug_enabled and sample_local_frames:
+        stage_metrics["stage3_refine"] = export_stage_samples(
+            output_dir=output_dir,
+            stage_dir_name=str(cfg.debug.stage_dir),
+            stage_name="stage3_refine",
+            source=source,
+            alphas=refined_alphas,
+            sample_local_frames=sample_local_frames,
+            frame_start=write_index_start,
+            confidences=confidence_maps,
+            save_rgb=bool(cfg.debug.save_rgb),
+            save_overlay=bool(cfg.debug.save_overlay),
+        )
 
     stage_cache.mark_stage_complete("refine")
 
@@ -240,6 +344,20 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
         )
         _save_cache(cache_dir, "final_alpha", final_alphas)
 
+    if debug_enabled and sample_local_frames:
+        stage_metrics["stage4_temporal"] = export_stage_samples(
+            output_dir=output_dir,
+            stage_dir_name=str(cfg.debug.stage_dir),
+            stage_name="stage4_temporal",
+            source=source,
+            alphas=final_alphas,
+            sample_local_frames=sample_local_frames,
+            frame_start=write_index_start,
+            confidences=confidence_maps,
+            save_rgb=bool(cfg.debug.save_rgb),
+            save_overlay=bool(cfg.debug.save_overlay),
+        )
+
     stage_cache.mark_stage_complete("temporal_cleanup")
 
     # ------------------------------------------------------------------
@@ -261,6 +379,27 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
             cfg=cfg,
         )
         _save_cache(cache_dir, "tuned_alpha", tuned_alphas)
+
+    if debug_enabled and sample_local_frames:
+        stage_metrics["stage5_tuned"] = export_stage_samples(
+            output_dir=output_dir,
+            stage_dir_name=str(cfg.debug.stage_dir),
+            stage_name="stage5_tuned",
+            source=source,
+            alphas=tuned_alphas,
+            sample_local_frames=sample_local_frames,
+            frame_start=write_index_start,
+            confidences=confidence_maps,
+            save_rgb=bool(cfg.debug.save_rgb),
+            save_overlay=bool(cfg.debug.save_overlay),
+        )
+        diagnosis_json, diagnosis_md = write_stage_diagnosis_report(
+            output_dir=output_dir,
+            stage_dir_name=str(cfg.debug.stage_dir),
+            stage_order=stage_order,
+            per_stage_metrics=stage_metrics,
+        )
+        logger.info("Debug stage diagnosis artifacts: metrics=%s report=%s", diagnosis_json, diagnosis_md)
 
     stage_cache.mark_stage_complete("matte_tuning")
 
@@ -285,7 +424,6 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
         base_dir=output_dir,
     )
 
-    write_index_start = max(int(cfg.io.frame_start), 0)
     for idx, alpha in enumerate(tuned_alphas):
         alpha_writer.write(write_index_start + idx, alpha)
 

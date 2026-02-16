@@ -20,7 +20,10 @@ The current implementation is a mask-first, assignment-driven workflow:
 - Project-backed mask-first assignment (`.vmhqproj`) is required by default.
 - Correction anchors support suggested partial reprocess ranges.
 - Phase 3 Initial Mask Builder is integrated in UI/API with `GrabCut` and optional `SAM` backend.
-- Phase 4 long-range propagation assist can auto-insert correction anchors from one keyframe (`flow`, `sam2_video_predictor`, `cutie`, with fallback-to-flow).
+- Stage 1 range build now supports `samurai_video_predictor` for anchor-prompt video tracking (plus legacy per-frame `SAM` mode).
+- Phase 4 long-range propagation assist supports `samurai_video_predictor`, `flow`, `sam2_video_predictor`, and `cutie` (with fallback-to-flow).
+- Stage 2 region constraint prior can now run with `samurai_video_predictor` backend in addition to existing backends.
+- Stage-by-stage sample exports plus diagnosis reports help isolate which pass introduces artifacts.
 - Built-in QC metrics and regression gates can fail runs automatically.
 
 ## Requirements
@@ -77,7 +80,9 @@ videomatte-hq \
   --propagate-from-frame 0 \
   --propagate-range-start 0 \
   --propagate-range-end 240 \
-  --propagate-backend sam2_video_predictor \
+  --propagate-backend samurai_video_predictor \
+  --propagate-samurai-model-cfg sam2.1_hiera_l.yaml \
+  --propagate-samurai-checkpoint checkpoints/sam2.1_hiera_large.pt \
   --propagate-fallback-to-flow \
   --propagate-stride 12 \
   --propagate-max-new-keyframes 20 \
@@ -125,7 +130,7 @@ videomatte-hq \
 ### Phase 4 propagation assist
 - `--propagate-from-frame`
 - `--propagate-range-start`, `--propagate-range-end`
-- `--propagate-backend` (`flow`, `sam2_video_predictor`, `cutie`)
+- `--propagate-backend` (`flow`, `samurai_video_predictor`, `sam2_video_predictor`, `cutie`)
 - `--propagate-fallback-to-flow/--no-propagate-fallback-to-flow`
 - `--propagate-stride`
 - `--propagate-max-new-keyframes`
@@ -134,13 +139,44 @@ videomatte-hq \
 - `--propagate-flow-min-coverage`
 - `--propagate-flow-max-coverage`
 - `--propagate-flow-feather-px`
+- `--propagate-samurai-model-cfg`
+- `--propagate-samurai-checkpoint`
+- `--propagate-samurai-offload-video-to-cpu/--no-propagate-samurai-offload-video-to-cpu`
+- `--propagate-samurai-offload-state-to-cpu/--no-propagate-samurai-offload-state-to-cpu`
 - `--propagate-kind`, `--propagate-source`
 - `--propagate-only`
+
+### Stage debug exports
+- `--debug-stage-samples/--no-debug-stage-samples`
+- `--debug-sample-count`
+- `--debug-sample-frames`
+- `--debug-stage-dir`
 
 ### Memory core
 - `--memory-backend`
 - `--memory-frames`
 - `--window`
+
+### Memory region constraint
+- `--memory-region-constraint/--no-memory-region-constraint`
+- `--memory-region-source` (`none`, `propagated_bbox`, `propagated_mask`, `nearest_keyframe_bbox`)
+- `--memory-region-anchor-frame`
+- `--memory-region-backend` (`flow`, `samurai_video_predictor`, `sam2_video_predictor`, `cutie`)
+- `--memory-region-fallback-to-flow/--no-memory-region-fallback-to-flow`
+- `--memory-region-flow-downscale`
+- `--memory-region-flow-min-coverage`
+- `--memory-region-flow-max-coverage`
+- `--memory-region-flow-feather-px`
+- `--memory-region-samurai-model-cfg`
+- `--memory-region-samurai-checkpoint`
+- `--memory-region-samurai-offload-video-to-cpu/--no-memory-region-samurai-offload-video-to-cpu`
+- `--memory-region-samurai-offload-state-to-cpu/--no-memory-region-samurai-offload-state-to-cpu`
+- `--memory-region-threshold`
+- `--memory-region-bbox-margin-px`
+- `--memory-region-bbox-expand-ratio`
+- `--memory-region-dilate-px`
+- `--memory-region-soften-px`
+- `--memory-region-outside-conf-cap`
 
 ### QC and regression gates
 - `--qc/--no-qc`
@@ -192,7 +228,9 @@ Configure and launch a new matting job. All pipeline settings are exposed in col
 - **Input / Output** — video path (drag-and-drop or type), output directory, alpha pattern, frame range, alpha format (PNG 8/16-bit, EXR), shot type, DWAA quality
 - **Subject Assignment (Mask-First)** — project file, keyframe index, anchor type (`initial`/`correction`), mask import, auto-apply suggested reprocess range
 - **Initial Mask Builder (Phase 3)** — load a frame, auto-detect subjects with text prompts (`Suggest Boxes`), draw/adjust box, add FG/BG points, choose backend (`GrabCut` or optional `SAM`), build + import mask
-- **Phase 4: Long-Range Propagation Assist** — generate additional correction anchors from one keyframe over a range (`Flow`, `SAM2VideoPredictor`, `Cutie` with fallback-to-flow)
+- **Stage 1 Prompt Range Build** — from the same prompts (box + FG/BG points), build and import masks across a selected frame range (`Samurai Video Predictor` or per-frame `SAM`)
+- **Phase 4: Long-Range Propagation Assist** — generate additional correction anchors from one keyframe over a range (`Samurai Video Predictor`, `Flow`, `SAM2VideoPredictor`, `Cutie` with fallback-to-flow)
+- **Memory Propagation (Stage 2)** — coarse alpha controls and optional full-range region constraint settings (`propagated_bbox`, `propagated_mask`, or `nearest_keyframe_bbox`)
 - **Background Plate** — background estimation settings
 - **ROI & Tracking** — region-of-interest and tracking configuration
 - **Global Pass (Pass A)** — global matting model selection (RVM), resolution, chunk length
@@ -203,6 +241,7 @@ Configure and launch a new matting job. All pipeline settings are exposed in col
 - **Temporal Stability (Pass C)** — temporal cleanup settings
 - **Post-Processing** — post-processing options
 - **Runtime & Preview** — device (CUDA/CPU), precision (FP16/FP32), IO workers, live preview settings
+- **Debug Stage Exports** — export sampled stage outputs and write `debug_stages/diagnosis.json` + `debug_stages/diagnosis.md`
 - **QC & Regression Gates** — all QC thresholds exposed (flicker, edge confidence, band spike, roundtrip MAE)
 
 ![Mask Builder — auto-detect subject and build initial mask](docs/images/mask_builder_result.png)
@@ -236,6 +275,7 @@ Configure and launch a new matting job. All pipeline settings are exposed in col
 - `POST /api/assignments/suggest-range`
 - `POST /api/assignments/frame-preview`
 - `POST /api/assignments/build-mask`
+- `POST /api/assignments/build-mask-range`
 - `POST /api/assignments/suggest-boxes`
 - `POST /api/assignments/propagate`
 - `GET /api/qc/info`
@@ -252,6 +292,7 @@ Top-level sections used by Option B runtime:
 - `preview`
 - `qc`
 - `runtime`
+- `debug`
 
 Example (`my_config.yaml`):
 ```yaml
@@ -272,6 +313,14 @@ memory:
   backend: "appearance_memory_bank"
   memory_frames: 12
   window: 120
+  region_constraint_enabled: true
+  region_constraint_source: "propagated_bbox"
+  region_constraint_backend: "samurai_video_predictor"
+  region_constraint_fallback_to_flow: true
+  region_constraint_samurai_model_cfg: "sam2.1_hiera_l.yaml"
+  region_constraint_samurai_checkpoint: "checkpoints/sam2.1_hiera_large.pt"
+  region_constraint_bbox_margin_px: 96
+  region_constraint_dilate_px: 24
 
 refine:
   enabled: true
@@ -279,6 +328,18 @@ refine:
   unknown_band_px: 64
   tile_size: 1536
   overlap: 96
+
+# Optional neural refiner (direct MEMatte loader, no detectron2 LazyConfig needed):
+# refine:
+#   enabled: true
+#   backend: "mematte"
+#   mematte_repo_dir: "third_party/MEMatte"
+#   mematte_checkpoint: "third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth"
+#   mematte_max_number_token: 18500
+#   mematte_patch_decoder: true
+#   unknown_band_px: 64
+#   tile_size: 1536
+#   overlap: 96
 
 temporal_cleanup:
   enabled: true
@@ -307,11 +368,24 @@ runtime:
   precision: "fp16"
   workers_io: 4
   resume: true
+
+debug:
+  export_stage_samples: false
+  sample_count: 5
+  sample_frames: [0, 40, 81, 122, 162]
+  stage_dir: "debug_stages"
 ```
 
 Run with config:
 ```bash
 videomatte-hq --config my_config.yaml
+```
+
+Or enable MEMatte from CLI:
+```bash
+videomatte-hq --config my_config.yaml --refine-backend mematte ^
+  --refine-mematte-repo-dir third_party/MEMatte ^
+  --refine-mematte-checkpoint third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth
 ```
 
 ## Development

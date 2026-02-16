@@ -8,9 +8,17 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from videomatte_hq.samurai_backend import (
+    SAMURAI_BACKEND_CANONICAL,
+    SamuraiRuntimeConfig,
+    is_samurai_backend,
+    propagate_with_samurai_from_mask,
+)
+
 
 SUPPORTED_PROPAGATION_BACKENDS = (
     "flow",
+    SAMURAI_BACKEND_CANONICAL,
     "sam2_video_predictor",
     "cutie",
 )
@@ -196,6 +204,11 @@ def propagate_masks_assist(
     flow_min_coverage: float = 0.002,
     flow_max_coverage: float = 0.98,
     flow_feather_px: int = 1,
+    samurai_model_cfg: str = "",
+    samurai_checkpoint: str = "",
+    samurai_offload_video_to_cpu: bool = False,
+    samurai_offload_state_to_cpu: bool = False,
+    device_hint: str = "cuda",
 ) -> PropagationAssistResult:
     """Propagate one keyframe mask across a frame range."""
     backend_norm = str(backend or "flow").strip().lower()
@@ -212,6 +225,47 @@ def propagate_masks_assist(
             feather_px=max(0, int(flow_feather_px)),
         )
         return PropagationAssistResult(masks=masks, backend_used="flow", note=None)
+
+    if is_samurai_backend(backend_norm):
+        try:
+            masks, note = propagate_with_samurai_from_mask(
+                frame_loader=frame_loader,
+                frame_start=int(frame_start),
+                frame_end=int(frame_end),
+                anchor_frame=int(anchor_frame),
+                anchor_mask=anchor_mask,
+                runtime=SamuraiRuntimeConfig(
+                    model_cfg=str(samurai_model_cfg or "").strip(),
+                    checkpoint=str(samurai_checkpoint or "").strip(),
+                    offload_video_to_cpu=bool(samurai_offload_video_to_cpu),
+                    offload_state_to_cpu=bool(samurai_offload_state_to_cpu),
+                ),
+                device_hint=device_hint,
+            )
+            return PropagationAssistResult(
+                masks={int(k): np.clip(np.asarray(v, dtype=np.float32), 0.0, 1.0).astype(np.float32) for k, v in masks.items()},
+                backend_used=SAMURAI_BACKEND_CANONICAL,
+                note=note,
+            )
+        except Exception as exc:
+            if fallback_to_flow:
+                masks = _propagate_flow_backend(
+                    frame_loader=frame_loader,
+                    frame_start=frame_start,
+                    frame_end=frame_end,
+                    anchor_frame=anchor_frame,
+                    anchor_mask=anchor_mask,
+                    flow_downscale=flow_downscale,
+                    flow_min_coverage=flow_min_coverage,
+                    flow_max_coverage=flow_max_coverage,
+                    feather_px=max(0, int(flow_feather_px)),
+                )
+                return PropagationAssistResult(
+                    masks=masks,
+                    backend_used="flow_fallback",
+                    note=f"Samurai unavailable: {exc}",
+                )
+            raise
 
     if backend_norm in {"sam2", "sam2_video_predictor", "sam2videopredictor", "sam2_video"}:
         try:

@@ -36,6 +36,25 @@ export interface MemoryConfig {
     spatial_weight?: number;
     temperature?: number;
     auto_anchor_min_gap?: number;
+    region_constraint_enabled?: boolean;
+    region_constraint_source?: 'none' | 'propagated_bbox' | 'propagated_mask' | 'nearest_keyframe_bbox';
+    region_constraint_anchor_frame?: number;
+    region_constraint_backend?: string;
+    region_constraint_fallback_to_flow?: boolean;
+    region_constraint_flow_downscale?: number;
+    region_constraint_flow_min_coverage?: number;
+    region_constraint_flow_max_coverage?: number;
+    region_constraint_flow_feather_px?: number;
+    region_constraint_samurai_model_cfg?: string;
+    region_constraint_samurai_checkpoint?: string;
+    region_constraint_samurai_offload_video_to_cpu?: boolean;
+    region_constraint_samurai_offload_state_to_cpu?: boolean;
+    region_constraint_threshold?: number;
+    region_constraint_bbox_margin_px?: number;
+    region_constraint_bbox_expand_ratio?: number;
+    region_constraint_dilate_px?: number;
+    region_constraint_soften_px?: number;
+    region_constraint_outside_confidence_cap?: number;
 }
 
 export interface BackgroundConfig {
@@ -132,7 +151,19 @@ export interface RefineConfig {
     bg_confidence_gate: number;
     enabled: boolean;
     backend?: string;
+    mematte_repo_dir?: string;
+    mematte_checkpoint?: string;
+    mematte_max_number_token?: number;
+    mematte_patch_decoder?: boolean;
     unknown_band_px: number;
+    region_trimap_enabled?: boolean;
+    region_trimap_threshold?: number;
+    region_trimap_fg_erode_px?: number;
+    region_trimap_bg_dilate_px?: number;
+    region_trimap_cleanup_px?: number;
+    region_trimap_keep_largest?: boolean;
+    region_trimap_min_coverage?: number;
+    region_trimap_max_coverage?: number;
     tile_size: number;
     overlap: number;
     alpha_bg_threshold?: number;
@@ -210,6 +241,15 @@ export interface RuntimeConfig {
     verbose: boolean;
 }
 
+export interface DebugConfig {
+    export_stage_samples: boolean;
+    sample_count: number;
+    sample_frames: number[];
+    stage_dir: string;
+    save_rgb: boolean;
+    save_overlay: boolean;
+}
+
 export interface TemporalCleanupConfig {
     enabled: boolean;
     outside_band_ema: number;
@@ -254,4 +294,5 @@ export interface VideoMatteConfig {
     temporal_cleanup: TemporalCleanupConfig;
     matte_tuning: MatteTuningConfig;
     runtime: RuntimeConfig;
+    debug: DebugConfig;
 }

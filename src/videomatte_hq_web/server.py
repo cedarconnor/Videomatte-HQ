@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from videomatte_hq.config import VideoMatteConfig
 from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.mask_builder import build_prompt_mask_grabcut
+from videomatte_hq.prompt_mask_range import build_prompt_masks_range
 from videomatte_hq.propagation_assist import (
     SUPPORTED_PROPAGATION_BACKENDS,
     propagate_masks_assist,
@@ -120,6 +121,33 @@ class BuildAssignmentMaskRequest(BaseModel):
     kind: str = "initial"
 
 
+class BuildAssignmentMaskRangeRequest(BaseModel):
+    config: dict
+    anchor_frame: int = 0
+    frame_start: int | None = None
+    frame_end: int | None = None
+    box: PromptBox
+    fg_points: list[PromptPoint] = Field(default_factory=list)
+    bg_points: list[PromptPoint] = Field(default_factory=list)
+    backend: str = "sam"
+    point_radius: int = Field(default=8, ge=1, le=128)
+    iter_count: int = Field(default=5, ge=1, le=20)
+    sam_model_id: str = DEFAULT_SAM_MODEL_ID
+    sam_local_files_only: bool = True
+    sam_fallback_to_grabcut: bool = False
+    samurai_model_cfg: str = ""
+    samurai_checkpoint: str = ""
+    samurai_offload_video_to_cpu: bool = False
+    samurai_offload_state_to_cpu: bool = False
+    track_prompts_with_flow: bool = False
+    track_bg_points_with_flow: bool = False
+    flow_downscale: float = Field(default=0.5, ge=0.15, le=1.0)
+    save_stride: int = Field(default=1, ge=1, le=300)
+    kind: str = "correction"
+    source: str = "ui_builder_range"
+    overwrite_existing: bool = False
+
+
 class SuggestAssignmentBoxesRequest(BaseModel):
     config: dict
     frame: int = 0
@@ -140,6 +168,10 @@ class PropagateAssignmentMasksRequest(BaseModel):
     flow_min_coverage: float = Field(default=0.002, ge=0.0, le=1.0)
     flow_max_coverage: float = Field(default=0.98, ge=0.0, le=1.0)
     flow_feather_px: int = Field(default=1, ge=0, le=32)
+    samurai_model_cfg: str = ""
+    samurai_checkpoint: str = ""
+    samurai_offload_video_to_cpu: bool = False
+    samurai_offload_state_to_cpu: bool = False
     kind: str = "correction"
     source: str = "ui_propagate"
     overwrite_existing: bool = False
@@ -458,6 +490,162 @@ async def build_assignment_mask(req: BuildAssignmentMaskRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.post("/api/assignments/build-mask-range")
+async def build_assignment_mask_range(req: BuildAssignmentMaskRangeRequest):
+    """Build prompt masks across a frame range and import as keyframe assignments."""
+    try:
+        cfg = VideoMatteConfig(**req.config)
+        project_path, project = ensure_project(cfg)
+
+        source = FrameSource(
+            pattern=cfg.io.input,
+            frame_start=cfg.io.frame_start,
+            frame_end=cfg.io.frame_end,
+            prefetch_workers=0,
+        )
+        try:
+            num_frames = int(source.num_frames)
+            if num_frames <= 0:
+                raise ValueError("Input has no frames for range mask building.")
+
+            clip_abs_start = int(cfg.io.frame_start)
+            clip_abs_end = int(cfg.io.frame_end) if int(cfg.io.frame_end) >= 0 else (clip_abs_start + num_frames - 1)
+
+            anchor_local = _resolve_local_frame_index(cfg=cfg, source=source, requested_frame=req.anchor_frame)
+            anchor_abs = int(clip_abs_start + anchor_local)
+
+            start_abs = clip_abs_start if (req.frame_start is None or int(req.frame_start) < 0) else int(req.frame_start)
+            end_abs = clip_abs_end if (req.frame_end is None or int(req.frame_end) < 0) else int(req.frame_end)
+            start_abs = max(clip_abs_start, min(clip_abs_end, start_abs))
+            end_abs = max(clip_abs_start, min(clip_abs_end, end_abs))
+            if end_abs < start_abs:
+                raise ValueError(f"Invalid range: {start_abs}..{end_abs}")
+
+            local_start = int(start_abs - clip_abs_start)
+            local_end = int(end_abs - clip_abs_start)
+            if anchor_local < local_start or anchor_local > local_end:
+                raise ValueError(
+                    f"Anchor frame {anchor_abs} is outside selected range {start_abs}..{end_abs}."
+                )
+
+            def _load_local_rgb_u8(local_idx: int) -> np.ndarray:
+                if local_idx < local_start or local_idx > local_end:
+                    raise ValueError(f"Local frame {local_idx} outside selected range {local_start}..{local_end}.")
+                return _frame_to_rgb_u8(source[int(local_idx)], error_context="range mask builder")
+
+            fg_points = [(p.x, p.y) for p in req.fg_points]
+            bg_points = [(p.x, p.y) for p in req.bg_points]
+            box_xyxy = (req.box.x0, req.box.y0, req.box.x1, req.box.y1)
+
+            result = build_prompt_masks_range(
+                frame_loader=_load_local_rgb_u8,
+                frame_start=local_start,
+                frame_end=local_end,
+                anchor_frame=anchor_local,
+                box_xyxy=box_xyxy,
+                fg_points=fg_points,
+                bg_points=bg_points,
+                backend=req.backend,
+                point_radius=int(req.point_radius),
+                iter_count=int(req.iter_count),
+                sam_model_id=req.sam_model_id or DEFAULT_SAM_MODEL_ID,
+                sam_local_files_only=bool(req.sam_local_files_only),
+                sam_fallback_to_grabcut=bool(req.sam_fallback_to_grabcut),
+                samurai_model_cfg=str(req.samurai_model_cfg or ""),
+                samurai_checkpoint=str(req.samurai_checkpoint or ""),
+                samurai_offload_video_to_cpu=bool(req.samurai_offload_video_to_cpu),
+                samurai_offload_state_to_cpu=bool(req.samurai_offload_state_to_cpu),
+                track_prompts_with_flow=bool(req.track_prompts_with_flow),
+                track_bg_points_with_flow=bool(req.track_bg_points_with_flow),
+                flow_downscale=float(req.flow_downscale),
+                device_hint=cfg.runtime.device,
+            )
+
+            stride = max(1, int(req.save_stride))
+            selected_local = [idx for idx in range(local_start, local_end + 1) if (idx - local_start) % stride == 0]
+            if anchor_local not in selected_local:
+                selected_local.append(anchor_local)
+            if local_end not in selected_local:
+                selected_local.append(local_end)
+            selected_local = sorted(set(selected_local))
+
+            normalized_kind = req.kind if req.kind in ("initial", "correction") else "correction"
+            existing_frames = {int(item.frame) for item in project.keyframes}
+            inserted_frames: list[int] = []
+            skipped_existing_frames: list[int] = []
+            inserted_coverage: list[float] = []
+
+            for local_idx in selected_local:
+                alpha = result.masks.get(int(local_idx))
+                if alpha is None:
+                    continue
+                abs_frame = int(clip_abs_start + int(local_idx))
+                if abs_frame in existing_frames and not bool(req.overwrite_existing):
+                    skipped_existing_frames.append(abs_frame)
+                    continue
+                alpha = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
+                coverage = float(alpha.mean())
+                assignment = upsert_keyframe_alpha(
+                    cfg=cfg,
+                    project_path=project_path,
+                    project=project,
+                    frame=abs_frame,
+                    alpha=alpha,
+                    source=f"{req.source}:{result.backend_used}",
+                    kind=normalized_kind,  # type: ignore[arg-type]
+                )
+                inserted_frames.append(int(assignment.frame))
+                inserted_coverage.append(coverage)
+                existing_frames.add(abs_frame)
+
+            if inserted_frames:
+                suggested_start = int(max(clip_abs_start, min(inserted_frames)))
+                suggested_end = int(min(clip_abs_end, max(inserted_frames)))
+                suggestion_reason = "prompt_mask_range_span"
+            else:
+                suggested_start, suggested_end = suggest_reprocess_range(
+                    project=project,
+                    anchor_frame=anchor_abs,
+                    memory_window=cfg.memory.window,
+                    clip_start=cfg.io.frame_start,
+                    clip_end=cfg.io.frame_end,
+                )
+                suggestion_reason = "neighbor_midpoint_window"
+
+            summary = _build_project_summary(cfg)
+            return {
+                "status": "ok",
+                "anchor_frame": int(anchor_abs),
+                "frame_start": int(start_abs),
+                "frame_end": int(end_abs),
+                "backend_requested": str(req.backend).strip().lower() or "sam",
+                "backend_used": result.backend_used,
+                "builder_note": result.note,
+                "track_prompts_with_flow": bool(req.track_prompts_with_flow),
+                "track_bg_points_with_flow": bool(req.track_bg_points_with_flow),
+                "save_stride": int(stride),
+                "selected_local_frames": [int(x) for x in selected_local],
+                "selected_frames": [int(clip_abs_start + int(x)) for x in selected_local],
+                "inserted_frames": [int(x) for x in inserted_frames],
+                "skipped_existing_frames": [int(x) for x in skipped_existing_frames],
+                "inserted_count": len(inserted_frames),
+                "mean_inserted_coverage": (
+                    float(np.mean(inserted_coverage)) if inserted_coverage else 0.0
+                ),
+                "suggested_reprocess_range": {
+                    "frame_start": int(suggested_start),
+                    "frame_end": int(suggested_end),
+                    "reason": suggestion_reason,
+                },
+                **summary,
+            }
+        finally:
+            source.close()
+    except Exception as e:
+        logger.exception("Failed to build assignment mask range")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.post("/api/assignments/suggest-boxes")
 async def suggest_assignment_boxes(req: SuggestAssignmentBoxesRequest):
     """Suggest assignment boxes from a text prompt on the selected frame."""
@@ -558,6 +746,11 @@ async def propagate_assignment_masks(req: PropagateAssignmentMasksRequest):
                 flow_min_coverage=float(req.flow_min_coverage),
                 flow_max_coverage=float(req.flow_max_coverage),
                 flow_feather_px=int(req.flow_feather_px),
+                samurai_model_cfg=str(req.samurai_model_cfg or ""),
+                samurai_checkpoint=str(req.samurai_checkpoint or ""),
+                samurai_offload_video_to_cpu=bool(req.samurai_offload_video_to_cpu),
+                samurai_offload_state_to_cpu=bool(req.samurai_offload_state_to_cpu),
+                device_hint=str(cfg.runtime.device or "cuda"),
             )
 
             selected_local_frames = select_propagation_frames(

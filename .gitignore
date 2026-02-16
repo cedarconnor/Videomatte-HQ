@@ -42,12 +42,16 @@ cache/
 
 # Build / Runtime Artifacts
 out/
+out_*/
+out*/
 output_*/
 *.egg-info/
 
 # Local Media/Test Assets
 TestFiles/
 input_frames/
+third_party/
+tmp_*/
 
 # Local Debug / Temp Files
 debug_*.log
@@ -57,3 +61,8 @@ web/frontend_build*.log
 stitch_test_output*.txt
 test_log.txt
 test_output.txt
+
+# Design Docs & Tasks
+optionb_upgrade_plan_tasks.md
+videomatte_hq_design_v3.md
+videomatte-hq_v2_optionB_design_doc.md

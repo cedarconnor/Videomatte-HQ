@@ -10,6 +10,7 @@ from videomatte_hq.config import VideoMatteConfig
 from videomatte_hq_web.server import (
     AssignmentFramePreviewRequest,
     BuildAssignmentMaskRequest,
+    BuildAssignmentMaskRangeRequest,
     ImportAssignmentRequest,
     PromptBox,
     PromptPoint,
@@ -19,6 +20,7 @@ from videomatte_hq_web.server import (
     SuggestReprocessRangeRequest,
     assignment_frame_preview,
     build_assignment_mask,
+    build_assignment_mask_range,
     import_assignment,
     propagate_assignment_masks,
     project_state,
@@ -202,6 +204,81 @@ async def test_assignment_mask_builder_sam_fallback_to_grabcut(tmp_path: Path, m
 
 
 @pytest.mark.anyio
+async def test_assignment_mask_builder_sam_range_with_prompt_tracking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    h, w = 72, 112
+    for idx in range(6):
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
+        x0 = 20 + idx * 4
+        frame[18:62, x0 : x0 + 28, :] = 215
+        assert cv2.imwrite(str(frames_dir / f"frame_{idx:05d}.png"), frame)
+
+    out_dir = tmp_path / "out_builder_range"
+    cfg = VideoMatteConfig(
+        io={
+            "input": "frames/frame_%05d.png",
+            "output_dir": str(out_dir),
+            "output_alpha": "alpha/%05d.png",
+            "frame_start": 0,
+            "frame_end": 5,
+        },
+        assignment={"require_assignment": True},
+        project={"path": str(out_dir / "project.vmhqproj")},
+    )
+
+    import videomatte_hq_web.server as server_mod
+    from videomatte_hq.prompt_mask_range import PromptMaskRangeResult
+
+    def _fake_build_prompt_masks_range(**kwargs):
+        start = int(kwargs["frame_start"])
+        end = int(kwargs["frame_end"])
+        masks: dict[int, np.ndarray] = {}
+        for local_idx in range(start, end + 1):
+            alpha = np.zeros((h, w), dtype=np.float32)
+            x0 = 20 + local_idx * 4
+            alpha[18:62, x0 : x0 + 28] = 1.0
+            masks[int(local_idx)] = alpha
+        return PromptMaskRangeResult(
+            masks=masks,
+            backend_used="sam",
+            note=None,
+        )
+
+    monkeypatch.setattr(server_mod, "build_prompt_masks_range", _fake_build_prompt_masks_range)
+
+    built = await build_assignment_mask_range(
+        BuildAssignmentMaskRangeRequest(
+            config=cfg.model_dump(mode="json"),
+            anchor_frame=0,
+            frame_start=0,
+            frame_end=5,
+            backend="sam",
+            box=PromptBox(x0=18, y0=12, x1=58, y1=66),
+            fg_points=[PromptPoint(x=30, y=36)],
+            bg_points=[PromptPoint(x=6, y=6)],
+            save_stride=1,
+            track_prompts_with_flow=True,
+            kind="initial",
+        )
+    )
+
+    assert built["status"] == "ok"
+    assert built["backend_requested"] == "sam"
+    assert built["backend_used"] == "sam"
+    assert built["inserted_count"] == 6
+    assert built["keyframe_count"] == 6
+    assert built["suggested_reprocess_range"]["frame_start"] == 0
+    assert built["suggested_reprocess_range"]["frame_end"] == 5
+
+
+@pytest.mark.anyio
 async def test_assignment_phase4_propagation_flow_inserts_keyframes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -334,3 +411,69 @@ async def test_assignment_phase4_propagation_sam2_fallback_to_flow(
     assert propagated["backend_used"] == "flow_fallback"
     assert propagated["inserted_count"] >= 2
     assert "SAM2 unavailable" in str(propagated.get("builder_note"))
+
+
+@pytest.mark.anyio
+async def test_assignment_phase4_propagation_samurai_fallback_to_flow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    h, w = 64, 96
+    for idx in range(8):
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
+        frame[16:52, 18 + idx:46 + idx, :] = 210
+        assert cv2.imwrite(str(frames_dir / f"frame_{idx:05d}.png"), frame)
+
+    out_dir = tmp_path / "out_phase4_samurai_fallback"
+    cfg = VideoMatteConfig(
+        io={
+            "input": "frames/frame_%05d.png",
+            "output_dir": str(out_dir),
+            "output_alpha": "alpha/%05d.png",
+            "frame_start": 0,
+            "frame_end": 7,
+        },
+        assignment={"require_assignment": True},
+        project={"path": str(out_dir / "project.vmhqproj")},
+    )
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    mask[16:52, 18:46] = 255
+    mask_path = tmp_path / "mask_anchor_0000.png"
+    assert cv2.imwrite(str(mask_path), mask)
+
+    imported = await import_assignment(
+        ImportAssignmentRequest(
+            config=cfg.model_dump(mode="json"),
+            frame=0,
+            mask_path=str(mask_path),
+            source="test",
+            kind="initial",
+        )
+    )
+    assert imported["status"] == "ok"
+
+    propagated = await propagate_assignment_masks(
+        PropagateAssignmentMasksRequest(
+            config=cfg.model_dump(mode="json"),
+            anchor_frame=0,
+            frame_start=0,
+            frame_end=7,
+            backend="samurai_video_predictor",
+            fallback_to_flow=True,
+            stride=2,
+            max_new_keyframes=4,
+            samurai_model_cfg="sam2.1_hiera_l.yaml",
+            samurai_checkpoint="checkpoints/sam2.1_hiera_large.pt",
+        )
+    )
+    assert propagated["status"] == "ok"
+    assert propagated["backend_requested"] == "samurai_video_predictor"
+    assert propagated["backend_used"] == "flow_fallback"
+    assert propagated["inserted_count"] >= 2
+    assert "Samurai unavailable" in str(propagated.get("builder_note"))

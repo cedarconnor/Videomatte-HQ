@@ -48,12 +48,189 @@ def setup_logging(verbose: bool = False) -> None:
 @click.option("--memory-frames", default=None, type=int, help="Memory frame budget")
 @click.option("--window", default=None, type=int, help="Temporal window length")
 @click.option(
+    "--memory-region-constraint/--no-memory-region-constraint",
+    default=None,
+    help="Enable Stage-2 foreground region constraint from propagated/anchor masks",
+)
+@click.option(
+    "--memory-region-source",
+    default=None,
+    type=click.Choice(
+        ["none", "propagated_bbox", "propagated_mask", "nearest_keyframe_bbox"],
+        case_sensitive=False,
+    ),
+    help="Region prior source for Stage 2 constraint",
+)
+@click.option("--memory-region-anchor-frame", default=None, type=int, help="Region prior anchor frame index")
+@click.option(
+    "--memory-region-backend",
+    default=None,
+    help="Region prior propagation backend (flow/samurai_video_predictor/sam2_video_predictor/cutie)",
+)
+@click.option(
+    "--memory-region-fallback-to-flow/--no-memory-region-fallback-to-flow",
+    default=None,
+    help="Fallback to flow when Samurai/SAM2/Cutie backend is unavailable",
+)
+@click.option(
+    "--memory-region-flow-downscale",
+    default=None,
+    type=float,
+    help="Flow downscale for region prior propagation",
+)
+@click.option(
+    "--memory-region-flow-min-coverage",
+    default=None,
+    type=float,
+    help="Minimum acceptable region prior coverage before fallback",
+)
+@click.option(
+    "--memory-region-flow-max-coverage",
+    default=None,
+    type=float,
+    help="Maximum acceptable region prior coverage before fallback",
+)
+@click.option(
+    "--memory-region-flow-feather-px",
+    default=None,
+    type=int,
+    help="Feather radius during region prior flow propagation",
+)
+@click.option(
+    "--memory-region-samurai-model-cfg",
+    default=None,
+    help="Samurai/SAM2 model cfg path for region prior propagation",
+)
+@click.option(
+    "--memory-region-samurai-checkpoint",
+    default=None,
+    help="Samurai/SAM2 checkpoint path for region prior propagation",
+)
+@click.option(
+    "--memory-region-samurai-offload-video-to-cpu/--no-memory-region-samurai-offload-video-to-cpu",
+    default=None,
+    help="Offload Samurai video buffers to CPU during region prior propagation",
+)
+@click.option(
+    "--memory-region-samurai-offload-state-to-cpu/--no-memory-region-samurai-offload-state-to-cpu",
+    default=None,
+    help="Offload Samurai inference state to CPU during region prior propagation",
+)
+@click.option(
+    "--memory-region-threshold",
+    default=None,
+    type=float,
+    help="Threshold used to derive region prior from propagated mask",
+)
+@click.option(
+    "--memory-region-bbox-margin-px",
+    default=None,
+    type=int,
+    help="Extra bbox margin for bbox-based region priors",
+)
+@click.option(
+    "--memory-region-bbox-expand-ratio",
+    default=None,
+    type=float,
+    help="Relative bbox expansion ratio for bbox-based region priors",
+)
+@click.option(
+    "--memory-region-dilate-px",
+    default=None,
+    type=int,
+    help="Morphological dilation radius for region prior mask",
+)
+@click.option(
+    "--memory-region-soften-px",
+    default=None,
+    type=int,
+    help="Gaussian soften radius for region prior mask",
+)
+@click.option(
+    "--memory-region-outside-conf-cap",
+    default=None,
+    type=float,
+    help="Confidence cap applied outside constrained region",
+)
+@click.option(
+    "--refine-backend",
+    default=None,
+    help="Refine backend (guided_band/mematte)",
+)
+@click.option(
     "--unknown-band-px",
     "--mt-trimap-width-px",
     "unknown_band_px",
     default=None,
     type=int,
     help="Refine trimap unknown-band width in pixels",
+)
+@click.option(
+    "--refine-mematte-repo-dir",
+    default=None,
+    help="Path to MEMatte repository directory",
+)
+@click.option(
+    "--refine-mematte-checkpoint",
+    default=None,
+    help="Path to MEMatte checkpoint (.pth)",
+)
+@click.option(
+    "--refine-mematte-max-number-token",
+    default=None,
+    type=int,
+    help="MEMatte max global-attention token count",
+)
+@click.option(
+    "--refine-mematte-patch-decoder/--no-refine-mematte-patch-decoder",
+    default=None,
+    help="Use MEMatte patch decoder during inference",
+)
+@click.option(
+    "--refine-region-trimap/--no-refine-region-trimap",
+    default=None,
+    help="Constrain refinement with Samurai/propagated region trimap guidance",
+)
+@click.option(
+    "--refine-region-trimap-threshold",
+    default=None,
+    type=float,
+    help="Threshold applied to propagated guidance mask before trimap generation",
+)
+@click.option(
+    "--refine-region-trimap-fg-erode-px",
+    default=None,
+    type=int,
+    help="Erode radius for sure-foreground lock in guided trimap",
+)
+@click.option(
+    "--refine-region-trimap-bg-dilate-px",
+    default=None,
+    type=int,
+    help="Dilate radius for loose-foreground support in guided trimap",
+)
+@click.option(
+    "--refine-region-trimap-cleanup-px",
+    default=None,
+    type=int,
+    help="Morphological cleanup radius for propagated trimap masks",
+)
+@click.option(
+    "--refine-region-trimap-keep-largest/--no-refine-region-trimap-keep-largest",
+    default=None,
+    help="Keep only the largest connected component in guided trimap masks",
+)
+@click.option(
+    "--refine-region-trimap-min-coverage",
+    default=None,
+    type=float,
+    help="Minimum guided-trimap coverage accepted before frame fallback",
+)
+@click.option(
+    "--refine-region-trimap-max-coverage",
+    default=None,
+    type=float,
+    help="Maximum guided-trimap coverage accepted before frame fallback",
 )
 @click.option("--matte-tuning/--no-matte-tuning", default=None, help="Enable final matte tuning controls")
 @click.option("--mt-shrink-grow-px", default=None, type=int, help="Final matte choke/expand in pixels")
@@ -86,12 +263,12 @@ def setup_logging(verbose: bool = False) -> None:
 @click.option(
     "--propagate-backend",
     default="flow",
-    help="Propagation backend (flow/sam2_video_predictor/cutie)",
+    help="Propagation backend (flow/samurai_video_predictor/sam2_video_predictor/cutie)",
 )
 @click.option(
     "--propagate-fallback-to-flow/--no-propagate-fallback-to-flow",
     default=True,
-    help="Fallback to flow backend if SAM2/Cutie backend is unavailable",
+    help="Fallback to flow backend if Samurai/SAM2/Cutie backend is unavailable",
 )
 @click.option("--propagate-stride", default=8, type=int, help="Insert propagated keyframes every N frames")
 @click.option(
@@ -129,9 +306,50 @@ def setup_logging(verbose: bool = False) -> None:
     type=int,
     help="Feather radius applied during flow propagation",
 )
+@click.option(
+    "--propagate-samurai-model-cfg",
+    default=None,
+    help="Samurai/SAM2 model cfg path for Phase 4 propagation",
+)
+@click.option(
+    "--propagate-samurai-checkpoint",
+    default=None,
+    help="Samurai/SAM2 checkpoint path for Phase 4 propagation",
+)
+@click.option(
+    "--propagate-samurai-offload-video-to-cpu/--no-propagate-samurai-offload-video-to-cpu",
+    default=None,
+    help="Offload Samurai video buffers to CPU during Phase 4 propagation",
+)
+@click.option(
+    "--propagate-samurai-offload-state-to-cpu/--no-propagate-samurai-offload-state-to-cpu",
+    default=None,
+    help="Offload Samurai inference state to CPU during Phase 4 propagation",
+)
 @click.option("--propagate-kind", default="correction", help="Inserted assignment kind (initial/correction)")
 @click.option("--propagate-source", default="cli_propagate", help="Inserted assignment source label")
 @click.option("--propagate-only", is_flag=True, help="Only run propagation assist and exit")
+@click.option(
+    "--debug-stage-samples/--no-debug-stage-samples",
+    default=None,
+    help="Export sample alpha/rgb/overlay images for each stage (debug_stages).",
+)
+@click.option(
+    "--debug-sample-count",
+    default=None,
+    type=int,
+    help="How many frames to sample for per-stage debug exports.",
+)
+@click.option(
+    "--debug-sample-frames",
+    default=None,
+    help="Comma-separated absolute frame indices for stage debug sampling.",
+)
+@click.option(
+    "--debug-stage-dir",
+    default=None,
+    help="Debug stage artifact subdirectory under output_dir.",
+)
 @click.option("--resume/--no-resume", default=None, help="Use stage cache resume")
 @click.option("--qc/--no-qc", default=None, help="Enable/disable Option B QC evaluation")
 @click.option(
@@ -175,7 +393,39 @@ def main(
     memory_backend,
     memory_frames,
     window,
+    memory_region_constraint,
+    memory_region_source,
+    memory_region_anchor_frame,
+    memory_region_backend,
+    memory_region_fallback_to_flow,
+    memory_region_flow_downscale,
+    memory_region_flow_min_coverage,
+    memory_region_flow_max_coverage,
+    memory_region_flow_feather_px,
+    memory_region_samurai_model_cfg,
+    memory_region_samurai_checkpoint,
+    memory_region_samurai_offload_video_to_cpu,
+    memory_region_samurai_offload_state_to_cpu,
+    memory_region_threshold,
+    memory_region_bbox_margin_px,
+    memory_region_bbox_expand_ratio,
+    memory_region_dilate_px,
+    memory_region_soften_px,
+    memory_region_outside_conf_cap,
+    refine_backend,
     unknown_band_px,
+    refine_mematte_repo_dir,
+    refine_mematte_checkpoint,
+    refine_mematte_max_number_token,
+    refine_mematte_patch_decoder,
+    refine_region_trimap,
+    refine_region_trimap_threshold,
+    refine_region_trimap_fg_erode_px,
+    refine_region_trimap_bg_dilate_px,
+    refine_region_trimap_cleanup_px,
+    refine_region_trimap_keep_largest,
+    refine_region_trimap_min_coverage,
+    refine_region_trimap_max_coverage,
     matte_tuning,
     mt_shrink_grow_px,
     mt_feather_px,
@@ -199,9 +449,17 @@ def main(
     propagate_flow_min_coverage,
     propagate_flow_max_coverage,
     propagate_flow_feather_px,
+    propagate_samurai_model_cfg,
+    propagate_samurai_checkpoint,
+    propagate_samurai_offload_video_to_cpu,
+    propagate_samurai_offload_state_to_cpu,
     propagate_kind,
     propagate_source,
     propagate_only,
+    debug_stage_samples,
+    debug_sample_count,
+    debug_sample_frames,
+    debug_stage_dir,
     resume,
     qc,
     qc_fail_on_regression,
@@ -264,8 +522,72 @@ def main(
         cfg.memory.memory_frames = memory_frames
     if window is not None:
         cfg.memory.window = window
+    if memory_region_constraint is not None:
+        cfg.memory.region_constraint_enabled = bool(memory_region_constraint)
+    if memory_region_source:
+        cfg.memory.region_constraint_source = str(memory_region_source).lower()
+    if memory_region_anchor_frame is not None:
+        cfg.memory.region_constraint_anchor_frame = int(memory_region_anchor_frame)
+    if memory_region_backend:
+        cfg.memory.region_constraint_backend = str(memory_region_backend)
+    if memory_region_fallback_to_flow is not None:
+        cfg.memory.region_constraint_fallback_to_flow = bool(memory_region_fallback_to_flow)
+    if memory_region_flow_downscale is not None:
+        cfg.memory.region_constraint_flow_downscale = float(memory_region_flow_downscale)
+    if memory_region_flow_min_coverage is not None:
+        cfg.memory.region_constraint_flow_min_coverage = float(memory_region_flow_min_coverage)
+    if memory_region_flow_max_coverage is not None:
+        cfg.memory.region_constraint_flow_max_coverage = float(memory_region_flow_max_coverage)
+    if memory_region_flow_feather_px is not None:
+        cfg.memory.region_constraint_flow_feather_px = int(memory_region_flow_feather_px)
+    if memory_region_samurai_model_cfg:
+        cfg.memory.region_constraint_samurai_model_cfg = str(memory_region_samurai_model_cfg)
+    if memory_region_samurai_checkpoint:
+        cfg.memory.region_constraint_samurai_checkpoint = str(memory_region_samurai_checkpoint)
+    if memory_region_samurai_offload_video_to_cpu is not None:
+        cfg.memory.region_constraint_samurai_offload_video_to_cpu = bool(memory_region_samurai_offload_video_to_cpu)
+    if memory_region_samurai_offload_state_to_cpu is not None:
+        cfg.memory.region_constraint_samurai_offload_state_to_cpu = bool(memory_region_samurai_offload_state_to_cpu)
+    if memory_region_threshold is not None:
+        cfg.memory.region_constraint_threshold = float(memory_region_threshold)
+    if memory_region_bbox_margin_px is not None:
+        cfg.memory.region_constraint_bbox_margin_px = int(memory_region_bbox_margin_px)
+    if memory_region_bbox_expand_ratio is not None:
+        cfg.memory.region_constraint_bbox_expand_ratio = float(memory_region_bbox_expand_ratio)
+    if memory_region_dilate_px is not None:
+        cfg.memory.region_constraint_dilate_px = int(memory_region_dilate_px)
+    if memory_region_soften_px is not None:
+        cfg.memory.region_constraint_soften_px = int(memory_region_soften_px)
+    if memory_region_outside_conf_cap is not None:
+        cfg.memory.region_constraint_outside_confidence_cap = float(memory_region_outside_conf_cap)
+    if refine_backend:
+        cfg.refine.backend = str(refine_backend)
     if unknown_band_px is not None:
         cfg.refine.unknown_band_px = unknown_band_px
+    if refine_mematte_repo_dir:
+        cfg.refine.mematte_repo_dir = str(refine_mematte_repo_dir)
+    if refine_mematte_checkpoint:
+        cfg.refine.mematte_checkpoint = str(refine_mematte_checkpoint)
+    if refine_mematte_max_number_token is not None:
+        cfg.refine.mematte_max_number_token = int(refine_mematte_max_number_token)
+    if refine_mematte_patch_decoder is not None:
+        cfg.refine.mematte_patch_decoder = bool(refine_mematte_patch_decoder)
+    if refine_region_trimap is not None:
+        cfg.refine.region_trimap_enabled = bool(refine_region_trimap)
+    if refine_region_trimap_threshold is not None:
+        cfg.refine.region_trimap_threshold = float(refine_region_trimap_threshold)
+    if refine_region_trimap_fg_erode_px is not None:
+        cfg.refine.region_trimap_fg_erode_px = int(refine_region_trimap_fg_erode_px)
+    if refine_region_trimap_bg_dilate_px is not None:
+        cfg.refine.region_trimap_bg_dilate_px = int(refine_region_trimap_bg_dilate_px)
+    if refine_region_trimap_cleanup_px is not None:
+        cfg.refine.region_trimap_cleanup_px = int(refine_region_trimap_cleanup_px)
+    if refine_region_trimap_keep_largest is not None:
+        cfg.refine.region_trimap_keep_largest = bool(refine_region_trimap_keep_largest)
+    if refine_region_trimap_min_coverage is not None:
+        cfg.refine.region_trimap_min_coverage = float(refine_region_trimap_min_coverage)
+    if refine_region_trimap_max_coverage is not None:
+        cfg.refine.region_trimap_max_coverage = float(refine_region_trimap_max_coverage)
     if matte_tuning is not None:
         cfg.matte_tuning.enabled = matte_tuning
     if mt_shrink_grow_px is not None:
@@ -279,6 +601,26 @@ def main(
 
     if require_assignment is not None:
         cfg.assignment.require_assignment = require_assignment
+
+    if debug_stage_samples is not None:
+        cfg.debug.export_stage_samples = bool(debug_stage_samples)
+    if debug_sample_count is not None:
+        cfg.debug.sample_count = max(1, int(debug_sample_count))
+    if debug_sample_frames:
+        parsed_frames: list[int] = []
+        for tok in str(debug_sample_frames).split(","):
+            t = tok.strip()
+            if not t:
+                continue
+            try:
+                parsed_frames.append(int(t))
+            except ValueError as exc:
+                raise click.BadParameter(
+                    f"Invalid --debug-sample-frames token '{t}'. Use comma-separated integers."
+                ) from exc
+        cfg.debug.sample_frames = parsed_frames
+    if debug_stage_dir:
+        cfg.debug.stage_dir = str(debug_stage_dir)
 
     if resume is not None:
         cfg.runtime.resume = resume
@@ -439,6 +781,11 @@ def main(
                 flow_min_coverage=float(propagate_flow_min_coverage),
                 flow_max_coverage=float(propagate_flow_max_coverage),
                 flow_feather_px=max(0, int(propagate_flow_feather_px)),
+                samurai_model_cfg=str(propagate_samurai_model_cfg or ""),
+                samurai_checkpoint=str(propagate_samurai_checkpoint or ""),
+                samurai_offload_video_to_cpu=bool(propagate_samurai_offload_video_to_cpu),
+                samurai_offload_state_to_cpu=bool(propagate_samurai_offload_state_to_cpu),
+                device_hint=str(cfg.runtime.device or "cuda"),
             )
 
             selected_local = select_propagation_frames(

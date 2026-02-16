@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -189,9 +191,13 @@ def _run_placeholder_nearest_keyframe(
     num_frames: int,
     keyframe_masks: dict[int, np.ndarray],
     cfg: VideoMatteConfig,
+    region_priors: list[np.ndarray] | None = None,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
     keyframes = sorted(keyframe_masks.keys())
     window = max(cfg.memory.window, 1)
+    outside_conf_cap = float(
+        np.clip(getattr(cfg.memory, "region_constraint_outside_confidence_cap", 0.05), 0.0, 1.0)
+    )
 
     coarse_alphas: list[np.ndarray] = []
     confidence_maps: list[np.ndarray] = []
@@ -207,6 +213,17 @@ def _run_placeholder_nearest_keyframe(
 
         edge = (alpha > 0.05) & (alpha < 0.95)
         conf[edge] = np.minimum(conf[edge], base_conf * 0.8)
+
+        if region_priors is not None and t < len(region_priors):
+            prior = np.asarray(region_priors[t], dtype=np.float32)
+            if prior.shape[:2] != alpha.shape[:2]:
+                prior = cv2.resize(prior, (alpha.shape[1], alpha.shape[0]), interpolation=cv2.INTER_LINEAR)
+            outside = np.clip(prior, 0.0, 1.0) <= 1e-3
+            if outside.any():
+                alpha = alpha.copy()
+                conf = conf.copy()
+                alpha[outside] = 0.0
+                conf[outside] = np.minimum(conf[outside], outside_conf_cap)
 
         coarse_alphas.append(alpha)
         confidence_maps.append(conf)
@@ -227,10 +244,205 @@ def _source_resolution(source: Any) -> tuple[int, int]:
     return int(first.shape[0]), int(first.shape[1])
 
 
+def _frame_to_rgb_u8(frame: np.ndarray) -> np.ndarray:
+    rgb = frame
+    if rgb.ndim == 2:
+        rgb = np.repeat(rgb[..., None], 3, axis=2)
+    if rgb.ndim == 3 and rgb.shape[2] == 4:
+        rgb = rgb[..., :3]
+    if rgb.dtype == np.uint8:
+        return rgb
+    out = rgb.astype(np.float32)
+    if np.issubdtype(rgb.dtype, np.integer):
+        out = out / float(np.iinfo(rgb.dtype).max)
+    elif out.max() > 1.0:
+        out = out / max(float(out.max()), 1.0)
+    return np.clip(np.round(out * 255.0), 0, 255).astype(np.uint8)
+
+
+def _normalize_mask_u8(mask: np.ndarray) -> np.ndarray:
+    m = _normalize_mask(mask)
+    return np.clip(np.round(m * 255.0), 0, 255).astype(np.uint8)
+
+
+def _run_matanyone_backend(
+    source: Any,
+    local_keyframes: dict[int, np.ndarray],
+    cfg: VideoMatteConfig,
+    region_priors: list[np.ndarray] | None = None,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - optional backend
+        raise RuntimeError(f"MatAnyone backend requires torch: {exc}") from exc
+
+    repo_dir = Path(str(getattr(cfg.memory, "matanyone_repo_dir", "third_party/MatAnyone"))).resolve()
+    ckpt_path = Path(
+        str(
+            getattr(
+                cfg.memory,
+                "matanyone_checkpoint",
+                str(repo_dir / "pretrained_models" / "matanyone.pth"),
+            )
+        )
+    ).resolve()
+    if not repo_dir.exists():
+        raise RuntimeError(f"MatAnyone repo directory not found: {repo_dir}")
+    if not ckpt_path.exists():
+        raise RuntimeError(f"MatAnyone checkpoint not found: {ckpt_path}")
+
+    repo_str = str(repo_dir)
+    if repo_str not in sys.path:
+        sys.path.insert(0, repo_str)
+
+    try:
+        from hydra.core.global_hydra import GlobalHydra
+        from matanyone.inference.inference_core import InferenceCore
+        from matanyone.utils.get_default_model import get_matanyone_model
+    except Exception as exc:  # pragma: no cover - optional backend
+        raise RuntimeError(f"Failed to import MatAnyone runtime from {repo_dir}: {exc}") from exc
+
+    if GlobalHydra.instance().is_initialized():
+        GlobalHydra.instance().clear()
+
+    device_hint = str(getattr(cfg.runtime, "device", "cuda")).strip().lower()
+    if device_hint.startswith("cuda") and torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    logger.info("Memory pass (MatAnyone): loading model from %s on %s", ckpt_path, device.type)
+    model = get_matanyone_model(str(ckpt_path), device=device)
+
+    warmup = max(0, int(getattr(cfg.memory, "matanyone_warmup", 6)))
+    max_internal = int(getattr(cfg.memory, "matanyone_max_internal_size", 1080))
+    erode_px = max(0, int(getattr(cfg.memory, "matanyone_erode_px", 4)))
+    dilate_px = max(0, int(getattr(cfg.memory, "matanyone_dilate_px", 10)))
+    min_cov = float(np.clip(getattr(cfg.memory, "region_constraint_flow_min_coverage", 0.002), 0.0, 1.0))
+    max_cov = float(np.clip(getattr(cfg.memory, "region_constraint_flow_max_coverage", 0.98), 0.0, 1.0))
+    outside_conf_cap = float(
+        np.clip(getattr(cfg.memory, "region_constraint_outside_confidence_cap", 0.05), 0.0, 1.0)
+    )
+
+    anchor = min(local_keyframes.keys())
+    init_mask = _normalize_mask(local_keyframes[anchor])
+    if region_priors is not None and anchor < len(region_priors):
+        prior_init = _normalize_mask(np.asarray(region_priors[anchor], dtype=np.float32))
+        cov_prior = float(prior_init.mean())
+        if min_cov <= cov_prior <= max_cov:
+            init_mask = prior_init
+
+    init_cov = float(init_mask.mean())
+    if init_cov < min_cov or init_cov > max_cov:
+        raise RuntimeError(
+            f"MatAnyone init mask coverage out of range at anchor {anchor}: {init_cov:.4f}. "
+            "Check Stage 1 region prior/keyframe assignment."
+        )
+
+    init_mask_u8 = _normalize_mask_u8(init_mask)
+    if dilate_px > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate_px + 1, 2 * dilate_px + 1))
+        init_mask_u8 = cv2.dilate(init_mask_u8, kernel)
+    if erode_px > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erode_px + 1, 2 * erode_px + 1))
+        init_mask_u8 = cv2.erode(init_mask_u8, kernel)
+
+    full_h, full_w = init_mask_u8.shape[:2]
+    run_h, run_w = full_h, full_w
+    if max_internal > 0:
+        min_side = min(full_h, full_w)
+        if min_side > max_internal:
+            scale = max_internal / float(min_side)
+            run_h = max(32, int(round(full_h * scale)))
+            run_w = max(32, int(round(full_w * scale)))
+
+    run_init_mask_u8 = init_mask_u8
+    if (run_h, run_w) != (full_h, full_w):
+        run_init_mask_u8 = cv2.resize(init_mask_u8, (run_w, run_h), interpolation=cv2.INTER_NEAREST)
+
+    num_frames = _source_num_frames(source)
+    outputs: list[np.ndarray] = [np.zeros_like(init_mask, dtype=np.float32) for _ in range(num_frames)]
+
+    def _run_direction(frame_indices: list[int], first_mask_u8: np.ndarray) -> list[np.ndarray]:
+        processor = InferenceCore(model, cfg=model.cfg, device=device)
+        processor.max_internal_size = -1
+        mask_t = torch.from_numpy(first_mask_u8).to(device=device, dtype=torch.float32)
+        seq_out: list[np.ndarray] = []
+
+        with torch.inference_mode():
+            total_steps = len(frame_indices) + warmup
+            for ti in range(total_steps):
+                src_idx = frame_indices[0] if ti < warmup else frame_indices[ti - warmup]
+                image_u8 = _frame_to_rgb_u8(source[src_idx])
+                if (run_h, run_w) != (full_h, full_w):
+                    image_u8 = cv2.resize(image_u8, (run_w, run_h), interpolation=cv2.INTER_AREA)
+                image_t = (
+                    torch.from_numpy(np.ascontiguousarray(image_u8))
+                    .permute(2, 0, 1)
+                    .to(device=device, dtype=torch.float32)
+                    / 255.0
+                )
+
+                if ti == 0:
+                    _ = processor.step(image_t, mask_t, objects=[1])
+                    prob = processor.step(image_t, first_frame_pred=True)
+                elif ti <= warmup:
+                    prob = processor.step(image_t, first_frame_pred=True)
+                else:
+                    prob = processor.step(image_t)
+
+                if ti >= warmup:
+                    alpha_t = processor.output_prob_to_mask(prob)
+                    alpha_np = alpha_t.detach().float().cpu().numpy().astype(np.float32)
+                    if alpha_np.shape[:2] != (full_h, full_w):
+                        alpha_np = cv2.resize(alpha_np, (full_w, full_h), interpolation=cv2.INTER_LINEAR)
+                    seq_out.append(alpha_np)
+
+        return seq_out
+
+    forward_indices = list(range(anchor, num_frames))
+    forward_out = _run_direction(forward_indices, run_init_mask_u8)
+    for i, frame_idx in enumerate(forward_indices):
+        outputs[frame_idx] = np.clip(forward_out[i], 0.0, 1.0)
+
+    if anchor > 0:
+        backward_indices = list(range(anchor, -1, -1))
+        backward_out = _run_direction(backward_indices, run_init_mask_u8)
+        for i, frame_idx in enumerate(backward_indices):
+            outputs[frame_idx] = np.clip(backward_out[i], 0.0, 1.0)
+
+    confidence_maps: list[np.ndarray] = []
+    for t in range(num_frames):
+        alpha = np.clip(outputs[t], 0.0, 1.0).astype(np.float32)
+        conf = np.clip(np.abs(alpha - 0.5) * 2.0, 0.0, 1.0).astype(np.float32)
+        if region_priors is not None and t < len(region_priors):
+            prior = np.asarray(region_priors[t], dtype=np.float32)
+            if prior.shape[:2] != alpha.shape[:2]:
+                prior = cv2.resize(prior, (alpha.shape[1], alpha.shape[0]), interpolation=cv2.INTER_LINEAR)
+            outside = np.clip(prior, 0.0, 1.0) <= 1e-3
+            if outside.any():
+                alpha = alpha.copy()
+                conf = conf.copy()
+                alpha[outside] = 0.0
+                conf[outside] = np.minimum(conf[outside], outside_conf_cap)
+        outputs[t] = alpha
+        confidence_maps.append(conf)
+
+    logger.info(
+        "Memory pass (MatAnyone): completed %d frames (anchor=%d, warmup=%d, max_internal=%d).",
+        num_frames,
+        anchor,
+        warmup,
+        max_internal,
+    )
+    return outputs, confidence_maps
+
+
 def run_pass_memory(
     source: Any,
     keyframe_masks: dict[int, np.ndarray],
     cfg: VideoMatteConfig,
+    region_priors: list[np.ndarray] | None = None,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """Build coarse alpha/confidence from target-assigned memory anchors."""
 
@@ -253,6 +465,15 @@ def run_pass_memory(
             num_frames=num_frames,
             keyframe_masks=local_keyframes,
             cfg=cfg,
+            region_priors=region_priors,
+        )
+
+    if backend in {"matanyone", "mat_anyone", "mat-anyone"}:
+        return _run_matanyone_backend(
+            source=source,
+            local_keyframes=local_keyframes,
+            cfg=cfg,
+            region_priors=region_priors,
         )
 
     if backend not in {"appearance_memory_bank", "memory_bank_v1"}:
@@ -266,6 +487,9 @@ def run_pass_memory(
     min_anchor_gap = min_gap_cfg if min_gap_cfg > 0 else max(1, cfg.memory.window // max(budget, 1))
     reanchor_threshold = float(np.clip(cfg.memory.confidence_reanchor_threshold, 0.0, 1.0))
     window = max(int(cfg.memory.window), 1)
+    region_outside_conf_cap = float(
+        np.clip(getattr(cfg.memory, "region_constraint_outside_confidence_cap", 0.05), 0.0, 1.0)
+    )
 
     memory_bank: list[MemoryAnchor] = []
     keyframes_sorted = sorted(local_keyframes.keys())
@@ -300,6 +524,7 @@ def run_pass_memory(
             num_frames=num_frames,
             keyframe_masks=local_keyframes,
             cfg=cfg,
+            region_priors=region_priors,
         )
 
     _enforce_budget(memory_bank, budget)
@@ -333,6 +558,24 @@ def run_pass_memory(
         agreement = np.clip(1.0 - np.sqrt(np.maximum(variance, 0.0)) * 2.0, 0.0, 1.0)
         certainty = np.abs(alpha_small - 0.5) * 2.0
         conf_small = np.clip(0.5 * agreement + 0.5 * certainty, 0.0, 1.0).astype(np.float32)
+
+        if region_priors is not None and t < len(region_priors):
+            prior_full = np.asarray(region_priors[t], dtype=np.float32)
+            if prior_full.shape[:2] != (full_h, full_w):
+                prior_full = cv2.resize(prior_full, (full_w, full_h), interpolation=cv2.INTER_LINEAR)
+            prior_full = np.clip(prior_full, 0.0, 1.0).astype(np.float32)
+            prior_small = cv2.resize(
+                prior_full,
+                (alpha_small.shape[1], alpha_small.shape[0]),
+                interpolation=cv2.INTER_LINEAR,
+            ).astype(np.float32)
+            prior_small = np.clip(prior_small, 0.0, 1.0)
+            outside = prior_small <= 1e-3
+            if outside.any():
+                alpha_small = alpha_small.copy()
+                conf_small = conf_small.copy()
+                alpha_small[outside] = 0.0
+                conf_small[outside] = np.minimum(conf_small[outside], region_outside_conf_cap)
 
         alpha = cv2.resize(alpha_small, (full_w, full_h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
         conf = cv2.resize(conf_small, (full_w, full_h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
