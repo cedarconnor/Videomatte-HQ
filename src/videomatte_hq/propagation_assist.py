@@ -220,7 +220,10 @@ def propagate_masks_assist(
     device_hint: str = "cuda",
 ) -> PropagationAssistResult:
     """Propagate one keyframe mask across a frame range."""
-    backend_norm = str(backend or "flow").strip().lower()
+    backend_requested = str(backend or "flow").strip().lower()
+    sam2_aliases = {"sam2", "sam2_video_predictor", "sam2videopredictor", "sam2_video"}
+    requested_sam2_alias = backend_requested in sam2_aliases
+    backend_norm = SAMURAI_BACKEND_CANONICAL if requested_sam2_alias else backend_requested
     if backend_norm in {"flow", "farneback_flow", "cv2_flow"}:
         masks = _propagate_flow_backend(
             frame_loader=frame_loader,
@@ -251,10 +254,15 @@ def propagate_masks_assist(
                 ),
                 device_hint=device_hint,
             )
+            backend_used = "sam2_video_predictor" if requested_sam2_alias else SAMURAI_BACKEND_CANONICAL
+            backend_note = note
+            if requested_sam2_alias:
+                sam2_note = "Requested sam2_video_predictor; using Samurai runtime adapter."
+                backend_note = f"{sam2_note} {note}" if note else sam2_note
             return PropagationAssistResult(
                 masks={int(k): np.clip(np.asarray(v, dtype=np.float32), 0.0, 1.0).astype(np.float32) for k, v in masks.items()},
-                backend_used=SAMURAI_BACKEND_CANONICAL,
-                note=note,
+                backend_used=backend_used,
+                note=backend_note,
             )
         except Exception as exc:
             if fallback_to_flow:
@@ -272,30 +280,7 @@ def propagate_masks_assist(
                 return PropagationAssistResult(
                     masks=masks,
                     backend_used="flow_fallback",
-                    note=f"Samurai unavailable: {exc}",
-                )
-            raise
-
-    if backend_norm in {"sam2", "sam2_video_predictor", "sam2videopredictor", "sam2_video"}:
-        try:
-            _raise_backend_unavailable("sam2_video_predictor")
-        except Exception as exc:
-            if fallback_to_flow:
-                masks = _propagate_flow_backend(
-                    frame_loader=frame_loader,
-                    frame_start=frame_start,
-                    frame_end=frame_end,
-                    anchor_frame=anchor_frame,
-                    anchor_mask=anchor_mask,
-                    flow_downscale=flow_downscale,
-                    flow_min_coverage=flow_min_coverage,
-                    flow_max_coverage=flow_max_coverage,
-                    feather_px=max(0, int(flow_feather_px)),
-                )
-                return PropagationAssistResult(
-                    masks=masks,
-                    backend_used="flow_fallback",
-                    note=f"SAM2 unavailable: {exc}",
+                    note=f"{'SAM2/Samurai' if requested_sam2_alias else 'Samurai'} unavailable: {exc}",
                 )
             raise
 

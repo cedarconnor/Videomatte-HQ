@@ -192,14 +192,10 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
         )
 
     if not keyframe_masks:
-        fallback_frame = max(0, int(cfg.assignment.default_keyframe))
-        logger.warning(
-            "No keyframe masks found; using empty fallback assignment at frame %d "
-            "(require_assignment=%s).",
-            fallback_frame,
-            bool(cfg.assignment.require_assignment),
+        raise RuntimeError(
+            "No keyframe masks found in project. Build/import at least one valid keyframe assignment "
+            "before running the pipeline."
         )
-        keyframe_masks = {fallback_frame: np.zeros((height, width), dtype=np.float32)}
 
     logger.info(f"Loaded {len(keyframe_masks)} keyframe assignment(s) from {project_path}")
     stage_cache.mark_stage_complete("project")

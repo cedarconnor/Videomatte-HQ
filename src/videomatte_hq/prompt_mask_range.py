@@ -231,6 +231,11 @@ def build_prompt_masks_range(
     if anchor_frame < frame_start or anchor_frame > frame_end:
         raise ValueError(f"Anchor frame {anchor_frame} is outside range {frame_start}..{frame_end}")
 
+    backend_requested = str(backend or "sam").strip().lower()
+    sam2_aliases = {"sam2", "sam2_video_predictor", "sam2videopredictor", "sam2_video"}
+    requested_sam2_alias = backend_requested in sam2_aliases
+    normalized_backend = SAMURAI_BACKEND_CANONICAL if requested_sam2_alias else backend_requested
+
     anchor_rgb = frame_loader(int(anchor_frame))
     if anchor_rgb.ndim != 3 or anchor_rgb.shape[2] < 3:
         raise ValueError("Frame loader must return RGB uint8 frames.")
@@ -241,7 +246,7 @@ def build_prompt_masks_range(
         bg_points=[_clamp_point(px, py, w, h) for px, py in bg_points],
     )
 
-    if is_samurai_backend(backend):
+    if is_samurai_backend(normalized_backend):
         masks, note = propagate_with_samurai_from_prompts(
             frame_loader=frame_loader,
             frame_start=int(frame_start),
@@ -260,7 +265,7 @@ def build_prompt_masks_range(
         )
         return PromptMaskRangeResult(
             masks={int(k): np.clip(np.asarray(v, dtype=np.float32), 0.0, 1.0).astype(np.float32) for k, v in masks.items()},
-            backend_used=SAMURAI_BACKEND_CANONICAL,
+            backend_used=("sam2_video_predictor" if requested_sam2_alias else SAMURAI_BACKEND_CANONICAL),
             note=note,
         )
 
@@ -272,7 +277,7 @@ def build_prompt_masks_range(
     alpha_anchor, backend_used, note = _build_single_mask(
         rgb_u8=anchor_rgb,
         state=anchor_state,
-        backend_requested=backend,
+        backend_requested=normalized_backend,
         point_radius=point_radius,
         iter_count=iter_count,
         sam_model_id=sam_model_id,
@@ -304,7 +309,7 @@ def build_prompt_masks_range(
         alpha, bu, note = _build_single_mask(
             rgb_u8=cur_rgb,
             state=cur_state,
-            backend_requested=backend,
+            backend_requested=normalized_backend,
             point_radius=point_radius,
             iter_count=iter_count,
             sam_model_id=sam_model_id,
@@ -340,7 +345,7 @@ def build_prompt_masks_range(
         alpha, bu, note = _build_single_mask(
             rgb_u8=cur_rgb,
             state=cur_state,
-            backend_requested=backend,
+            backend_requested=normalized_backend,
             point_radius=point_radius,
             iter_count=iter_count,
             sam_model_id=sam_model_id,

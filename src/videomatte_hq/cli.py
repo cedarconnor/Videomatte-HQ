@@ -252,6 +252,116 @@ def _run_propagation_assist_if_requested(
         source.close()
 
 
+def _first_existing_path(candidates: list[Path]) -> Path | None:
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved.exists():
+            return resolved
+    return None
+
+
+def _resolve_locked_workflow_assets() -> dict[str, str]:
+    samurai_cfg_candidates = [
+        Path("third_party/samurai/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml"),
+        Path("third_party/samurai/sam2/sam2/configs/sam2/sam2_hiera_l.yaml"),
+        Path("third_party/samurai/sam2/sam2/sam2_hiera_l.yaml"),
+        Path("third_party/samurai/sam2/sam2_hiera_l.yaml"),
+        Path("third_party/samurai/sam2.1_hiera_l.yaml"),
+        Path("third_party/samurai/sam2_hiera_l.yaml"),
+    ]
+    samurai_ckpt_candidates = [
+        Path("third_party/samurai/checkpoints/sam2.1_hiera_large.pt"),
+        Path("third_party/samurai/checkpoints/sam2_hiera_large.pt"),
+    ]
+    mematte_repo_candidates = [
+        Path("third_party/MEMatte"),
+        Path("third_party/mematte"),
+    ]
+    matanyone_ckpt_candidates = [
+        Path("third_party/MatAnyone/pretrained_models/matanyone.pth"),
+        Path("third_party/MatAnyone/pretrained_models/MatAnyone.pth"),
+    ]
+
+    samurai_cfg = _first_existing_path(samurai_cfg_candidates) or samurai_cfg_candidates[0]
+    samurai_ckpt = _first_existing_path(samurai_ckpt_candidates) or samurai_ckpt_candidates[0]
+    mematte_repo = _first_existing_path(mematte_repo_candidates) or mematte_repo_candidates[0]
+    mematte_ckpt_candidates = [
+        mematte_repo / "checkpoints" / "MEMatte_ViTS_DIM.pth",
+        Path("third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth"),
+    ]
+    mematte_ckpt = _first_existing_path(mematte_ckpt_candidates) or mematte_ckpt_candidates[0]
+    matanyone_ckpt = _first_existing_path(matanyone_ckpt_candidates) or matanyone_ckpt_candidates[0]
+
+    return {
+        "samurai_model_cfg": str(samurai_cfg),
+        "samurai_checkpoint": str(samurai_ckpt),
+        "mematte_repo_dir": str(mematte_repo),
+        "mematte_checkpoint": str(mematte_ckpt),
+        "matanyone_checkpoint": str(matanyone_ckpt),
+    }
+
+
+def _resolve_local_path(path_str: str) -> Path:
+    path = Path(str(path_str).strip()).expanduser()
+    if path.is_absolute():
+        return path
+    return (Path.cwd() / path).resolve()
+
+
+def _enforce_locked_maskfirst_workflow(cfg: VideoMatteConfig) -> None:
+    """Force the production workflow: SAM2/Samurai -> MatAnyone -> MEMatte."""
+    assets = _resolve_locked_workflow_assets()
+
+    cfg.assignment.require_assignment = True
+
+    cfg.memory.backend = "matanyone"
+    cfg.memory.region_constraint_enabled = True
+    cfg.memory.region_constraint_source = "propagated_mask"
+    cfg.memory.region_constraint_backend = "sam2_video_predictor"
+    cfg.memory.region_constraint_fallback_to_flow = False
+    if not str(cfg.memory.region_constraint_samurai_model_cfg or "").strip():
+        cfg.memory.region_constraint_samurai_model_cfg = assets["samurai_model_cfg"]
+    if not str(cfg.memory.region_constraint_samurai_checkpoint or "").strip():
+        cfg.memory.region_constraint_samurai_checkpoint = assets["samurai_checkpoint"]
+
+    cfg.refine.backend = "mematte"
+    if not str(cfg.refine.mematte_repo_dir or "").strip():
+        cfg.refine.mematte_repo_dir = assets["mematte_repo_dir"]
+    if not str(cfg.refine.mematte_checkpoint or "").strip():
+        cfg.refine.mematte_checkpoint = assets["mematte_checkpoint"]
+
+    required_files = {
+        "SAM2/Samurai model cfg": cfg.memory.region_constraint_samurai_model_cfg,
+        "SAM2/Samurai checkpoint": cfg.memory.region_constraint_samurai_checkpoint,
+        "MatAnyone checkpoint": assets["matanyone_checkpoint"],
+        "MEMatte checkpoint": cfg.refine.mematte_checkpoint,
+    }
+    missing: list[str] = []
+    for label, path_str in required_files.items():
+        resolved = _resolve_local_path(path_str)
+        if not resolved.exists():
+            missing.append(f"{label}: {resolved}")
+
+    mematte_repo_path = _resolve_local_path(cfg.refine.mematte_repo_dir)
+    if not mematte_repo_path.exists():
+        missing.append(f"MEMatte repo dir: {mematte_repo_path}")
+
+    if missing:
+        missing_lines = "\n".join(f"  - {item}" for item in missing)
+        raise click.ClickException(
+            "Locked workflow requires installed model assets. Missing paths:\n"
+            f"{missing_lines}\n"
+            "Install/download SAM2/Samurai, MatAnyone, and MEMatte assets before running."
+        )
+
+    logger.info(
+        "Workflow locked: Stage1 SAM2/Samurai, Stage2 MatAnyone, Stage3 MEMatte; flow/placeholder fallbacks disabled."
+    )
+
+
 def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> None:
     input_path = options.get("input_path")
     output_path = options.get("output_path")
@@ -945,6 +1055,7 @@ def main(
         cfg = VideoMatteConfig.from_yaml(config_path)
 
     _apply_cli_overrides(cfg=cfg, options=dict(locals()))
+    _enforce_locked_maskfirst_workflow(cfg)
 
     if dump_config:
         import yaml
@@ -975,8 +1086,8 @@ def main(
             propagate_from_frame=int(propagate_from_frame),
             propagate_range_start=(None if propagate_range_start is None else int(propagate_range_start)),
             propagate_range_end=(None if propagate_range_end is None else int(propagate_range_end)),
-            propagate_backend=str(propagate_backend),
-            propagate_fallback_to_flow=bool(propagate_fallback_to_flow),
+            propagate_backend="sam2_video_predictor",
+            propagate_fallback_to_flow=False,
             propagate_stride=int(propagate_stride),
             propagate_max_new_keyframes=int(propagate_max_new_keyframes),
             propagate_overwrite_existing=bool(propagate_overwrite_existing),
@@ -984,8 +1095,14 @@ def main(
             propagate_flow_min_coverage=float(propagate_flow_min_coverage),
             propagate_flow_max_coverage=float(propagate_flow_max_coverage),
             propagate_flow_feather_px=int(propagate_flow_feather_px),
-            propagate_samurai_model_cfg=(None if not propagate_samurai_model_cfg else str(propagate_samurai_model_cfg)),
-            propagate_samurai_checkpoint=(None if not propagate_samurai_checkpoint else str(propagate_samurai_checkpoint)),
+            propagate_samurai_model_cfg=(
+                None if not propagate_samurai_model_cfg else str(propagate_samurai_model_cfg)
+            )
+            or str(cfg.memory.region_constraint_samurai_model_cfg),
+            propagate_samurai_checkpoint=(
+                None if not propagate_samurai_checkpoint else str(propagate_samurai_checkpoint)
+            )
+            or str(cfg.memory.region_constraint_samurai_checkpoint),
             propagate_samurai_offload_video_to_cpu=propagate_samurai_offload_video_to_cpu,
             propagate_samurai_offload_state_to_cpu=propagate_samurai_offload_state_to_cpu,
             propagate_kind=str(propagate_kind),

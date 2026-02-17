@@ -5,6 +5,7 @@ import pytest
 
 from videomatte_hq.propagation_assist import propagate_masks_assist
 from videomatte_hq.prompt_mask_range import build_prompt_masks_range
+from videomatte_hq.samurai_backend import _normalize_model_cfg_for_builder
 
 
 def _synthetic_rgb(local_idx: int) -> np.ndarray:
@@ -74,3 +75,16 @@ def test_phase4_samurai_backend_falls_back_to_flow(monkeypatch: pytest.MonkeyPat
     assert result.note is not None
     assert "Samurai unavailable" in result.note
     assert len(result.masks) >= 1
+
+
+def test_samurai_model_cfg_pointer_file_is_normalized(tmp_path) -> None:
+    ptr = tmp_path / "sam2_hiera_l.yaml"
+    ptr.write_text("configs/sam2.1/sam2.1_hiera_l.yaml\n", encoding="utf-8")
+    assert _normalize_model_cfg_for_builder(str(ptr)) == "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+
+def test_samurai_model_cfg_configs_path_is_normalized(tmp_path) -> None:
+    cfg = tmp_path / "sam2" / "sam2" / "configs" / "sam2.1" / "sam2.1_hiera_l.yaml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("model:\n  _target_: test\n", encoding="utf-8")
+    assert _normalize_model_cfg_for_builder(str(cfg)) == "configs/sam2.1/sam2.1_hiera_l.yaml"

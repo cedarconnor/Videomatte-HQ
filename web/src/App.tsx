@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { FaLayerGroup, FaPlay, FaList, FaCog, FaMagic } from 'react-icons/fa'
 import { clsx } from 'clsx'
-import RunTab from './components/RunTab'
+import RunTab, { RUN_STEPS_BASE, type RunStepId } from './components/RunTab'
 import JobsTab from './components/JobsTab'
 import SettingsTab from './components/SettingsTab'
 import QCTab from './components/QCTab'
@@ -32,6 +32,8 @@ function SidebarItem({ active, icon, label, shortcut, onClick }: { active: boole
 
 function AppInner() {
     const [activeTab, setActiveTab] = useState<Tab>('run')
+    const [activeRunStep, setActiveRunStep] = useState<RunStepId>('io')
+    const [runStepJumpNonce, setRunStepJumpNonce] = useState(0)
     const [activeJobId, setActiveJobId] = useState<string | null>(null)
     const prevJobStatuses = useRef<Record<string, string>>({})
     const { addToast } = useToast()
@@ -122,7 +124,7 @@ function AppInner() {
             {/* Main Content */}
             <div className="flex flex-1 overflow-hidden">
                 {/* Sidebar */}
-                <aside className="w-56 bg-gray-800/30 border-r border-gray-700/50 flex flex-col backdrop-blur-sm">
+                <aside className="w-64 bg-gray-800/30 border-r border-gray-700/50 flex flex-col backdrop-blur-sm">
                     <nav className="p-3 space-y-1">
                         <SidebarItem
                             active={activeTab === 'run'}
@@ -131,6 +133,28 @@ function AppInner() {
                             shortcut="Ctrl+1"
                             onClick={() => setActiveTab('run')}
                         />
+                        {activeTab === 'run' && (
+                            <div className="ml-4 mr-1 mt-1 mb-2 border-l border-gray-700/60 pl-3 pr-1 space-y-1 max-h-[55vh] overflow-auto">
+                                {RUN_STEPS_BASE.map((step) => (
+                                    <button
+                                        key={step.id}
+                                        type="button"
+                                        onClick={() => {
+                                            setActiveRunStep(step.id)
+                                            setRunStepJumpNonce(n => n + 1)
+                                        }}
+                                        className={clsx(
+                                            'w-full text-left text-xs rounded px-2 py-1.5 transition-colors border',
+                                            activeRunStep === step.id
+                                                ? 'bg-brand-500/15 border-brand-500/35 text-brand-300'
+                                                : 'bg-gray-900/50 border-gray-700 text-gray-300 hover:bg-gray-800'
+                                        )}
+                                    >
+                                        {step.label}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                         <SidebarItem
                             active={activeTab === 'jobs'}
                             icon={<FaList />}
@@ -159,7 +183,13 @@ function AppInner() {
                 {/* Tab Content */}
                 <main className="flex-1 overflow-auto bg-gray-900 p-6 relative">
                     <div className="max-w-5xl mx-auto">
-                        {activeTab === 'run' && <RunTab onSuccess={() => setActiveTab('jobs')} />}
+                        {activeTab === 'run' && (
+                            <RunTab
+                                onSuccess={() => setActiveTab('jobs')}
+                                focusStep={activeRunStep}
+                                focusStepNonce={runStepJumpNonce}
+                            />
+                        )}
                         {activeTab === 'jobs' && <JobsTab />}
                         {activeTab === 'settings' && <SettingsTab />}
                         {activeTab === 'qc' && <QCTab />}

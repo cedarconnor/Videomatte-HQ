@@ -247,7 +247,7 @@ async def test_assignment_mask_builder_sam_range_with_prompt_tracking(
             masks[int(local_idx)] = alpha
         return PromptMaskRangeResult(
             masks=masks,
-            backend_used="sam",
+            backend_used="sam2_video_predictor",
             note=None,
         )
 
@@ -259,7 +259,7 @@ async def test_assignment_mask_builder_sam_range_with_prompt_tracking(
             anchor_frame=0,
             frame_start=0,
             frame_end=5,
-            backend="sam",
+            backend="sam2_video_predictor",
             box=PromptBox(x0=18, y0=12, x1=58, y1=66),
             fg_points=[PromptPoint(x=30, y=36)],
             bg_points=[PromptPoint(x=6, y=6)],
@@ -270,8 +270,8 @@ async def test_assignment_mask_builder_sam_range_with_prompt_tracking(
     )
 
     assert built["status"] == "ok"
-    assert built["backend_requested"] == "sam"
-    assert built["backend_used"] == "sam"
+    assert built["backend_requested"] == "sam2_video_predictor"
+    assert built["backend_used"] == "sam2_video_predictor"
     assert built["inserted_count"] == 6
     assert built["keyframe_count"] == 6
     assert built["suggested_reprocess_range"]["frame_start"] == 0
@@ -326,31 +326,53 @@ async def test_assignment_phase4_propagation_flow_inserts_keyframes(
     assert imported["status"] == "ok"
     assert imported["keyframe_count"] == 1
 
+    import videomatte_hq_web.server as server_mod
+    from videomatte_hq.propagation_assist import PropagationAssistResult
+
+    def _fake_propagate_masks_assist(**kwargs):
+        start = int(kwargs["frame_start"])
+        end = int(kwargs["frame_end"])
+        assert str(kwargs.get("backend", "")) == "sam2_video_predictor"
+        masks: dict[int, np.ndarray] = {}
+        for local_idx in range(start, end + 1):
+            alpha = np.zeros((h, w), dtype=np.float32)
+            x0 = 16 + local_idx * 2
+            alpha[18:62, x0:x0 + 28] = 1.0
+            masks[int(local_idx)] = alpha
+        return PropagationAssistResult(
+            masks=masks,
+            backend_used="sam2_video_predictor",
+            note=None,
+        )
+
+    monkeypatch.setattr(server_mod, "propagate_masks_assist", _fake_propagate_masks_assist)
+
     propagated = await propagate_assignment_masks(
         PropagateAssignmentMasksRequest(
             config=cfg.model_dump(mode="json"),
             anchor_frame=0,
             frame_start=0,
             frame_end=11,
-            backend="flow",
+            backend="sam2_video_predictor",
             stride=3,
             max_new_keyframes=5,
             flow_downscale=0.5,
             flow_min_coverage=0.002,
             flow_max_coverage=0.98,
             flow_feather_px=1,
-            fallback_to_flow=True,
+            fallback_to_flow=False,
         )
     )
     assert propagated["status"] == "ok"
-    assert propagated["backend_used"] == "flow"
+    assert propagated["backend_requested"] == "sam2_video_predictor"
+    assert propagated["backend_used"] == "sam2_video_predictor"
     assert propagated["inserted_count"] >= 3
     assert propagated["keyframe_count"] >= 4
     assert float(propagated["mean_inserted_coverage"]) > 0.02
 
 
 @pytest.mark.anyio
-async def test_assignment_phase4_propagation_sam2_fallback_to_flow(
+async def test_assignment_phase4_propagation_sam2_no_flow_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -394,27 +416,31 @@ async def test_assignment_phase4_propagation_sam2_fallback_to_flow(
     )
     assert imported["status"] == "ok"
 
-    propagated = await propagate_assignment_masks(
-        PropagateAssignmentMasksRequest(
-            config=cfg.model_dump(mode="json"),
-            anchor_frame=0,
-            frame_start=0,
-            frame_end=7,
-            backend="sam2_video_predictor",
-            fallback_to_flow=True,
-            stride=2,
-            max_new_keyframes=4,
+    import videomatte_hq_web.server as server_mod
+
+    def _raise_no_fallback(**kwargs):
+        raise RuntimeError("sam2 runtime unavailable")
+
+    monkeypatch.setattr(server_mod, "propagate_masks_assist", _raise_no_fallback)
+
+    with pytest.raises(Exception) as exc:
+        await propagate_assignment_masks(
+            PropagateAssignmentMasksRequest(
+                config=cfg.model_dump(mode="json"),
+                anchor_frame=0,
+                frame_start=0,
+                frame_end=7,
+                backend="sam2_video_predictor",
+                fallback_to_flow=True,
+                stride=2,
+                max_new_keyframes=4,
+            )
         )
-    )
-    assert propagated["status"] == "ok"
-    assert propagated["backend_requested"] == "sam2_video_predictor"
-    assert propagated["backend_used"] == "flow_fallback"
-    assert propagated["inserted_count"] >= 2
-    assert "SAM2 unavailable" in str(propagated.get("builder_note"))
+    assert "sam2 runtime unavailable" in str(exc.value)
 
 
 @pytest.mark.anyio
-async def test_assignment_phase4_propagation_samurai_fallback_to_flow(
+async def test_assignment_phase4_propagation_samurai_alias_normalized_to_sam2(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -458,6 +484,26 @@ async def test_assignment_phase4_propagation_samurai_fallback_to_flow(
     )
     assert imported["status"] == "ok"
 
+    import videomatte_hq_web.server as server_mod
+    from videomatte_hq.propagation_assist import PropagationAssistResult
+
+    def _fake_propagate_masks_assist(**kwargs):
+        start = int(kwargs["frame_start"])
+        end = int(kwargs["frame_end"])
+        assert str(kwargs.get("backend", "")) == "sam2_video_predictor"
+        masks: dict[int, np.ndarray] = {}
+        for local_idx in range(start, end + 1):
+            alpha = np.zeros((h, w), dtype=np.float32)
+            alpha[16:52, 18 + local_idx:46 + local_idx] = 1.0
+            masks[int(local_idx)] = alpha
+        return PropagationAssistResult(
+            masks=masks,
+            backend_used="sam2_video_predictor",
+            note=None,
+        )
+
+    monkeypatch.setattr(server_mod, "propagate_masks_assist", _fake_propagate_masks_assist)
+
     propagated = await propagate_assignment_masks(
         PropagateAssignmentMasksRequest(
             config=cfg.model_dump(mode="json"),
@@ -465,7 +511,7 @@ async def test_assignment_phase4_propagation_samurai_fallback_to_flow(
             frame_start=0,
             frame_end=7,
             backend="samurai_video_predictor",
-            fallback_to_flow=True,
+            fallback_to_flow=False,
             stride=2,
             max_new_keyframes=4,
             samurai_model_cfg="sam2.1_hiera_l.yaml",
@@ -473,7 +519,6 @@ async def test_assignment_phase4_propagation_samurai_fallback_to_flow(
         )
     )
     assert propagated["status"] == "ok"
-    assert propagated["backend_requested"] == "samurai_video_predictor"
-    assert propagated["backend_used"] == "flow_fallback"
+    assert propagated["backend_requested"] == "sam2_video_predictor"
+    assert propagated["backend_used"] == "sam2_video_predictor"
     assert propagated["inserted_count"] >= 2
-    assert "Samurai unavailable" in str(propagated.get("builder_note"))

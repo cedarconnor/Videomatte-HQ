@@ -506,14 +506,9 @@ def run_pass_memory(
             )
 
     if not memory_bank:
-        logger.warning(
-            "Memory pass: no valid memory anchors could be built; falling back to placeholder backend."
-        )
-        return _run_placeholder_nearest_keyframe(
-            num_frames=num_frames,
-            keyframe_masks=local_keyframes,
-            cfg=cfg,
-            region_priors=region_priors,
+        raise RuntimeError(
+            "Memory pass: no valid memory anchors could be built from assignments. "
+            "Check keyframe coverage and Stage-1 tracking before rerunning."
         )
 
     _enforce_budget(memory_bank, budget)

@@ -74,7 +74,7 @@ class AssignmentConfig(VMBaseModel):
 class MemoryConfig(VMBaseModel):
     """Memory propagation core options."""
 
-    backend: str = "appearance_memory_bank"
+    backend: str = "matanyone"
     memory_frames: int = 12
     window: int = 120
     max_anchors: int = 20
@@ -89,10 +89,10 @@ class MemoryConfig(VMBaseModel):
         "propagated_bbox",
         "propagated_mask",
         "nearest_keyframe_bbox",
-    ] = "propagated_bbox"
+    ] = "propagated_mask"
     region_constraint_anchor_frame: int = -1
     region_constraint_backend: str = "sam2_video_predictor"
-    region_constraint_fallback_to_flow: bool = True
+    region_constraint_fallback_to_flow: bool = False
     region_constraint_flow_downscale: float = 0.5
     region_constraint_flow_min_coverage: float = 0.002
     region_constraint_flow_max_coverage: float = 0.98
@@ -113,7 +113,7 @@ class RefineConfig(VMBaseModel):
     """High-resolution edge refinement options."""
 
     enabled: bool = True
-    backend: str = "guided_band"
+    backend: str = "mematte"
     unknown_band_px: int = 64
     region_trimap_enabled: bool = True
     region_trimap_threshold: float = 0.5

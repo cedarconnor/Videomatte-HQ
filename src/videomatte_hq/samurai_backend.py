@@ -75,6 +75,67 @@ def _import_builder():
     ) from last_error
 
 
+def _sam2_package_root() -> Path | None:
+    try:
+        mod = importlib.import_module("sam2")
+        module_file = Path(str(getattr(mod, "__file__", "") or "")).resolve()
+        if module_file.exists():
+            return module_file.parent
+    except Exception:
+        return None
+    return None
+
+
+def _normalize_model_cfg_for_builder(model_cfg: str) -> str:
+    raw = str(model_cfg or "").strip()
+    if not raw:
+        return raw
+
+    normalized = raw.replace("\\", "/")
+    if normalized.lower().startswith("configs/"):
+        return normalized
+
+    path = Path(raw).expanduser()
+    try:
+        path = path.resolve() if path.is_absolute() else (Path.cwd() / path).resolve()
+    except Exception:
+        path = Path(raw)
+
+    if path.exists():
+        # Samurai ships tiny pointer files like `sam2_hiera_l.yaml` whose
+        # contents are the real Hydra config name (`configs/...`).
+        try:
+            pointer = path.read_text(encoding="utf-8").strip()
+        except Exception:
+            pointer = ""
+        if pointer and "\n" not in pointer and pointer.lower().startswith("configs/"):
+            return pointer.replace("\\", "/")
+
+        as_posix = path.as_posix()
+        marker = "/configs/"
+        idx = as_posix.lower().rfind(marker)
+        if idx >= 0:
+            return as_posix[idx + 1 :]
+
+        sam2_root = _sam2_package_root()
+        if sam2_root is not None:
+            try:
+                rel = path.relative_to(sam2_root).as_posix()
+                if rel.lower().startswith("configs/"):
+                    return rel
+            except Exception:
+                pass
+
+    base = Path(raw).name
+    if base.lower().endswith((".yaml", ".yml")):
+        if base.startswith("sam2.1_"):
+            return f"configs/sam2.1/{base}"
+        if base.startswith("sam2_"):
+            return f"configs/sam2/{base}"
+
+    return normalized
+
+
 def _build_predictor(runtime: SamuraiRuntimeConfig, device_hint: str):
     model_cfg = str(runtime.model_cfg or "").strip()
     checkpoint = str(runtime.checkpoint or "").strip()
@@ -84,17 +145,20 @@ def _build_predictor(runtime: SamuraiRuntimeConfig, device_hint: str):
             "(samurai_model_cfg + samurai_checkpoint)."
         )
 
+    model_cfg_builder = _normalize_model_cfg_for_builder(model_cfg)
     builder, _module_name = _import_builder()
     attempts = [
-        lambda: _call_with_supported_kwargs(builder, model_cfg, checkpoint, device=str(device_hint)),
+        lambda: _call_with_supported_kwargs(builder, model_cfg_builder, checkpoint, device=str(device_hint)),
         lambda: _call_with_supported_kwargs(
             builder,
-            model_cfg=model_cfg,
+            config_file=model_cfg_builder,
+            model_cfg=model_cfg_builder,
             checkpoint=checkpoint,
+            ckpt_path=checkpoint,
             sam2_checkpoint=checkpoint,
             device=str(device_hint),
         ),
-        lambda: builder(model_cfg, checkpoint),
+        lambda: builder(model_cfg_builder, checkpoint),
     ]
     errors: list[str] = []
     for attempt in attempts:

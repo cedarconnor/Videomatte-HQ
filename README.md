@@ -6,11 +6,11 @@ Offline Option B video matting pipeline for people footage.
 
 ![Run Job tab](docs/images/run_job_tab.png)
 
-The current implementation is a mask-first, assignment-driven workflow:
+The current implementation is a mask-first, assignment-driven workflow locked to:
 - Stage 0: load frames
 - Stage 1: load/create project and keyframe assignments
-- Stage 2: memory-query coarse alpha
-- Stage 3: boundary-band refinement
+- Stage 2: MatAnyone coarse alpha (low-res temporal pass)
+- Stage 3: MEMatte edge refinement (high-res tiled pass)
 - Stage 4: confidence-gated temporal cleanup
 - Stage 5: matte tuning (shrink/grow, feather, XY offset)
 - Stage 6: output write + QC metrics/gates
@@ -20,9 +20,9 @@ The current implementation is a mask-first, assignment-driven workflow:
 - Project-backed mask-first assignment (`.vmhqproj`) is required by default.
 - Correction anchors support suggested partial reprocess ranges.
 - Phase 3 Initial Mask Builder is integrated in UI/API with `GrabCut` and optional `SAM` backend.
-- Stage 1 range build now supports `samurai_video_predictor` for anchor-prompt video tracking (plus legacy per-frame `SAM` mode).
-- Phase 4 long-range propagation assist supports `samurai_video_predictor`, `flow`, `sam2_video_predictor`, and `cutie` (with fallback-to-flow).
-- Stage 2 region constraint prior can now run with `samurai_video_predictor` backend in addition to existing backends.
+- Stage 1 range build uses SAM2/Samurai video predictor for anchor-prompt tracking.
+- Phase 4 long-range propagation assist uses SAM2/Samurai (flow fallback disabled).
+- Stage 2 region constraint prior uses propagated subject masks (not bbox-only fallback).
 - Stage-by-stage sample exports plus diagnosis reports help isolate which pass introduces artifacts.
 - Built-in QC metrics and regression gates can fail runs automatically.
 
@@ -80,10 +80,9 @@ videomatte-hq \
   --propagate-from-frame 0 \
   --propagate-range-start 0 \
   --propagate-range-end 240 \
-  --propagate-backend samurai_video_predictor \
-  --propagate-samurai-model-cfg sam2.1_hiera_l.yaml \
-  --propagate-samurai-checkpoint checkpoints/sam2.1_hiera_large.pt \
-  --propagate-fallback-to-flow \
+  --propagate-backend sam2_video_predictor \
+  --propagate-samurai-model-cfg third_party/samurai/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml \
+  --propagate-samurai-checkpoint third_party/samurai/checkpoints/sam2.1_hiera_large.pt \
   --propagate-stride 12 \
   --propagate-max-new-keyframes 20 \
   --propagate-only
@@ -130,8 +129,7 @@ videomatte-hq \
 ### Phase 4 propagation assist
 - `--propagate-from-frame`
 - `--propagate-range-start`, `--propagate-range-end`
-- `--propagate-backend` (`flow`, `samurai_video_predictor`, `sam2_video_predictor`, `cutie`)
-- `--propagate-fallback-to-flow/--no-propagate-fallback-to-flow`
+- `--propagate-backend` (`sam2_video_predictor` runtime-locked)
 - `--propagate-stride`
 - `--propagate-max-new-keyframes`
 - `--propagate-overwrite-existing/--no-propagate-overwrite-existing`
@@ -153,16 +151,16 @@ videomatte-hq \
 - `--debug-stage-dir`
 
 ### Memory core
-- `--memory-backend`
+- `--memory-backend` (`matanyone` runtime-locked)
 - `--memory-frames`
 - `--window`
 
 ### Memory region constraint
 - `--memory-region-constraint/--no-memory-region-constraint`
-- `--memory-region-source` (`none`, `propagated_bbox`, `propagated_mask`, `nearest_keyframe_bbox`)
+- `--memory-region-source` (`propagated_mask` runtime-locked)
 - `--memory-region-anchor-frame`
-- `--memory-region-backend` (`flow`, `samurai_video_predictor`, `sam2_video_predictor`, `cutie`)
-- `--memory-region-fallback-to-flow/--no-memory-region-fallback-to-flow`
+- `--memory-region-backend` (`sam2_video_predictor` runtime-locked)
+- `--memory-region-fallback-to-flow/--no-memory-region-fallback-to-flow` (forced off at runtime)
 - `--memory-region-flow-downscale`
 - `--memory-region-flow-min-coverage`
 - `--memory-region-flow-max-coverage`
@@ -310,36 +308,28 @@ assignment:
   require_assignment: true
 
 memory:
-  backend: "appearance_memory_bank"
+  backend: "matanyone"
   memory_frames: 12
   window: 120
   region_constraint_enabled: true
-  region_constraint_source: "propagated_bbox"
-  region_constraint_backend: "samurai_video_predictor"
-  region_constraint_fallback_to_flow: true
-  region_constraint_samurai_model_cfg: "sam2.1_hiera_l.yaml"
-  region_constraint_samurai_checkpoint: "checkpoints/sam2.1_hiera_large.pt"
+  region_constraint_source: "propagated_mask"
+  region_constraint_backend: "sam2_video_predictor"
+  region_constraint_fallback_to_flow: false
+  region_constraint_samurai_model_cfg: "third_party/samurai/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml"
+  region_constraint_samurai_checkpoint: "third_party/samurai/checkpoints/sam2.1_hiera_large.pt"
   region_constraint_bbox_margin_px: 96
   region_constraint_dilate_px: 24
 
 refine:
   enabled: true
-  backend: "guided_band"
+  backend: "mematte"
+  mematte_repo_dir: "third_party/MEMatte"
+  mematte_checkpoint: "third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth"
+  mematte_max_number_token: 18500
+  mematte_patch_decoder: true
   unknown_band_px: 64
   tile_size: 1536
   overlap: 96
-
-# Optional neural refiner (direct MEMatte loader, no detectron2 LazyConfig needed):
-# refine:
-#   enabled: true
-#   backend: "mematte"
-#   mematte_repo_dir: "third_party/MEMatte"
-#   mematte_checkpoint: "third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth"
-#   mematte_max_number_token: 18500
-#   mematte_patch_decoder: true
-#   unknown_band_px: 64
-#   tile_size: 1536
-#   overlap: 96
 
 temporal_cleanup:
   enabled: true

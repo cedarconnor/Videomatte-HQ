@@ -18,7 +18,6 @@ from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.mask_builder import build_prompt_mask_grabcut
 from videomatte_hq.prompt_mask_range import build_prompt_masks_range
 from videomatte_hq.propagation_assist import (
-    SUPPORTED_PROPAGATION_BACKENDS,
     propagate_masks_assist,
     select_propagation_frames,
 )
@@ -130,7 +129,7 @@ class BuildAssignmentMaskRangeRequest(BaseModel):
     box: PromptBox
     fg_points: list[PromptPoint] = Field(default_factory=list)
     bg_points: list[PromptPoint] = Field(default_factory=list)
-    backend: str = "sam"
+    backend: str = "sam2_video_predictor"
     point_radius: int = Field(default=8, ge=1, le=128)
     iter_count: int = Field(default=5, ge=1, le=20)
     sam_model_id: str = DEFAULT_SAM_MODEL_ID
@@ -161,8 +160,8 @@ class PropagateAssignmentMasksRequest(BaseModel):
     anchor_frame: int = 0
     frame_start: int | None = None
     frame_end: int | None = None
-    backend: str = "flow"
-    fallback_to_flow: bool = True
+    backend: str = "sam2_video_predictor"
+    fallback_to_flow: bool = False
     stride: int = Field(default=8, ge=1, le=300)
     max_new_keyframes: int = Field(default=24, ge=1, le=1000)
     flow_downscale: float = Field(default=0.5, ge=0.15, le=1.0)
@@ -196,6 +195,18 @@ def _build_project_summary(cfg: VideoMatteConfig) -> dict:
         "keyframes": keyframes,
         "require_assignment": bool(cfg.assignment.require_assignment),
     }
+
+
+def _normalize_sam2_backend_name(backend: str) -> str:
+    value = str(backend or "").strip().lower()
+    if value in {"sam2", "sam2_video_predictor", "sam2videopredictor", "sam2_video"}:
+        return "sam2_video_predictor"
+    if value in {"samurai", "samurai_video_predictor", "samurai_tracker", "samurai_video"}:
+        return "sam2_video_predictor"
+    raise ValueError(
+        "Only SAM2/Samurai video predictor backend is supported for this workflow. "
+        f"Received backend='{backend}'."
+    )
 
 
 def _resolve_local_frame_index(cfg: VideoMatteConfig, source: FrameSource, requested_frame: int) -> int:
@@ -532,6 +543,8 @@ async def build_assignment_mask_range(req: BuildAssignmentMaskRangeRequest):
             bg_points = [(p.x, p.y) for p in req.bg_points]
             box_xyxy = (req.box.x0, req.box.y0, req.box.x1, req.box.y1)
 
+            normalized_backend = _normalize_sam2_backend_name(req.backend)
+
             result = build_prompt_masks_range(
                 frame_loader=_load_local_rgb_u8,
                 frame_start=local_start,
@@ -540,7 +553,7 @@ async def build_assignment_mask_range(req: BuildAssignmentMaskRangeRequest):
                 box_xyxy=box_xyxy,
                 fg_points=fg_points,
                 bg_points=bg_points,
-                backend=req.backend,
+                backend=normalized_backend,
                 point_radius=int(req.point_radius),
                 iter_count=int(req.iter_count),
                 sam_model_id=req.sam_model_id or DEFAULT_SAM_MODEL_ID,
@@ -613,7 +626,7 @@ async def build_assignment_mask_range(req: BuildAssignmentMaskRangeRequest):
                 "anchor_frame": int(anchor_abs),
                 "frame_start": int(start_abs),
                 "frame_end": int(end_abs),
-                "backend_requested": str(req.backend).strip().lower() or "sam",
+                "backend_requested": normalized_backend,
                 "backend_used": result.backend_used,
                 "builder_note": result.note,
                 "track_prompts_with_flow": bool(req.track_prompts_with_flow),
@@ -729,14 +742,16 @@ async def propagate_assignment_masks(req: PropagateAssignmentMasksRequest):
                     raise ValueError(f"Local frame {local_idx} is outside range {local_start}..{local_end}.")
                 return _frame_to_rgb_u8(source[int(local_idx)], error_context="propagation assist")
 
+            normalized_backend = _normalize_sam2_backend_name(req.backend)
+
             prop_result = propagate_masks_assist(
                 frame_loader=_load_local_rgb_u8,
                 frame_start=local_start,
                 frame_end=local_end,
                 anchor_frame=int(anchor_local),
                 anchor_mask=anchor_alpha,
-                backend=req.backend,
-                fallback_to_flow=bool(req.fallback_to_flow),
+                backend=normalized_backend,
+                fallback_to_flow=False,
                 flow_downscale=float(req.flow_downscale),
                 flow_min_coverage=float(req.flow_min_coverage),
                 flow_max_coverage=float(req.flow_max_coverage),
@@ -812,10 +827,10 @@ async def propagate_assignment_masks(req: PropagateAssignmentMasksRequest):
                 "anchor_frame": int(anchor_abs_frame),
                 "frame_start": int(start_abs),
                 "frame_end": int(end_abs),
-                "backend_requested": str(req.backend).strip().lower() or "flow",
+                "backend_requested": normalized_backend,
                 "backend_used": prop_result.backend_used,
                 "builder_note": prop_result.note,
-                "supported_backends": list(SUPPORTED_PROPAGATION_BACKENDS),
+                "supported_backends": ["sam2_video_predictor"],
                 "selected_local_frames": [int(x) for x in selected_local_frames],
                 "selected_frames": [int(clip_abs_start + int(x)) for x in selected_local_frames],
                 "inserted_frames": [int(x) for x in inserted_frames],

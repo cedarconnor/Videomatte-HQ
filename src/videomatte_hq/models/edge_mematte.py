@@ -393,8 +393,13 @@ class MEMatteModel:
 
         model.to(self.device)
         model.eval()
+        # Keep MEMatte in FP32 even when global precision is FP16.
+        # Upstream MEMatte allocates some internal tensors in float32 during
+        # patch inference; forcing model half can trigger dtype mismatch errors.
         if self.precision == "fp16" and self.device.type == "cuda":
-            model = model.half()
+            logger.warning(
+                "MEMatte requested fp16, but running MEMatte in fp32 for compatibility."
+            )
 
         self.model = model
         logger.info(
@@ -427,9 +432,7 @@ class MEMatteModel:
 
         image = rgb_tile.unsqueeze(0).to(self.device, non_blocking=True).float()
         trimap = trimap_tile.unsqueeze(0).to(self.device, non_blocking=True).float().clamp(0.0, 1.0)
-        if self.precision == "fp16" and self.device.type == "cuda":
-            image = image.half()
-            trimap = trimap.half()
+        # MEMatte runs in fp32 for compatibility with upstream patch-inference path.
 
         outputs, _, _ = self.model(
             {"image": image, "trimap": trimap},
@@ -477,9 +480,7 @@ class MEMatteModel:
             self.device,
             non_blocking=True,
         )
-        if self.precision == "fp16" and self.device.type == "cuda":
-            image = image.half()
-            trimap = trimap.half()
+        # MEMatte runs in fp32 for compatibility with upstream patch-inference path.
 
         outputs, _, _ = self.model(
             {"image": image, "trimap": trimap},

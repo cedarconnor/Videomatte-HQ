@@ -49,6 +49,24 @@ type BuilderTool = 'box' | 'fg' | 'bg'
 type BuilderBackend = 'grabcut' | 'sam'
 type RangeBuilderBackend = 'sam' | 'samurai_video_predictor'
 type PropagationBackend = 'flow' | 'samurai_video_predictor' | 'sam2_video_predictor' | 'cutie'
+type AssignmentSourceMode = 'generate' | 'import'
+type BuilderWorkflowMode = 'single' | 'multiple'
+export type RunStepId =
+    | 'io'
+    | 'assignment'
+    | 'memory'
+    | 'background'
+    | 'roi'
+    | 'global'
+    | 'intermediate'
+    | 'band'
+    | 'refine'
+    | 'tuning'
+    | 'temporal'
+    | 'post'
+    | 'runtime'
+    | 'debug'
+    | 'qc'
 
 interface MatteTuningPreset {
     id: string
@@ -94,6 +112,21 @@ const MATTE_TUNING_PRESETS: MatteTuningPreset[] = [
     },
 ]
 
+export const RUN_STEPS_BASE: Array<{ id: RunStepId; label: string }> = [
+    { id: 'io', label: '1. Input / Output' },
+    { id: 'assignment', label: '2. Assignment' },
+    { id: 'memory', label: '3. Memory' },
+    { id: 'background', label: '4. Background' },
+    { id: 'roi', label: '5. ROI / Tracking' },
+    { id: 'global', label: '6. Global Pass' },
+    { id: 'refine', label: '7. Edge Refinement' },
+    { id: 'tuning', label: '8. Matte Tuning' },
+    { id: 'post', label: '9. Post-Processing' },
+    { id: 'runtime', label: '10. Runtime' },
+    { id: 'debug', label: '11. Debug Exports' },
+    { id: 'qc', label: '12. QC Gates' },
+]
+
 // Default Configuration
 const DEFAULT_CONFIG: VideoMatteConfig = {
     io: {
@@ -122,7 +155,7 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         bg_dilation_px: 12
     },
     memory: {
-        backend: "appearance_memory_bank",
+        backend: "matanyone",
         memory_frames: 12,
         window: 120,
         max_anchors: 20,
@@ -132,16 +165,16 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         temperature: 1.0,
         auto_anchor_min_gap: 0,
         region_constraint_enabled: true,
-        region_constraint_source: "propagated_bbox",
+        region_constraint_source: "propagated_mask",
         region_constraint_anchor_frame: -1,
         region_constraint_backend: "sam2_video_predictor",
-        region_constraint_fallback_to_flow: true,
+        region_constraint_fallback_to_flow: false,
         region_constraint_flow_downscale: 0.5,
         region_constraint_flow_min_coverage: 0.002,
         region_constraint_flow_max_coverage: 0.98,
         region_constraint_flow_feather_px: 1,
-        region_constraint_samurai_model_cfg: "",
-        region_constraint_samurai_checkpoint: "",
+        region_constraint_samurai_model_cfg: "third_party/samurai/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml",
+        region_constraint_samurai_checkpoint: "third_party/samurai/checkpoints/sam2.1_hiera_large.pt",
         region_constraint_samurai_offload_video_to_cpu: false,
         region_constraint_samurai_offload_state_to_cpu: false,
         region_constraint_threshold: 0.2,
@@ -234,7 +267,7 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
     },
     refine: {
         enabled: true,
-        backend: "guided_band",
+        backend: "mematte",
         mematte_repo_dir: "third_party/MEMatte",
         mematte_checkpoint: "third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth",
         mematte_max_number_token: 18500,
@@ -352,16 +385,24 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
     },
 }
 
-export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
+interface RunTabProps {
+    onSuccess: () => void
+    focusStep?: RunStepId
+    focusStepNonce?: number
+}
+
+export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabProps) {
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [status, setStatus] = useState<string | null>(null)
-    const [showAdvanced, setShowAdvanced] = useState(true)
+    const [showAdvanced, setShowAdvanced] = useState(false)
     const [projectSummary, setProjectSummary] = useState<ProjectSummary | null>(null)
     const [assignmentMaskPath, setAssignmentMaskPath] = useState("")
     const [assignmentFrame, setAssignmentFrame] = useState(0)
     const [assignmentLoading, setAssignmentLoading] = useState(false)
     const [assignmentKind, setAssignmentKind] = useState<'initial' | 'correction'>('initial')
+    const [assignmentSourceMode, setAssignmentSourceMode] = useState<AssignmentSourceMode>('generate')
+    const [builderWorkflowMode, setBuilderWorkflowMode] = useState<BuilderWorkflowMode>('single')
     const [autoApplySuggestedRange, setAutoApplySuggestedRange] = useState(true)
     const [suggestedRange, setSuggestedRange] = useState<SuggestedReprocessRange | null>(null)
     const [builderTool, setBuilderTool] = useState<BuilderTool>('box')
@@ -388,25 +429,25 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     const [builderRangeTrackPrompts, setBuilderRangeTrackPrompts] = useState(false)
     const [builderRangeTrackBgPoints, setBuilderRangeTrackBgPoints] = useState(false)
     const [builderRangeFlowDownscale, setBuilderRangeFlowDownscale] = useState(0.5)
-    const [builderSamuraiModelCfg, setBuilderSamuraiModelCfg] = useState("")
-    const [builderSamuraiCheckpoint, setBuilderSamuraiCheckpoint] = useState("")
+    const [builderSamuraiModelCfg, setBuilderSamuraiModelCfg] = useState("third_party/samurai/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml")
+    const [builderSamuraiCheckpoint, setBuilderSamuraiCheckpoint] = useState("third_party/samurai/checkpoints/sam2.1_hiera_large.pt")
     const [builderSamuraiOffloadVideoToCpu, setBuilderSamuraiOffloadVideoToCpu] = useState(false)
     const [builderSamuraiOffloadStateToCpu, setBuilderSamuraiOffloadStateToCpu] = useState(false)
     const [builderRangeOverwriteExisting, setBuilderRangeOverwriteExisting] = useState(false)
     const [builderBuildingRange, setBuilderBuildingRange] = useState(false)
-    const [propagateBackend, setPropagateBackend] = useState<PropagationBackend>('flow')
+    const [propagateBackend, setPropagateBackend] = useState<PropagationBackend>('sam2_video_predictor')
     const [propagateFrameStart, setPropagateFrameStart] = useState<number>(DEFAULT_CONFIG.io.frame_start)
     const [propagateFrameEnd, setPropagateFrameEnd] = useState<number>(DEFAULT_CONFIG.io.frame_end)
     const [propagateStride, setPropagateStride] = useState(8)
     const [propagateMaxNewKeyframes, setPropagateMaxNewKeyframes] = useState(24)
-    const [propagateFallbackToFlow, setPropagateFallbackToFlow] = useState(true)
+    const [propagateFallbackToFlow] = useState(false)
     const [propagateOverwriteExisting, setPropagateOverwriteExisting] = useState(false)
     const [propagateFlowDownscale, setPropagateFlowDownscale] = useState(0.5)
     const [propagateFlowMinCoverage, setPropagateFlowMinCoverage] = useState(0.002)
     const [propagateFlowMaxCoverage, setPropagateFlowMaxCoverage] = useState(0.98)
     const [propagateFlowFeatherPx, setPropagateFlowFeatherPx] = useState(1)
-    const [propagateSamuraiModelCfg, setPropagateSamuraiModelCfg] = useState("")
-    const [propagateSamuraiCheckpoint, setPropagateSamuraiCheckpoint] = useState("")
+    const [propagateSamuraiModelCfg, setPropagateSamuraiModelCfg] = useState("third_party/samurai/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml")
+    const [propagateSamuraiCheckpoint, setPropagateSamuraiCheckpoint] = useState("third_party/samurai/checkpoints/sam2.1_hiera_large.pt")
     const [propagateSamuraiOffloadVideoToCpu, setPropagateSamuraiOffloadVideoToCpu] = useState(false)
     const [propagateSamuraiOffloadStateToCpu, setPropagateSamuraiOffloadStateToCpu] = useState(false)
     const [propagateRunning, setPropagateRunning] = useState(false)
@@ -482,6 +523,32 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     }
 
     const [dragOver, setDragOver] = useState(false)
+
+    function lockWorkflowConfig(inputCfg: VideoMatteConfig): VideoMatteConfig {
+        return {
+            ...inputCfg,
+            assignment: {
+                ...inputCfg.assignment,
+                require_assignment: true,
+            },
+            memory: {
+                ...inputCfg.memory,
+                backend: 'matanyone',
+                region_constraint_enabled: true,
+                region_constraint_source: 'propagated_mask',
+                region_constraint_backend: 'sam2_video_predictor',
+                region_constraint_fallback_to_flow: false,
+                region_constraint_samurai_model_cfg:
+                    inputCfg.memory.region_constraint_samurai_model_cfg || builderSamuraiModelCfg || "third_party/samurai/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml",
+                region_constraint_samurai_checkpoint:
+                    inputCfg.memory.region_constraint_samurai_checkpoint || builderSamuraiCheckpoint || "third_party/samurai/checkpoints/sam2.1_hiera_large.pt",
+            },
+            refine: {
+                ...inputCfg.refine,
+                backend: 'mematte',
+            },
+        }
+    }
 
     const handleDrop = useCallback((e: React.DragEvent) => {
         e.preventDefault()
@@ -1082,8 +1149,11 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
         setStatus(null)
 
         try {
-            if (config.assignment.require_assignment) {
-                const summary = await refreshProjectSummary(config)
+            const lockedConfig = lockWorkflowConfig(config)
+            setConfig(lockedConfig)
+
+            if (lockedConfig.assignment.require_assignment) {
+                const summary = await refreshProjectSummary(lockedConfig)
                 if (!summary.keyframe_count) {
                     throw new Error("Assignment required. Import at least one keyframe mask in 'Subject Assignment' before starting.")
                 }
@@ -1092,7 +1162,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
             const res = await fetch('/api/jobs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ config })
+                body: JSON.stringify({ config: lockedConfig })
             })
 
             if (!res.ok) throw new Error(await parseApiError(res))
@@ -1106,6 +1176,15 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
     }
 
     const activeBuilderBox = builderDraftBox ?? builderBox
+
+    useEffect(() => {
+        if (!focusStep) return
+        const el = document.getElementById(`run-step-${focusStep}`)
+        if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+    }, [focusStep, focusStepNonce])
+
     const assignmentBusy =
         assignmentLoading ||
         builderLoadingFrame ||
@@ -1140,9 +1219,23 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                 </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-2">
+            <form id="run-job-form" onSubmit={handleSubmit} className="space-y-3">
+                <div className="sticky top-2 z-30">
+                    <div className="rounded-lg border border-gray-700 bg-gray-900/90 backdrop-blur px-3 py-3 shadow-lg">
+                        <button
+                            type="submit"
+                            disabled={loading || !config.io.input}
+                            className="w-full py-3 bg-brand-500 hover:bg-brand-600 text-white rounded-lg font-bold text-base shadow-lg shadow-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 transition-colors"
+                        >
+                            {loading ? <FaSpinner className="animate-spin" /> : <FaPlay />}
+                            Start Pipeline
+                        </button>
+                    </div>
+                </div>
 
+                <div className="space-y-2">
                 {/* 1. IO Section */}
+                <div id="run-step-io" className="scroll-mt-28">
                 <Section title="Input / Output" defaultOpen={true} tooltip="Configure file paths, frame ranges, and formats.">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         {/* Drop zone for input file */}
@@ -1248,9 +1341,11 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         />
                     </div>
                 </Section>
+                </div>
 
                 {/* 2. Subject Assignment */}
-                <Section title="Subject Assignment (Mask-First)" defaultOpen={true} tooltip="Import one or more keyframe masks before running.">
+                <div id="run-step-assignment" className="scroll-mt-28">
+                <Section title="Subject Assignment (Mask-First)" defaultOpen={true} tooltip="Default workflow: generate masks from your loaded video/frames. Existing-mask import is optional.">
                     <div className="space-y-3">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Input
@@ -1261,10 +1356,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 tooltip="Optional explicit project path. Leave blank to auto-use output directory."
                             />
                             <Switch
-                                label="Require Assignment (--require-assignment/--allow-empty-assignment)"
+                                label="Require at least one subject mask"
                                 checked={config.assignment.require_assignment}
                                 onChange={v => updateConfig('assignment', 'require_assignment', v)}
-                                tooltip="CLI parity: --require-assignment / --allow-empty-assignment. Blocks run until at least one keyframe mask is imported."
+                                tooltip="Blocks the run until you import or generate at least one keyframe mask."
                             />
                             <Input
                                 label="Keyframe Index"
@@ -1274,39 +1369,65 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 tooltip="Frame index this mask corresponds to."
                             />
                             <Select
-                                label="Anchor Type (--assign-kind)"
+                                label="Assignment Source"
+                                value={assignmentSourceMode}
+                                onChange={e => setAssignmentSourceMode(e.target.value as AssignmentSourceMode)}
+                                options={[
+                                    { value: 'generate', label: 'Generate From Video (Default)' },
+                                    { value: 'import', label: 'Import Existing Mask File' },
+                                ]}
+                                tooltip="Use Generate From Video for the normal workflow. Switch to Import only when you already have a mask image."
+                            />
+                            <Select
+                                label="Anchor type"
                                 value={assignmentKind}
                                 onChange={e => setAssignmentKind(e.target.value as 'initial' | 'correction')}
                                 options={[
                                     { value: 'initial', label: 'Initial Anchor' },
                                     { value: 'correction', label: 'Correction Anchor' },
                                 ]}
-                                tooltip="CLI parity: --assign-kind {initial,correction}. Use correction anchors to patch drift and reprocess only the affected range."
+                                tooltip="Use an initial anchor to start tracking, or a correction anchor to fix drift later in the shot."
                             />
-                            <Input
-                                label="Mask Path"
-                                value={assignmentMaskPath}
-                                onChange={e => setAssignmentMaskPath(e.target.value)}
-                                placeholder="D:\\path\\to\\mask.png"
-                                tooltip="Filesystem path to keyframe mask image."
-                            />
+                            {assignmentSourceMode === 'generate' && (
+                                <Select
+                                    label="Mask Creation Mode"
+                                    value={builderWorkflowMode}
+                                    onChange={e => setBuilderWorkflowMode(e.target.value as BuilderWorkflowMode)}
+                                    options={[
+                                        { value: 'single', label: 'Single Mask Frame' },
+                                        { value: 'multiple', label: 'Multiple Mask Frames (Range)' },
+                                    ]}
+                                    tooltip="Single creates one keyframe mask. Multiple builds masks across a frame range."
+                                />
+                            )}
+                            {assignmentSourceMode === 'import' && (
+                                <Input
+                                    label="Mask Path"
+                                    value={assignmentMaskPath}
+                                    onChange={e => setAssignmentMaskPath(e.target.value)}
+                                    placeholder="D:\\path\\to\\mask.png"
+                                    tooltip="Filesystem path to keyframe mask image."
+                                />
+                            )}
                             <Switch
-                                label="Auto-Apply Suggested Range (--apply-suggested-range/--no-apply-suggested-range)"
+                                label="Auto-apply suggested reprocess range"
                                 checked={autoApplySuggestedRange}
                                 onChange={setAutoApplySuggestedRange}
-                                tooltip="CLI parity: --apply-suggested-range / --no-apply-suggested-range when importing correction anchors."
+                                tooltip="When you import a correction mask, automatically set the frame range that should be reprocessed."
                             />
                         </div>
                         <div className="flex gap-2">
-                            <button
-                                type="button"
-                                onClick={handleImportAssignment}
-                                disabled={assignmentBusy}
-                                className="px-3 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                            >
-                                {assignmentLoading ? <FaSpinner className="animate-spin" /> : <FaUpload />}
-                                Import Mask
-                            </button>
+                            {assignmentSourceMode === 'import' && (
+                                <button
+                                    type="button"
+                                    onClick={handleImportAssignment}
+                                    disabled={assignmentBusy}
+                                    className="px-3 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                                >
+                                    {assignmentLoading ? <FaSpinner className="animate-spin" /> : <FaUpload />}
+                                    Import Mask
+                                </button>
+                            )}
                             <button
                                 type="button"
                                 onClick={() => {
@@ -1320,6 +1441,12 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 Refresh
                             </button>
                         </div>
+                        {assignmentSourceMode === 'generate' && (
+                            <div className="text-xs text-gray-400">
+                                Workflow: load a frame from the input video/frames, draw prompts, then build one mask or a range of masks.
+                            </div>
+                        )}
+                        {assignmentSourceMode === 'generate' && (
                         <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
                             <div className="flex flex-wrap gap-2 items-center justify-between">
                                 <div className="text-sm font-semibold text-gray-200">Initial Mask Builder (Phase 3)</div>
@@ -1338,17 +1465,19 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
                                         className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
-                                        {builderBuildingMask ? "Building..." : "Build + Import Mask"}
+                                        {builderBuildingMask ? "Building..." : (builderWorkflowMode === 'multiple' ? "Build Anchor Mask" : "Build + Import Mask")}
                                     </button>
-                                    <button
-                                        type="button"
-                                        onClick={handleBuildMaskRangeFromPrompts}
-                                        disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
-                                        className="px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                                        title="Build masks across a frame range using the selected range backend."
-                                    >
-                                        {builderBuildingRange ? "Building Range..." : "Build + Import Range"}
-                                    </button>
+                                    {builderWorkflowMode === 'multiple' && (
+                                        <button
+                                            type="button"
+                                            onClick={handleBuildMaskRangeFromPrompts}
+                                            disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
+                                            className="px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                            title="Build masks across a frame range using the selected range backend."
+                                        >
+                                            {builderBuildingRange ? "Building Range..." : "Build + Import Range"}
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
@@ -1439,6 +1568,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     </button>
                                 </div>
                             </div>
+                            {builderWorkflowMode === 'multiple' && (
                             <div className="space-y-2 rounded border border-gray-700/70 bg-gray-900/70 p-2">
                                     <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                                         <Select
@@ -1446,10 +1576,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                             value={builderRangeBackend}
                                             onChange={e => setBuilderRangeBackend(e.target.value as RangeBuilderBackend)}
                                             options={[
-                                                { value: 'samurai_video_predictor', label: 'Samurai Video Predictor' },
-                                                { value: 'sam', label: 'Per-Frame SAM' },
+                                                { value: 'samurai_video_predictor', label: 'SAM2/Samurai Video Predictor (Locked)' },
                                             ]}
-                                            tooltip="Stage 1 range backend. Samurai runs a video predictor pass; SAM runs per-frame prompt segmentation."
+                                            tooltip="Stage 1 is locked to SAM2/Samurai video tracking for full-range mask generation."
+                                            disabled
                                         />
                                         {builderRangeBackend === 'sam' ? (
                                             <>
@@ -1582,6 +1712,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         </div>
                                     )}
                                 </div>
+                            )}
                             {builderFrameDataUrl && builderFrameSize ? (
                                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
                                     <div>
@@ -1667,6 +1798,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 </div>
                             )}
                         </div>
+                        )}
                         <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
                             <div className="flex items-center justify-between gap-2">
                                 <div className="text-sm font-semibold text-gray-200">
@@ -1687,12 +1819,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                     value={propagateBackend}
                                     onChange={e => setPropagateBackend(e.target.value as PropagationBackend)}
                                     options={[
-                                        { value: 'flow', label: 'Flow (Built-in)' },
-                                        { value: 'samurai_video_predictor', label: 'Samurai Video Predictor' },
-                                        { value: 'sam2_video_predictor', label: 'SAM2VideoPredictor' },
-                                        { value: 'cutie', label: 'Cutie' },
+                                        { value: 'sam2_video_predictor', label: 'SAM2/Samurai Video Predictor (Locked)' },
                                     ]}
-                                    tooltip="Phase 4 backend. Samurai uses a true video predictor; unsupported backends can fallback to flow."
+                                    tooltip="Phase 4 is locked to SAM2/Samurai predictor propagation."
+                                    disabled
                                 />
                                 <Input
                                     label="Range Start"
@@ -1787,12 +1917,9 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 </div>
                             )}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                <Switch
-                                    label="Fallback To Flow"
-                                    checked={propagateFallbackToFlow}
-                                    onChange={setPropagateFallbackToFlow}
-                                    tooltip="If Samurai/SAM2/Cutie is unavailable, continue with flow backend."
-                                />
+                                <div className="text-xs text-amber-300/90 border border-amber-500/40 rounded px-3 py-2 bg-amber-500/10">
+                                    Flow fallback is disabled for propagation. SAM2/Samurai must succeed.
+                                </div>
                                 <Switch
                                     label="Overwrite Existing Frames"
                                     checked={propagateOverwriteExisting}
@@ -1838,8 +1965,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         )}
                     </div>
                 </Section>
+                </div>
 
                 {/* 3. Memory Propagation */}
+                <div id="run-step-memory" className="scroll-mt-28">
                 <Section
                     title="Memory Propagation (Stage 2)"
                     defaultOpen={true}
@@ -1848,24 +1977,24 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                     <div className="space-y-3">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Select
-                                label="Memory Backend (--memory-backend)"
+                                label="Memory algorithm"
                                 value={config.memory.backend}
                                 onChange={e => updateConfig('memory', 'backend', e.target.value)}
                                 options={[
-                                    { value: 'appearance_memory_bank', label: 'Appearance Memory Bank' },
-                                    { value: 'placeholder_nearest_keyframe', label: 'Nearest Keyframe (Placeholder)' },
+                                    { value: 'matanyone', label: 'MatAnyone Temporal Memory (Locked)' },
                                 ]}
-                                tooltip="Main Stage-2 algorithm for coarse alpha."
+                                tooltip="Stage 2 is locked to MatAnyone for low-resolution temporal alpha propagation."
+                                disabled
                             />
                             <Input
-                                label="Memory Frames (--memory-frames)"
+                                label="Memory anchor count"
                                 type="number"
                                 value={config.memory.memory_frames}
                                 onChange={e => updateConfig('memory', 'memory_frames', parseInt(e.target.value || "1"))}
                                 tooltip="Target number of anchors kept in memory."
                             />
                             <Input
-                                label="Temporal Window (--window)"
+                                label="Anchor time window"
                                 type="number"
                                 value={config.memory.window}
                                 onChange={e => updateConfig('memory', 'window', parseInt(e.target.value || "1"))}
@@ -1897,7 +2026,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
 
                         <div className="border-t border-gray-700/50 pt-3 space-y-2">
                             <Switch
-                                label="Enable Region Constraint (--memory-region-constraint/--no-memory-region-constraint)"
+                                label="Constrain tracking to subject region"
                                 checked={Boolean(config.memory.region_constraint_enabled)}
                                 onChange={v => updateConfig('memory', 'region_constraint_enabled', v)}
                                 tooltip="Build a full-range subject region prior and clamp Stage-2 alpha outside it."
@@ -1905,64 +2034,57 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                             {config.memory.region_constraint_enabled && (
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                                     <Select
-                                        label="Region Source (--memory-region-source)"
+                                        label="Region source"
                                         value={config.memory.region_constraint_source || 'none'}
                                         onChange={e => updateConfig('memory', 'region_constraint_source', e.target.value)}
                                         options={[
-                                            { value: 'propagated_bbox', label: 'Propagated BBox (Recommended)' },
-                                            { value: 'propagated_mask', label: 'Propagated Mask' },
-                                            { value: 'nearest_keyframe_bbox', label: 'Nearest Keyframe BBox' },
-                                            { value: 'none', label: 'Disabled' },
+                                            { value: 'propagated_mask', label: 'Tracked Subject Mask (Locked)' },
                                         ]}
-                                        tooltip="How the foreground region prior is generated."
+                                        tooltip="Stage 1 tracked subject mask is used directly as the region prior."
+                                        disabled
                                     />
                                     <Input
-                                        label="Anchor Frame (--memory-region-anchor-frame)"
+                                        label="Region anchor frame"
                                         type="number"
                                         value={config.memory.region_constraint_anchor_frame ?? -1}
                                         onChange={e => updateConfig('memory', 'region_constraint_anchor_frame', parseInt(e.target.value || "-1"))}
                                         tooltip="-1 means first available keyframe anchor."
                                     />
                                     <Select
-                                        label="Propagation Backend (--memory-region-backend)"
+                                        label="Region propagation method"
                                         value={config.memory.region_constraint_backend || 'sam2_video_predictor'}
                                         onChange={e => updateConfig('memory', 'region_constraint_backend', e.target.value)}
                                         options={[
-                                            { value: 'samurai_video_predictor', label: 'Samurai Video Predictor' },
-                                            { value: 'sam2_video_predictor', label: 'SAM2 Video Predictor' },
-                                            { value: 'cutie', label: 'Cutie' },
-                                            { value: 'flow', label: 'Flow' },
+                                            { value: 'sam2_video_predictor', label: 'SAM2/Samurai Video Predictor (Locked)' },
                                         ]}
-                                        tooltip="Backend used for dense region prior propagation."
+                                        tooltip="Region prior propagation is locked to SAM2/Samurai."
+                                        disabled
                                     />
-                                    <Switch
-                                        label="Fallback To Flow (--memory-region-fallback-to-flow/--no-memory-region-fallback-to-flow)"
-                                        checked={Boolean(config.memory.region_constraint_fallback_to_flow)}
-                                        onChange={v => updateConfig('memory', 'region_constraint_fallback_to_flow', v)}
-                                        tooltip="Use flow propagation if Samurai/SAM2/Cutie runtime is unavailable."
-                                    />
-                                    {config.memory.region_constraint_backend === 'samurai_video_predictor' && (
+                                    <div className="text-xs text-amber-300/90 border border-amber-500/40 rounded px-3 py-2 bg-amber-500/10 md:col-span-2">
+                                        Optical-flow fallback is disabled. If SAM2/Samurai cannot run, the job stops with an error.
+                                    </div>
+                                    {['samurai_video_predictor', 'sam2_video_predictor'].includes(config.memory.region_constraint_backend || '') && (
                                         <>
                                             <Input
-                                                label="Samurai Model Cfg (--memory-region-samurai-model-cfg)"
+                                                label="Samurai model config path"
                                                 value={config.memory.region_constraint_samurai_model_cfg || ""}
                                                 onChange={e => updateConfig('memory', 'region_constraint_samurai_model_cfg', e.target.value)}
                                                 tooltip="Path to Samurai/SAM2 model config file."
                                             />
                                             <Input
-                                                label="Samurai Checkpoint (--memory-region-samurai-checkpoint)"
+                                                label="Samurai checkpoint path"
                                                 value={config.memory.region_constraint_samurai_checkpoint || ""}
                                                 onChange={e => updateConfig('memory', 'region_constraint_samurai_checkpoint', e.target.value)}
                                                 tooltip="Path to Samurai/SAM2 checkpoint file."
                                             />
                                             <Switch
-                                                label="Offload Video (--memory-region-samurai-offload-video-to-cpu)"
+                                                label="Offload video buffers to CPU"
                                                 checked={Boolean(config.memory.region_constraint_samurai_offload_video_to_cpu)}
                                                 onChange={v => updateConfig('memory', 'region_constraint_samurai_offload_video_to_cpu', v)}
                                                 tooltip="Reduce VRAM by keeping video buffers on CPU."
                                             />
                                             <Switch
-                                                label="Offload State (--memory-region-samurai-offload-state-to-cpu)"
+                                                label="Offload predictor state to CPU"
                                                 checked={Boolean(config.memory.region_constraint_samurai_offload_state_to_cpu)}
                                                 onChange={v => updateConfig('memory', 'region_constraint_samurai_offload_state_to_cpu', v)}
                                                 tooltip="Reduce VRAM by offloading predictor state to CPU."
@@ -1970,7 +2092,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         </>
                                     )}
                                     <Input
-                                        label="Flow Downscale (--memory-region-flow-downscale)"
+                                        label="Flow processing scale"
                                         type="number"
                                         step="0.01"
                                         value={config.memory.region_constraint_flow_downscale ?? 0.5}
@@ -1978,7 +2100,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         tooltip="Lower = faster but less precise propagation."
                                     />
                                     <Input
-                                        label="Flow Min Coverage (--memory-region-flow-min-coverage)"
+                                        label="Minimum allowed region size"
                                         type="number"
                                         step="0.0001"
                                         value={config.memory.region_constraint_flow_min_coverage ?? 0.002}
@@ -1986,7 +2108,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         tooltip="Reject unstable prior frames that become too small."
                                     />
                                     <Input
-                                        label="Flow Max Coverage (--memory-region-flow-max-coverage)"
+                                        label="Maximum allowed region size"
                                         type="number"
                                         step="0.0001"
                                         value={config.memory.region_constraint_flow_max_coverage ?? 0.98}
@@ -1994,14 +2116,14 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         tooltip="Reject unstable prior frames that become unrealistically large."
                                     />
                                     <Input
-                                        label="Flow Feather (--memory-region-flow-feather-px)"
+                                        label="Flow edge smoothing"
                                         type="number"
                                         value={config.memory.region_constraint_flow_feather_px ?? 1}
                                         onChange={e => updateConfig('memory', 'region_constraint_flow_feather_px', parseInt(e.target.value || "0"))}
                                         tooltip="Smoothing during flow-based prior propagation."
                                     />
                                     <Input
-                                        label="Mask Threshold (--memory-region-threshold)"
+                                        label="Foreground mask threshold"
                                         type="number"
                                         step="0.01"
                                         value={config.memory.region_constraint_threshold ?? 0.2}
@@ -2009,14 +2131,14 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         tooltip="Foreground threshold used when converting propagated masks to prior regions."
                                     />
                                     <Input
-                                        label="BBox Margin (--memory-region-bbox-margin-px)"
+                                        label="Bounding box margin (px)"
                                         type="number"
                                         value={config.memory.region_constraint_bbox_margin_px ?? 96}
                                         onChange={e => updateConfig('memory', 'region_constraint_bbox_margin_px', parseInt(e.target.value || "0"))}
                                         tooltip="Extra margin around detected subject bbox."
                                     />
                                     <Input
-                                        label="BBox Expand Ratio (--memory-region-bbox-expand-ratio)"
+                                        label="Bounding box expand ratio"
                                         type="number"
                                         step="0.01"
                                         value={config.memory.region_constraint_bbox_expand_ratio ?? 0.15}
@@ -2024,21 +2146,21 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         tooltip="Relative bbox expansion based on subject size."
                                     />
                                     <Input
-                                        label="Dilate Prior (--memory-region-dilate-px)"
+                                        label="Expand constrained region (px)"
                                         type="number"
                                         value={config.memory.region_constraint_dilate_px ?? 24}
                                         onChange={e => updateConfig('memory', 'region_constraint_dilate_px', parseInt(e.target.value || "0"))}
                                         tooltip="Morphological expansion to avoid accidental limb cropping."
                                     />
                                     <Input
-                                        label="Soften Prior (--memory-region-soften-px)"
+                                        label="Soften constrained region (px)"
                                         type="number"
                                         value={config.memory.region_constraint_soften_px ?? 0}
                                         onChange={e => updateConfig('memory', 'region_constraint_soften_px', parseInt(e.target.value || "0"))}
                                         tooltip="Gaussian soft edge on the region prior."
                                     />
                                     <Input
-                                        label="Outside Conf Cap (--memory-region-outside-conf-cap)"
+                                        label="Outside-region confidence cap"
                                         type="number"
                                         step="0.01"
                                         value={config.memory.region_constraint_outside_confidence_cap ?? 0.05}
@@ -2050,8 +2172,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                     </div>
                 </Section>
+                </div>
 
                 {/* 4. Background */}
+                <div id="run-step-background" className="scroll-mt-28">
                 <Section title="Background Plate" tooltip="Settings for clean plate estimation and handling via inpainting.">
                     <div className="space-y-2">
                         <Switch
@@ -2089,8 +2213,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                     </div>
                 </Section>
+                </div>
 
                 {/* 3. ROI */}
+                <div id="run-step-roi" className="scroll-mt-28">
                 <Section title="ROI & Tracking" tooltip="Subject detection and Region of Interest tracking settings.">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         <Input
@@ -2123,8 +2249,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         />
                     </div>
                 </Section>
+                </div>
 
                 {/* 4. Global Pass */}
+                <div id="run-step-global" className="scroll-mt-28">
                 <Section title="Global Pass (Pass A)" tooltip="First pass: Generates a coarse, full-frame matte." defaultOpen={true}>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         <Select
@@ -2159,9 +2287,11 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                     </div>
                 </Section>
+                </div>
 
                 {/* 5. Intermediate Pass */}
                 {showAdvanced && (
+                    <div id="run-step-intermediate" className="scroll-mt-28">
                     <Section title="Intermediate (Pass A')" tooltip="Refines the coarse matte and applies temporal smoothing.">
                         <div className="space-y-2">
                             <Switch
@@ -2197,10 +2327,12 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                             </div>
                         </div>
                     </Section>
+                    </div>
                 )}
 
                 {/* 6. Band & Trimap */}
                 {showAdvanced && (
+                    <div id="run-step-band" className="scroll-mt-28">
                     <Section title="Band & Trimap" tooltip="Generates the trimap (unknown region) for detail refinement.">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Select
@@ -2237,20 +2369,22 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                             />
                         </div>
                     </Section>
+                    </div>
                 )}
 
                 {/* 7. Refine */}
-                <Section title="Edge Refinement (Stage 3)" tooltip="Boundary-focused refinement. Use guided_band for default stability, or mematte for neural edge detail recovery.">
+                <div id="run-step-refine" className="scroll-mt-28">
+                <Section title="Edge Refinement (Stage 3)" tooltip="Boundary-focused refinement using MEMatte at full resolution tiles.">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         <Select
                             label="Refine Backend"
-                            value={config.refine.backend || 'guided_band'}
+                            value={config.refine.backend || 'mematte'}
                             onChange={e => updateConfig('refine', 'backend', e.target.value)}
                             options={[
-                                { value: 'guided_band', label: 'Guided Band (Default)' },
-                                { value: 'mematte', label: 'MEMatte (Neural)' },
+                                { value: 'mematte', label: 'MEMatte Tile Refiner (Locked)' },
                             ]}
-                            tooltip="Main Stage-3 refiner backend."
+                            tooltip="Stage 3 is locked to MEMatte for high-resolution edge recovery."
+                            disabled
                         />
                         <Input
                             label="Unknown Band (px)" type="number"
@@ -2305,7 +2439,9 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                     )}
                 </Section>
+                </div>
 
+                <div id="run-step-tuning" className="scroll-mt-28">
                 <Section
                     title="Matte Tuning"
                     tooltip="Artist-facing matte tuning: trimap width, choke/expand, feather, and XY offsets."
@@ -2347,21 +2483,21 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                             </div>
                         </div>
                         <Switch
-                            label="Enable Matte Tuning (--matte-tuning/--no-matte-tuning)"
+                            label="Enable final matte tuning"
                             checked={config.matte_tuning.enabled}
                             onChange={v => updateConfig('matte_tuning', 'enabled', v)}
-                            tooltip="CLI parity: --matte-tuning / --no-matte-tuning."
+                            tooltip="Apply final edge cleanup controls before writing output."
                         />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Input
-                                label="Refine Trimap Width (--unknown-band-px / --mt-trimap-width-px)"
+                                label="Refinement edge band width (px)"
                                 type="number"
                                 value={config.refine.unknown_band_px}
                                 onChange={e => updateConfig('refine', 'unknown_band_px', parseInt(e.target.value || "0"))}
                                 tooltip="Controls boundary band width for high-res refinement (maps to refine.unknown_band_px)."
                             />
                             <Switch
-                                label="Guided Region Trimap (--refine-region-trimap/--no-refine-region-trimap)"
+                                label="Use guided trimap from tracked region"
                                 checked={Boolean(config.refine.region_trimap_enabled)}
                                 onChange={v => updateConfig('refine', 'region_trimap_enabled', v)}
                                 tooltip="Uses propagated Samurai/Stage-1 mask to build sure-FG/unknown/loose-FG constraints in refinement."
@@ -2369,7 +2505,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                             {showAdvanced && (
                                 <>
                                     <Input
-                                        label="Guided Threshold (--refine-region-trimap-threshold)"
+                                        label="Guided trimap threshold"
                                         type="number"
                                         step="0.01"
                                         value={config.refine.region_trimap_threshold ?? 0.5}
@@ -2377,34 +2513,34 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         tooltip="Binarization threshold applied to propagated guidance masks."
                                     />
                                     <Input
-                                        label="Sure FG Erode Px (--refine-region-trimap-fg-erode-px)"
+                                        label="Sure foreground shrink (px)"
                                         type="number"
                                         value={config.refine.region_trimap_fg_erode_px ?? 3}
                                         onChange={e => updateConfig('refine', 'region_trimap_fg_erode_px', parseInt(e.target.value || "0"))}
                                         tooltip="Pixels to erode guidance for sure-foreground lock."
                                     />
                                     <Input
-                                        label="Loose FG Dilate Px (--refine-region-trimap-bg-dilate-px)"
+                                        label="Loose foreground expand (px)"
                                         type="number"
                                         value={config.refine.region_trimap_bg_dilate_px ?? 16}
                                         onChange={e => updateConfig('refine', 'region_trimap_bg_dilate_px', parseInt(e.target.value || "0"))}
                                         tooltip="Pixels to dilate guidance so refinement has room for soft edges."
                                     />
                                     <Input
-                                        label="Cleanup Px (--refine-region-trimap-cleanup-px)"
+                                        label="Guided mask cleanup (px)"
                                         type="number"
                                         value={config.refine.region_trimap_cleanup_px ?? 1}
                                         onChange={e => updateConfig('refine', 'region_trimap_cleanup_px', parseInt(e.target.value || "0"))}
                                         tooltip="Morphological cleanup radius for guidance masks."
                                     />
                                     <Switch
-                                        label="Keep Largest Component (--refine-region-trimap-keep-largest/--no-refine-region-trimap-keep-largest)"
+                                        label="Keep only largest subject region"
                                         checked={Boolean(config.refine.region_trimap_keep_largest)}
                                         onChange={v => updateConfig('refine', 'region_trimap_keep_largest', v)}
                                         tooltip="Helps reject background clusters and keep the dominant tracked subject."
                                     />
                                     <Input
-                                        label="Min Guided Coverage (--refine-region-trimap-min-coverage)"
+                                        label="Minimum guided coverage"
                                         type="number"
                                         step="0.0001"
                                         value={config.refine.region_trimap_min_coverage ?? 0.002}
@@ -2412,7 +2548,7 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                         tooltip="Reject guided trimap frame if coverage drops below this value."
                                     />
                                     <Input
-                                        label="Max Guided Coverage (--refine-region-trimap-max-coverage)"
+                                        label="Maximum guided coverage"
                                         type="number"
                                         step="0.0001"
                                         value={config.refine.region_trimap_max_coverage ?? 0.98}
@@ -2422,28 +2558,28 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                                 </>
                             )}
                             <Input
-                                label="Mask Shrink/Grow (--mt-shrink-grow-px)"
+                                label="Final mask shrink/grow (px)"
                                 type="number"
                                 value={config.matte_tuning.shrink_grow_px}
                                 onChange={e => updateConfig('matte_tuning', 'shrink_grow_px', parseInt(e.target.value || "0"))}
                                 tooltip="Positive grows matte, negative shrinks matte."
                             />
                             <Input
-                                label="Edge Feather (--mt-feather-px)"
+                                label="Final edge feather (px)"
                                 type="number"
                                 value={config.matte_tuning.feather_px}
                                 onChange={e => updateConfig('matte_tuning', 'feather_px', parseInt(e.target.value || "0"))}
                                 tooltip="Applies final Gaussian feather to matte edges."
                             />
                             <Input
-                                label="Offset X (--mt-offset-x-px)"
+                                label="Horizontal matte offset (px)"
                                 type="number"
                                 value={config.matte_tuning.offset_x_px}
                                 onChange={e => updateConfig('matte_tuning', 'offset_x_px', parseInt(e.target.value || "0"))}
                                 tooltip="Shifts matte in X pixels."
                             />
                             <Input
-                                label="Offset Y (--mt-offset-y-px)"
+                                label="Vertical matte offset (px)"
                                 type="number"
                                 value={config.matte_tuning.offset_y_px}
                                 onChange={e => updateConfig('matte_tuning', 'offset_y_px', parseInt(e.target.value || "0"))}
@@ -2452,10 +2588,12 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                     </div>
                 </Section>
+                </div>
 
 
                 {/* 8. Temporal Stability */}
                 {showAdvanced && (
+                    <div id="run-step-temporal" className="scroll-mt-28">
                     <Section title="Temporal Stability (Pass C)" tooltip="Final pass: Ensures temporal consistency on the high-res matte.">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Select
@@ -2482,9 +2620,11 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                             />
                         </div>
                     </Section>
+                    </div>
                 )}
 
                 {/* 9. Despill & Output */}
+                <div id="run-step-post" className="scroll-mt-28">
                 <Section title="Post-Processing" tooltip="Final color correction (despill) and outputting foreground.">
                     <div className="space-y-2">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
@@ -2526,8 +2666,10 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                     </div>
                 </Section>
+                </div>
 
                 {/* 10. Preview & Runtime */}
+                <div id="run-step-runtime" className="scroll-mt-28">
                 <Section title="Runtime & Preview" tooltip="Hardware configuration and live preview settings." defaultOpen={true}>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         <Select
@@ -2594,7 +2736,9 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                     </div>
                 </Section>
+                </div>
 
+                <div id="run-step-debug" className="scroll-mt-28">
                 <Section
                     title="Debug Stage Exports"
                     tooltip="Export per-stage sample frames and diagnosis artifacts to isolate where matte quality breaks."
@@ -2603,27 +2747,27 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                     <div className="space-y-2">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Switch
-                                label="Enable Stage Samples (--debug-stage-samples/--no-debug-stage-samples)"
+                                label="Export stage sample images"
                                 checked={config.debug.export_stage_samples}
                                 onChange={v => updateConfig('debug', 'export_stage_samples', v)}
                                 tooltip="Writes sampled alpha/rgb/overlay images for each stage."
                             />
                             <Input
-                                label="Sample Count (--debug-sample-count)"
+                                label="Number of sampled frames"
                                 type="number"
                                 value={config.debug.sample_count}
                                 onChange={e => updateConfig('debug', 'sample_count', parseInt(e.target.value || "1"))}
                                 tooltip="How many sample frames to export when sample list is empty."
                             />
                             <Input
-                                label="Sample Frames (--debug-sample-frames)"
+                                label="Specific sample frame numbers"
                                 value={(config.debug.sample_frames || []).join(',')}
                                 onChange={e => updateConfig('debug', 'sample_frames', e.target.value.split(',').map(s => s.trim()).filter(Boolean).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v)))}
                                 placeholder="0,40,81,122,162"
                                 tooltip="Comma-separated absolute frame indices."
                             />
                             <Input
-                                label="Debug Stage Dir (--debug-stage-dir)"
+                                label="Debug output subfolder"
                                 value={config.debug.stage_dir}
                                 onChange={e => updateConfig('debug', 'stage_dir', e.target.value)}
                                 tooltip="Subdirectory under output_dir where debug artifacts are written."
@@ -2643,7 +2787,9 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                         </div>
                     </div>
                 </Section>
+                </div>
 
+                <div id="run-step-qc" className="scroll-mt-28">
                 <Section
                     title="QC & Regression Gates"
                     tooltip="Option B QC metrics and regression thresholds. Enable hard-fail to stop runs that exceed limits."
@@ -2652,114 +2798,105 @@ export default function RunTab({ onSuccess }: { onSuccess: () => void }) {
                     <div className="space-y-2">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Switch
-                                label="Enable QC Metrics (--qc/--no-qc)"
+                                label="Compute quality control metrics"
                                 checked={config.qc.enabled}
                                 onChange={v => updateConfig('qc', 'enabled', v)}
-                                tooltip="CLI parity: --qc / --no-qc. Compute per-frame QC metrics and write QC artifacts."
+                                tooltip="Measure stability and quality and write QC artifacts with the render."
                             />
                             <Switch
-                                label="Fail On Regression (--qc-fail-on-regression/--no-qc-fail-on-regression)"
+                                label="Fail job when QC gates fail"
                                 checked={config.qc.fail_on_regression}
                                 onChange={v => updateConfig('qc', 'fail_on_regression', v)}
-                                tooltip="CLI parity: --qc-fail-on-regression / --no-qc-fail-on-regression. If any QC gate fails, the job fails."
+                                tooltip="Stop the run as failed if any QC threshold is exceeded."
                             />
                         </div>
                         {showAdvanced && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                                 <Input
-                                    label="QC Output Subdir (config: qc.output_subdir)"
+                                    label="QC output subfolder"
                                     value={config.qc.output_subdir}
                                     onChange={e => updateConfig('qc', 'output_subdir', e.target.value)}
-                                    tooltip="Config field parity: qc.output_subdir (YAML/UI). No direct CLI flag."
+                                    tooltip="Folder inside the output directory where QC files are saved."
                                 />
                                 <Input
-                                    label="Metrics Filename (config: qc.metrics_filename)"
+                                    label="QC metrics filename"
                                     value={config.qc.metrics_filename}
                                     onChange={e => updateConfig('qc', 'metrics_filename', e.target.value)}
-                                    tooltip="Config field parity: qc.metrics_filename (YAML/UI). No direct CLI flag."
+                                    tooltip="JSON filename for detailed QC metrics."
                                 />
                                 <Input
-                                    label="Report Filename (config: qc.report_filename)"
+                                    label="QC report filename"
                                     value={config.qc.report_filename}
                                     onChange={e => updateConfig('qc', 'report_filename', e.target.value)}
-                                    tooltip="Config field parity: qc.report_filename (YAML/UI). No direct CLI flag."
+                                    tooltip="Markdown filename for the QC summary report."
                                 />
                                 <Input
-                                    label="Output Roundtrip Samples (--qc-sample-output-frames)"
+                                    label="Output roundtrip sample count"
                                     type="number"
                                     value={config.qc.sample_output_frames}
                                     onChange={e => updateConfig('qc', 'sample_output_frames', parseInt(e.target.value || "0"))}
-                                    tooltip="CLI parity: --qc-sample-output-frames. Number of output frames to sample for roundtrip MAE checks."
+                                    tooltip="How many saved output frames to re-read for roundtrip accuracy checks."
                                 />
                                 <Input
-                                    label="Max Roundtrip MAE (--qc-max-output-roundtrip-mae)"
+                                    label="Max output roundtrip error"
                                     type="number"
                                     step="0.0001"
                                     value={config.qc.max_output_roundtrip_mae}
                                     onChange={e => updateConfig('qc', 'max_output_roundtrip_mae', parseFloat(e.target.value))}
-                                    tooltip="CLI parity: --qc-max-output-roundtrip-mae. Maximum allowed MAE between in-memory alpha and written output."
+                                    tooltip="Maximum allowed MAE between in-memory alpha and written output."
                                 />
                                 <Input
-                                    label="Alpha Range Epsilon (--qc-alpha-range-eps)"
+                                    label="Alpha range tolerance"
                                     type="number"
                                     step="0.0001"
                                     value={config.qc.alpha_range_eps}
                                     onChange={e => updateConfig('qc', 'alpha_range_eps', parseFloat(e.target.value))}
-                                    tooltip="CLI parity: --qc-alpha-range-eps. Allowed alpha range slack outside [0,1]."
+                                    tooltip="Allowed alpha range slack outside [0,1]."
                                 />
                                 <Input
-                                    label="Max P95 Flicker (--qc-max-p95-flicker)"
+                                    label="Max 95th percentile flicker"
                                     type="number"
                                     step="0.0001"
                                     value={config.qc.max_p95_flicker}
                                     onChange={e => updateConfig('qc', 'max_p95_flicker', parseFloat(e.target.value))}
-                                    tooltip="CLI parity: --qc-max-p95-flicker. Maximum allowed 95th percentile frame-to-frame flicker."
+                                    tooltip="Maximum allowed 95th percentile frame-to-frame flicker."
                                 />
                                 <Input
-                                    label="Max P95 Edge Flicker (--qc-max-p95-edge-flicker)"
+                                    label="Max 95th percentile edge flicker"
                                     type="number"
                                     step="0.0001"
                                     value={config.qc.max_p95_edge_flicker}
                                     onChange={e => updateConfig('qc', 'max_p95_edge_flicker', parseFloat(e.target.value))}
-                                    tooltip="CLI parity: --qc-max-p95-edge-flicker. Maximum allowed 95th percentile edge-band flicker."
+                                    tooltip="Maximum allowed 95th percentile edge-band flicker."
                                 />
                                 <Input
-                                    label="Min Mean Edge Confidence (--qc-min-mean-edge-confidence)"
+                                    label="Minimum mean edge confidence"
                                     type="number"
                                     step="0.0001"
                                     value={config.qc.min_mean_edge_confidence}
                                     onChange={e => updateConfig('qc', 'min_mean_edge_confidence', parseFloat(e.target.value))}
-                                    tooltip="CLI parity: --qc-min-mean-edge-confidence. Minimum allowed mean edge confidence."
+                                    tooltip="Minimum allowed mean edge confidence."
                                 />
                                 <Input
-                                    label="Band Spike Ratio (--qc-band-spike-ratio)"
+                                    label="Band spike ratio limit"
                                     type="number"
                                     step="0.1"
                                     value={config.qc.band_spike_ratio}
                                     onChange={e => updateConfig('qc', 'band_spike_ratio', parseFloat(e.target.value))}
-                                    tooltip="CLI parity: --qc-band-spike-ratio. Coverage ratio above running mean that counts as a spike."
+                                    tooltip="Coverage ratio above running mean that counts as a spike."
                                 />
                                 <Input
-                                    label="Max Band Spike Frames (--qc-max-band-spike-frames)"
+                                    label="Max allowed band spike frames"
                                     type="number"
                                     value={config.qc.max_band_spike_frames}
                                     onChange={e => updateConfig('qc', 'max_band_spike_frames', parseInt(e.target.value || "0"))}
-                                    tooltip="CLI parity: --qc-max-band-spike-frames. Maximum number of spike frames allowed before gate fail."
+                                    tooltip="Maximum number of spike frames allowed before QC fails."
                                 />
                             </div>
                         )}
                     </div>
                 </Section>
-
-                <div className="pt-4 sticky bottom-6 z-10">
-                    <button
-                        type="submit"
-                        disabled={loading || !config.io.input}
-                        className="w-full py-4 bg-brand-500 hover:bg-brand-600 text-white rounded-lg font-bold text-lg shadow-lg shadow-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 transition-colors backdrop-blur-sm"
-                    >
-                        {loading ? <FaSpinner className="animate-spin" /> : <FaPlay />}
-                        Start Pipeline
-                    </button>
+                </div>
                 </div>
             </form >
         </div >

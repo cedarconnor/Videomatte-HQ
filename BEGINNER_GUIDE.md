@@ -2,6 +2,9 @@
 
 This guide is for first-time users who want the easiest path.
 
+This build is locked to the production workflow:
+`SAM2/Samurai tracking -> MatAnyone coarse alpha -> MEMatte refinement -> optional matte cleanup`.
+
 ![Mask Builder — load a frame, auto-detect the subject, and build a mask](docs/images/mask_builder_result.png)
 
 ## 1) Before You Start
@@ -56,28 +59,24 @@ In the **Run Job** tab:
       - Draw one box around the subject
       - Add a few FG points on the subject and BG points on the background (if needed)
       - Click **Build + Import Mask**
-      - If the subject moves a lot, use **Range Backend = Samurai Video Predictor** and click **Build + Import Range**
+      - If the subject moves a lot, use **Range Backend = SAM2/Samurai Video Predictor** and click **Build + Import Range**
       - Set **Samurai Model Cfg Path** and **Samurai Checkpoint Path** before the range build
-      - For legacy per-frame SAM range mode, use **Range Backend = Per-Frame SAM** with **Track Prompts With Flow** OFF first
-      - Keep **Allow GrabCut Fallback** OFF if you want strict SAM-only behavior while troubleshooting single-frame SAM
-   - Optional after your first keyframe is imported/built: use **Phase 4: Long-Range Propagation Assist**
-     - The current **Keyframe Index** is used as the anchor
-      - Preferred backend: **Samurai Video Predictor** (set model cfg/checkpoint first)
-      - If Samurai is not available, turn on **Fallback To Flow**
+    - Optional after your first keyframe is imported/built: use **Phase 4: Long-Range Propagation Assist**
+      - The current **Keyframe Index** is used as the anchor
+      - Backend is **SAM2/Samurai Video Predictor** (set model cfg/checkpoint first)
       - Set your propagation range start/end
       - Click **Propagate Keyframes** to auto-add correction anchors across the shot
 4. In **Matte Tuning**:
     - Start with preset **Balanced**
 5. In **Memory Propagation (Stage 2)**:
-   - Keep **Enable Region Constraint** turned on (recommended)
-   - Keep **Region Source** on `Propagated BBox` unless you are troubleshooting
+    - Keep **Enable Region Constraint** turned on (recommended)
+    - Keep **Region Source** on `Tracked Subject Mask` (this is the locked default)
 6. Optional in **Edge Refinement (Stage 3)**:
-   - Keep backend on `guided_band` for fastest/stablest default
-   - Try backend `mematte` if you want stronger fine-edge detail
-   - If using `mematte`, set:
-     - **MEMatte Repo Dir**: `third_party/MEMatte`
-     - **MEMatte Checkpoint**: `third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth`
-     - **MEMatte Max Tokens**: start with `12000` to `18500`
+   - Backend is locked to `mematte` for high-resolution edge detail
+   - Set:
+      - **MEMatte Repo Dir**: `third_party/MEMatte`
+      - **MEMatte Checkpoint**: `third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth`
+      - **MEMatte Max Tokens**: start with `12000` to `18500`
 7. Click **Start Pipeline**
 
 ## 5) Check Progress and Quality
@@ -136,7 +135,7 @@ Use a correction keyframe:
   - Use a small negative shrink/grow (for example `-1`)
 - If background is leaking into the matte:
   - Keep **Memory Propagation > Enable Region Constraint** on
-  - Set **Memory Propagation > Propagation Backend** to **Samurai Video Predictor** and fill cfg/checkpoint paths
+  - Set **Memory Propagation > Propagation Backend** to **SAM2/Samurai Video Predictor** and fill cfg/checkpoint paths
   - Increase **BBox Margin** slowly only if limbs are getting clipped
   - Enable **Debug Stage Exports** and check if `stage2_memory` is where leakage starts
 - If the mask builder or pipeline features fail with errors:
@@ -145,4 +144,4 @@ Use a correction keyframe:
 - If `mematte` backend fails to start:
   - Confirm `third_party/MEMatte` exists
   - Confirm checkpoint file path exists
-  - Switch back to `guided_band` while troubleshooting
+  - Re-check your Python environment and rerun after model paths are fixed
