@@ -143,16 +143,22 @@ class TemporalCleanupConfig(VMBaseModel):
     """Post-refinement temporal cleanup options."""
 
     enabled: bool = True
+    outside_band_ema_enabled: bool = True
     outside_band_ema: float = 0.15
     min_confidence: float = 0.5
+    confidence_clamp_enabled: bool = True
     reset_on_new_anchor: bool = True
     anchor_reset_frames: int = 6
     edge_bg_threshold: float = 0.05
     edge_fg_threshold: float = 0.95
     edge_band_radius_px: int = 2
+    edge_band_ema_enabled: bool = False
+    edge_band_ema: float = 0.06
+    edge_band_min_confidence: float = 0.65
     edge_snap_enabled: bool = False
     edge_snap_radius: int = 2
     edge_snap_eps: float = 0.01
+    edge_snap_min_confidence: float = 0.0
     clamp_delta: float = 0.25
 
 
@@ -176,6 +182,7 @@ class PreviewConfig(VMBaseModel):
 class QCConfig(VMBaseModel):
     enabled: bool = True
     fail_on_regression: bool = False
+    auto_stage_diagnosis_on_fail: bool = True
     output_subdir: str = "qc"
     metrics_filename: str = "optionb_metrics.json"
     report_filename: str = "optionb_report.md"
@@ -202,8 +209,10 @@ class DebugConfig(VMBaseModel):
     """Optional diagnostics/debug exports for stage-by-stage inspection."""
 
     export_stage_samples: bool = False
+    auto_stage_samples_on_qc_fail: bool = True
     sample_count: int = 5
     sample_frames: list[int] = Field(default_factory=list)
+    auto_sample_frames: list[int] = Field(default_factory=list)
     stage_dir: str = "debug_stages"
     save_rgb: bool = True
     save_overlay: bool = True

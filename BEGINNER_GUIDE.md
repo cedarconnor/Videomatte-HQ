@@ -88,6 +88,8 @@ In the **Run Job** tab:
   - Use **J/K** or arrow keys to navigate frames, **Shift** for 10-frame jumps
 - Optional: in **Run Job > Debug Stage Exports**, enable stage samples before running
   - This writes per-stage images and a diagnosis report, which is helpful when quality breaks on specific frames
+- Optional: leave **Auto-export stage diagnostics when QC fails** enabled
+  - If QC fails, the app will automatically write `debug_stages/diagnosis.json` + `debug_stages/diagnosis.md` so you can see which stage introduced the issue
 
 ## 6) If a Section Looks Wrong
 
@@ -121,6 +123,10 @@ Use a correction keyframe:
   - Moves matte left/right/up/down by pixels
 - **Trimap Width**:
   - Wider values can help difficult hair edges
+- **Temporal Cleanup (Stage 4) Flicker Controls**:
+  - Turn on **Smooth inside edge band (micro-EMA)** for edge shimmer
+  - Keep **Use confidence-gated clamp** enabled for stability in hard motion
+  - Use **Edge snap guidance filter** only when edges wobble and you need extra tightening
 
 ## 9) Quick Troubleshooting
 

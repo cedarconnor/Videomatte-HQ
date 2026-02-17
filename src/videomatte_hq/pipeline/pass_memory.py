@@ -184,54 +184,6 @@ def _enforce_budget(bank: list[MemoryAnchor], budget: int) -> None:
         del bank[drop_idx]
 
 
-def _nearest_keyframe(frame_idx: int, keyframes: list[int]) -> int:
-    return min(keyframes, key=lambda k: abs(k - frame_idx))
-
-
-def _run_placeholder_nearest_keyframe(
-    num_frames: int,
-    keyframe_masks: dict[int, np.ndarray],
-    cfg: VideoMatteConfig,
-    region_priors: list[np.ndarray] | None = None,
-) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    keyframes = sorted(keyframe_masks.keys())
-    window = max(cfg.memory.window, 1)
-    outside_conf_cap = float(
-        np.clip(getattr(cfg.memory, "region_constraint_outside_confidence_cap", 0.05), 0.0, 1.0)
-    )
-
-    coarse_alphas: list[np.ndarray] = []
-    confidence_maps: list[np.ndarray] = []
-
-    for t in range(num_frames):
-        anchor = _nearest_keyframe(t, keyframes)
-        anchor_alpha = keyframe_masks[anchor]
-        alpha = np.clip(anchor_alpha, 0.0, 1.0).astype(np.float32)
-
-        dist = abs(t - anchor)
-        base_conf = max(0.05, 1.0 - (dist / float(window)))
-        conf = np.full_like(alpha, base_conf, dtype=np.float32)
-
-        edge = (alpha > 0.05) & (alpha < 0.95)
-        conf[edge] = np.minimum(conf[edge], base_conf * 0.8)
-
-        if region_priors is not None and t < len(region_priors):
-            prior = np.asarray(region_priors[t], dtype=np.float32)
-            if prior.shape[:2] != alpha.shape[:2]:
-                prior = cv2.resize(prior, (alpha.shape[1], alpha.shape[0]), interpolation=cv2.INTER_LINEAR)
-            outside = np.clip(prior, 0.0, 1.0) <= 1e-3
-            if outside.any():
-                alpha = alpha.copy()
-                conf = conf.copy()
-                alpha[outside] = 0.0
-                conf[outside] = np.minimum(conf[outside], outside_conf_cap)
-
-        coarse_alphas.append(alpha)
-        confidence_maps.append(conf)
-
-    return coarse_alphas, confidence_maps
-
-
 def _source_num_frames(source: Any) -> int:
     if hasattr(source, "num_frames"):
         return int(source.num_frames)
@@ -449,13 +401,6 @@ def run_pass_memory(
         raise ValueError("No keyframe assignments overlap the requested frame range.")
 
     backend = str(cfg.memory.backend).strip().lower()
-    if backend == "placeholder_nearest_keyframe":
-        return _run_placeholder_nearest_keyframe(
-            num_frames=num_frames,
-            keyframe_masks=local_keyframes,
-            cfg=cfg,
-            region_priors=region_priors,
-        )
 
     if backend in {"matanyone", "mat_anyone", "mat-anyone"}:
         return _run_matanyone_backend(

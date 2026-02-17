@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from videomatte_hq.config import VideoMatteConfig
 from videomatte_hq.pipeline.pass_memory import run_pass_memory
@@ -19,26 +20,18 @@ class DummySource:
         return len(self.frames)
 
 
-def test_pass_memory_placeholder_uses_nearest_keyframe() -> None:
+def test_pass_memory_rejects_placeholder_backend() -> None:
     cfg = VideoMatteConfig(memory={"window": 10, "backend": "placeholder_nearest_keyframe"})
     kf0 = np.zeros((8, 8), dtype=np.float32)
     kf10 = np.ones((8, 8), dtype=np.float32)
     source = DummySource([np.zeros((8, 8, 3), dtype=np.float32) for _ in range(11)])
 
-    alphas, confs = run_pass_memory(
-        source=source,
-        keyframe_masks={0: kf0, 10: kf10},
-        cfg=cfg,
-    )
-
-    assert np.allclose(alphas[0], 0.0)
-    assert np.allclose(alphas[10], 1.0)
-
-    # Frame 6 is closer to keyframe 10 than keyframe 0.
-    assert np.allclose(alphas[6], 1.0)
-
-    # Confidence decays with anchor distance.
-    assert float(confs[0].mean()) > float(confs[5].mean())
+    with pytest.raises(ValueError, match="Unsupported memory backend"):
+        run_pass_memory(
+            source=source,
+            keyframe_masks={0: kf0, 10: kf10},
+            cfg=cfg,
+        )
 
 
 def test_pass_memory_memory_bank_tracks_moving_subject() -> None:

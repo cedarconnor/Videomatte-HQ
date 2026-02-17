@@ -219,6 +219,7 @@ export interface PreviewConfig {
 export interface QCConfig {
     enabled: boolean;
     fail_on_regression: boolean;
+    auto_stage_diagnosis_on_fail: boolean;
     output_subdir: string;
     metrics_filename: string;
     report_filename: string;
@@ -243,8 +244,10 @@ export interface RuntimeConfig {
 
 export interface DebugConfig {
     export_stage_samples: boolean;
+    auto_stage_samples_on_qc_fail: boolean;
     sample_count: number;
     sample_frames: number[];
+    auto_sample_frames: number[];
     stage_dir: string;
     save_rgb: boolean;
     save_overlay: boolean;
@@ -252,16 +255,22 @@ export interface DebugConfig {
 
 export interface TemporalCleanupConfig {
     enabled: boolean;
+    outside_band_ema_enabled?: boolean;
     outside_band_ema: number;
     min_confidence: number;
+    confidence_clamp_enabled?: boolean;
     reset_on_new_anchor: boolean;
     anchor_reset_frames?: number;
     edge_bg_threshold?: number;
     edge_fg_threshold?: number;
     edge_band_radius_px?: number;
+    edge_band_ema_enabled?: boolean;
+    edge_band_ema?: number;
+    edge_band_min_confidence?: number;
     edge_snap_enabled?: boolean;
     edge_snap_radius?: number;
     edge_snap_eps?: number;
+    edge_snap_min_confidence?: number;
     clamp_delta?: number;
 }
 

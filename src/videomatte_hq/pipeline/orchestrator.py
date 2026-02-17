@@ -160,9 +160,12 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
     write_index_start = max(int(cfg.io.frame_start), 0)
 
     debug_enabled = bool(getattr(cfg, "debug", None) and cfg.debug.export_stage_samples)
+    auto_stage_diagnosis_on_fail = bool(getattr(cfg.qc, "auto_stage_diagnosis_on_fail", True))
+    auto_stage_samples_on_qc_fail = bool(getattr(cfg.debug, "auto_stage_samples_on_qc_fail", True))
     sample_local_frames: list[int] = []
     stage_metrics: dict[str, dict[int, dict[str, float]]] = {}
     stage_order: list[str] = ["stage2_memory", "stage3_refine", "stage4_temporal", "stage5_tuned"]
+    diagnosis_written = False
     if debug_enabled:
         sample_local_frames = resolve_sample_local_frames(
             num_frames=int(num_frames),
@@ -402,6 +405,7 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
             per_stage_metrics=stage_metrics,
         )
         logger.info("Debug stage diagnosis artifacts: metrics=%s report=%s", diagnosis_json, diagnosis_md)
+        diagnosis_written = True
 
     stage_cache.mark_stage_complete("matte_tuning")
 
@@ -466,6 +470,108 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
         failed_gates = failed_gate_names(metrics)
         if failed_gates:
             logger.warning("QC gate failures: %s", ", ".join(failed_gates))
+
+            if (
+                auto_stage_diagnosis_on_fail
+                and auto_stage_samples_on_qc_fail
+                and not diagnosis_written
+            ):
+                auto_sample_frames = resolve_sample_local_frames(
+                    num_frames=int(num_frames),
+                    frame_start=write_index_start,
+                    sample_frames=(
+                        list(getattr(cfg.debug, "auto_sample_frames", []) or [])
+                        or list(getattr(cfg.debug, "sample_frames", []) or [])
+                    ),
+                    sample_count=int(getattr(cfg.debug, "sample_count", 5)),
+                )
+
+                if auto_sample_frames:
+                    auto_stage_metrics: dict[str, dict[int, dict[str, float]]] = {}
+                    auto_stage_order: list[str] = [
+                        "stage2_memory",
+                        "stage3_refine",
+                        "stage4_temporal",
+                        "stage5_tuned",
+                    ]
+                    if memory_region_priors is not None:
+                        auto_stage_metrics["stage1_region_prior"] = export_stage_samples(
+                            output_dir=output_dir,
+                            stage_dir_name=str(cfg.debug.stage_dir),
+                            stage_name="stage1_region_prior",
+                            source=source,
+                            alphas=memory_region_priors,
+                            sample_local_frames=auto_sample_frames,
+                            frame_start=write_index_start,
+                            confidences=None,
+                            save_rgb=bool(cfg.debug.save_rgb),
+                            save_overlay=bool(cfg.debug.save_overlay),
+                        )
+                        auto_stage_order = ["stage1_region_prior"] + auto_stage_order
+                    auto_stage_metrics["stage2_memory"] = export_stage_samples(
+                        output_dir=output_dir,
+                        stage_dir_name=str(cfg.debug.stage_dir),
+                        stage_name="stage2_memory",
+                        source=source,
+                        alphas=coarse_alphas,
+                        sample_local_frames=auto_sample_frames,
+                        frame_start=write_index_start,
+                        confidences=confidence_maps,
+                        save_rgb=bool(cfg.debug.save_rgb),
+                        save_overlay=bool(cfg.debug.save_overlay),
+                    )
+                    auto_stage_metrics["stage3_refine"] = export_stage_samples(
+                        output_dir=output_dir,
+                        stage_dir_name=str(cfg.debug.stage_dir),
+                        stage_name="stage3_refine",
+                        source=source,
+                        alphas=refined_alphas,
+                        sample_local_frames=auto_sample_frames,
+                        frame_start=write_index_start,
+                        confidences=confidence_maps,
+                        save_rgb=bool(cfg.debug.save_rgb),
+                        save_overlay=bool(cfg.debug.save_overlay),
+                    )
+                    auto_stage_metrics["stage4_temporal"] = export_stage_samples(
+                        output_dir=output_dir,
+                        stage_dir_name=str(cfg.debug.stage_dir),
+                        stage_name="stage4_temporal",
+                        source=source,
+                        alphas=final_alphas,
+                        sample_local_frames=auto_sample_frames,
+                        frame_start=write_index_start,
+                        confidences=confidence_maps,
+                        save_rgb=bool(cfg.debug.save_rgb),
+                        save_overlay=bool(cfg.debug.save_overlay),
+                    )
+                    auto_stage_metrics["stage5_tuned"] = export_stage_samples(
+                        output_dir=output_dir,
+                        stage_dir_name=str(cfg.debug.stage_dir),
+                        stage_name="stage5_tuned",
+                        source=source,
+                        alphas=tuned_alphas,
+                        sample_local_frames=auto_sample_frames,
+                        frame_start=write_index_start,
+                        confidences=confidence_maps,
+                        save_rgb=bool(cfg.debug.save_rgb),
+                        save_overlay=bool(cfg.debug.save_overlay),
+                    )
+                    diagnosis_json, diagnosis_md = write_stage_diagnosis_report(
+                        output_dir=output_dir,
+                        stage_dir_name=str(cfg.debug.stage_dir),
+                        stage_order=auto_stage_order,
+                        per_stage_metrics=auto_stage_metrics,
+                    )
+                    diagnosis_written = True
+                    logger.warning(
+                        "Auto stage diagnosis exported on QC failure: gates=%s metrics=%s report=%s",
+                        ", ".join(failed_gates),
+                        diagnosis_json,
+                        diagnosis_md,
+                    )
+                else:
+                    logger.warning("Auto stage diagnosis skipped: no sample frames resolved.")
+
             if cfg.qc.fail_on_regression:
                 raise RuntimeError(
                     "QC regression gates failed: "

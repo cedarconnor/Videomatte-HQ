@@ -334,6 +334,7 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
     qc: {
         enabled: true,
         fail_on_regression: false,
+        auto_stage_diagnosis_on_fail: true,
         output_subdir: "qc",
         metrics_filename: "optionb_metrics.json",
         report_filename: "optionb_report.md",
@@ -348,16 +349,22 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
     },
     temporal_cleanup: {
         enabled: true,
+        outside_band_ema_enabled: true,
         outside_band_ema: 0.15,
         min_confidence: 0.5,
+        confidence_clamp_enabled: true,
         reset_on_new_anchor: true,
         anchor_reset_frames: 6,
         edge_bg_threshold: 0.05,
         edge_fg_threshold: 0.95,
         edge_band_radius_px: 2,
+        edge_band_ema_enabled: false,
+        edge_band_ema: 0.06,
+        edge_band_min_confidence: 0.65,
         edge_snap_enabled: false,
         edge_snap_radius: 2,
         edge_snap_eps: 0.01,
+        edge_snap_min_confidence: 0.0,
         clamp_delta: 0.25
     },
     matte_tuning: {
@@ -377,8 +384,10 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
     },
     debug: {
         export_stage_samples: false,
+        auto_stage_samples_on_qc_fail: true,
         sample_count: 5,
         sample_frames: [],
+        auto_sample_frames: [],
         stage_dir: "debug_stages",
         save_rgb: true,
         save_overlay: true,
@@ -2591,32 +2600,103 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                 </div>
 
 
-                {/* 8. Temporal Stability */}
+                {/* 8. Temporal Cleanup */}
                 {showAdvanced && (
                     <div id="run-step-temporal" className="scroll-mt-28">
-                    <Section title="Temporal Stability (Pass C)" tooltip="Final pass: Ensures temporal consistency on the high-res matte.">
+                    <Section title="Temporal Cleanup (Stage 4)" tooltip="Reduce flicker after refinement while protecting true edges.">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Select
-                                label="Method"
-                                value={config.temporal.method}
-                                onChange={e => updateConfig('temporal', 'method', e.target.value)}
-                                options={[
-                                    { value: 'frequency_separation', label: 'Frequency Separation' },
-                                    { value: 'none', label: 'None' }
-                                ]}
-                                tooltip="Algorithm for temporal stability."
+                            <Switch
+                                label="Enable temporal cleanup"
+                                checked={config.temporal_cleanup.enabled}
+                                onChange={v => updateConfig('temporal_cleanup', 'enabled', v)}
+                                tooltip="Run Stage 4 temporal stabilization."
+                            />
+                            <Switch
+                                label="Smooth stable non-edge regions"
+                                checked={!!config.temporal_cleanup.outside_band_ema_enabled}
+                                onChange={v => updateConfig('temporal_cleanup', 'outside_band_ema_enabled', v)}
+                                tooltip="EMA smoothing outside the edge band."
                             />
                             <Input
-                                label="Detail Blend Strength" type="number" step="0.05"
-                                value={config.temporal.detail_blend_strength}
-                                onChange={e => updateConfig('temporal', 'detail_blend_strength', parseFloat(e.target.value))}
-                                tooltip="Strength of blending for high-frequency details."
+                                label="Non-edge smoothing strength"
+                                type="number"
+                                step="0.01"
+                                value={config.temporal_cleanup.outside_band_ema}
+                                onChange={e => updateConfig('temporal_cleanup', 'outside_band_ema', parseFloat(e.target.value))}
+                                tooltip="Higher values reduce shimmer but can add lag."
                             />
                             <Input
-                                label="Structural Blend Strength" type="number" step="0.05"
-                                value={config.temporal.structural_blend_strength}
-                                onChange={e => updateConfig('temporal', 'structural_blend_strength', parseFloat(e.target.value))}
-                                tooltip="Strength of blending for structural elements."
+                                label="Minimum confidence for smoothing"
+                                type="number"
+                                step="0.01"
+                                value={config.temporal_cleanup.min_confidence}
+                                onChange={e => updateConfig('temporal_cleanup', 'min_confidence', parseFloat(e.target.value))}
+                                tooltip="Only confident pixels are temporally blended."
+                            />
+                            <Switch
+                                label="Use confidence-gated clamp"
+                                checked={!!config.temporal_cleanup.confidence_clamp_enabled}
+                                onChange={v => updateConfig('temporal_cleanup', 'confidence_clamp_enabled', v)}
+                                tooltip="Limits frame-to-frame jumps on high-confidence pixels."
+                            />
+                            <Input
+                                label="Max per-frame alpha change"
+                                type="number"
+                                step="0.01"
+                                value={config.temporal_cleanup.clamp_delta}
+                                onChange={e => updateConfig('temporal_cleanup', 'clamp_delta', parseFloat(e.target.value))}
+                                tooltip="Smaller values are steadier but can lag fast motion."
+                            />
+                            <Switch
+                                label="Smooth inside edge band (micro-EMA)"
+                                checked={!!config.temporal_cleanup.edge_band_ema_enabled}
+                                onChange={v => updateConfig('temporal_cleanup', 'edge_band_ema_enabled', v)}
+                                tooltip="Low-strength edge-band smoothing to reduce edge flicker."
+                            />
+                            <Input
+                                label="Edge-band smoothing strength"
+                                type="number"
+                                step="0.01"
+                                value={config.temporal_cleanup.edge_band_ema || 0}
+                                onChange={e => updateConfig('temporal_cleanup', 'edge_band_ema', parseFloat(e.target.value))}
+                                tooltip="Recommended range: 0.03 to 0.12."
+                            />
+                            <Input
+                                label="Edge-band min confidence"
+                                type="number"
+                                step="0.01"
+                                value={config.temporal_cleanup.edge_band_min_confidence || 0}
+                                onChange={e => updateConfig('temporal_cleanup', 'edge_band_min_confidence', parseFloat(e.target.value))}
+                                tooltip="Edge-band EMA is applied only above this confidence."
+                            />
+                            <Switch
+                                label="Edge snap guidance filter"
+                                checked={!!config.temporal_cleanup.edge_snap_enabled}
+                                onChange={v => updateConfig('temporal_cleanup', 'edge_snap_enabled', v)}
+                                tooltip="Guided snap can sharpen wobbling edge pixels."
+                            />
+                            <Input
+                                label="Edge snap min confidence"
+                                type="number"
+                                step="0.01"
+                                value={config.temporal_cleanup.edge_snap_min_confidence || 0}
+                                onChange={e => updateConfig('temporal_cleanup', 'edge_snap_min_confidence', parseFloat(e.target.value))}
+                                tooltip="Only high-confidence edge pixels are replaced by snap output."
+                            />
+                            <Input
+                                label="Edge snap radius"
+                                type="number"
+                                value={config.temporal_cleanup.edge_snap_radius || 1}
+                                onChange={e => updateConfig('temporal_cleanup', 'edge_snap_radius', parseInt(e.target.value || "1"))}
+                                tooltip="Guided filter radius used for edge snap."
+                            />
+                            <Input
+                                label="Edge snap epsilon"
+                                type="number"
+                                step="0.0001"
+                                value={config.temporal_cleanup.edge_snap_eps || 0.01}
+                                onChange={e => updateConfig('temporal_cleanup', 'edge_snap_eps', parseFloat(e.target.value))}
+                                tooltip="Guided filter regularization; lower values preserve more detail."
                             />
                         </div>
                     </Section>
@@ -2752,6 +2832,12 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                                 onChange={v => updateConfig('debug', 'export_stage_samples', v)}
                                 tooltip="Writes sampled alpha/rgb/overlay images for each stage."
                             />
+                            <Switch
+                                label="Auto-export stage diagnostics when QC fails"
+                                checked={config.debug.auto_stage_samples_on_qc_fail}
+                                onChange={v => updateConfig('debug', 'auto_stage_samples_on_qc_fail', v)}
+                                tooltip="If QC flags a regression, save stage samples automatically to find the first bad stage."
+                            />
                             <Input
                                 label="Number of sampled frames"
                                 type="number"
@@ -2765,6 +2851,13 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                                 onChange={e => updateConfig('debug', 'sample_frames', e.target.value.split(',').map(s => s.trim()).filter(Boolean).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v)))}
                                 placeholder="0,40,81,122,162"
                                 tooltip="Comma-separated absolute frame indices."
+                            />
+                            <Input
+                                label="QC failure sample frame numbers"
+                                value={(config.debug.auto_sample_frames || []).join(',')}
+                                onChange={e => updateConfig('debug', 'auto_sample_frames', e.target.value.split(',').map(s => s.trim()).filter(Boolean).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v)))}
+                                placeholder="leave empty to use sampled frames"
+                                tooltip="Optional comma-separated frame numbers used only for auto diagnosis when QC fails."
                             />
                             <Input
                                 label="Debug output subfolder"
@@ -2808,6 +2901,12 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                                 checked={config.qc.fail_on_regression}
                                 onChange={v => updateConfig('qc', 'fail_on_regression', v)}
                                 tooltip="Stop the run as failed if any QC threshold is exceeded."
+                            />
+                            <Switch
+                                label="Run auto stage diagnosis on QC failure"
+                                checked={config.qc.auto_stage_diagnosis_on_fail}
+                                onChange={v => updateConfig('qc', 'auto_stage_diagnosis_on_fail', v)}
+                                tooltip="When a QC gate fails, generate stage-by-stage diagnosis artifacts automatically."
                             />
                         </div>
                         {showAdvanced && (

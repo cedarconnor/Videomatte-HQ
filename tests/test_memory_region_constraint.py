@@ -66,14 +66,25 @@ def test_build_memory_region_priors_propagated_bbox() -> None:
 
 def test_pass_memory_region_prior_clamps_outside_roi() -> None:
     h, w = 16, 16
-    source = DummySource([np.zeros((h, w, 3), dtype=np.float32) for _ in range(2)])
-    keyframe = np.ones((h, w), dtype=np.float32)
+    frame = np.zeros((h, w, 3), dtype=np.float32)
+    frame[:, : w // 2, :] = 1.0
+    source = DummySource([frame.copy() for _ in range(2)])
+    keyframe = np.zeros((h, w), dtype=np.float32)
+    keyframe[:, : w // 2] = 1.0
 
     roi = np.zeros((h, w), dtype=np.float32)
     roi[:, : w // 2] = 1.0
     region_priors = [roi.copy(), roi.copy()]
 
-    cfg = VideoMatteConfig(memory={"backend": "placeholder_nearest_keyframe", "window": 8})
+    cfg = VideoMatteConfig(
+        memory={
+            "backend": "appearance_memory_bank",
+            "window": 8,
+            "query_long_side": 16,
+            "spatial_weight": 0.0,
+            "temperature": 0.75,
+        }
+    )
     alphas, confs = run_pass_memory(
         source=source,
         keyframe_masks={0: keyframe},
@@ -81,6 +92,6 @@ def test_pass_memory_region_prior_clamps_outside_roi() -> None:
         region_priors=region_priors,
     )
 
-    assert np.allclose(alphas[0][:, : w // 2], 1.0)
+    assert float(alphas[0][:, : w // 2].mean()) > 0.85
     assert np.allclose(alphas[0][:, w // 2 :], 0.0)
     assert float(confs[0][:, w // 2 :].max()) <= float(cfg.memory.region_constraint_outside_confidence_cap) + 1e-6

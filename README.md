@@ -25,6 +25,8 @@ The current implementation is a mask-first, assignment-driven workflow locked to
 - Stage 2 region constraint prior uses propagated subject masks (not bbox-only fallback).
 - Stage-by-stage sample exports plus diagnosis reports help isolate which pass introduces artifacts.
 - Built-in QC metrics and regression gates can fail runs automatically.
+- QC failures can auto-trigger stage diagnosis export (`debug_stages/diagnosis.json` + `.md`) even when manual debug export is off.
+- Stage 4 now includes a toggleable temporal mitigation pack for edge flicker control (edge-band EMA, confidence clamp, edge snap gate).
 
 ## Requirements
 - Python 3.10+
@@ -146,8 +148,10 @@ videomatte-hq \
 
 ### Stage debug exports
 - `--debug-stage-samples/--no-debug-stage-samples`
+- `--debug-auto-on-qc-fail/--no-debug-auto-on-qc-fail`
 - `--debug-sample-count`
 - `--debug-sample-frames`
+- `--debug-auto-sample-frames`
 - `--debug-stage-dir`
 
 ### Memory core
@@ -179,6 +183,7 @@ videomatte-hq \
 ### QC and regression gates
 - `--qc/--no-qc`
 - `--qc-fail-on-regression/--no-qc-fail-on-regression`
+- `--qc-auto-stage-diagnosis/--no-qc-auto-stage-diagnosis`
 - `--qc-sample-output-frames`
 - `--qc-max-output-roundtrip-mae`
 - `--qc-alpha-range-eps`
@@ -195,6 +200,14 @@ videomatte-hq \
 - `--mt-feather-px`
 - `--mt-offset-x-px`
 - `--mt-offset-y-px`
+
+### Temporal cleanup mitigation pack (Stage 4)
+- `--tc-outside-ema-enabled/--no-tc-outside-ema-enabled`
+- `--tc-confidence-clamp/--no-tc-confidence-clamp`
+- `--tc-edge-band-ema/--no-tc-edge-band-ema`
+- `--tc-edge-band-ema-strength`
+- `--tc-edge-band-min-confidence`
+- `--tc-edge-snap-min-confidence`
 
 ## QC Outputs
 When QC is enabled, artifacts are written under:
@@ -240,6 +253,7 @@ Configure and launch a new matting job. All pipeline settings are exposed in col
 - **Post-Processing** — post-processing options
 - **Runtime & Preview** — device (CUDA/CPU), precision (FP16/FP32), IO workers, live preview settings
 - **Debug Stage Exports** — export sampled stage outputs and write `debug_stages/diagnosis.json` + `debug_stages/diagnosis.md`
+- **Auto Stage Diagnosis on QC Fail** — optional automatic stage sample export + diagnosis when QC gates fail
 - **QC & Regression Gates** — all QC thresholds exposed (flicker, edge confidence, band spike, roundtrip MAE)
 
 ![Mask Builder — auto-detect subject and build initial mask](docs/images/mask_builder_result.png)
@@ -333,8 +347,14 @@ refine:
 
 temporal_cleanup:
   enabled: true
+  outside_band_ema_enabled: true
   outside_band_ema: 0.15
   min_confidence: 0.5
+  confidence_clamp_enabled: true
+  edge_band_ema_enabled: false
+  edge_band_ema: 0.06
+  edge_band_min_confidence: 0.65
+  edge_snap_min_confidence: 0.0
 
 matte_tuning:
   enabled: true
@@ -346,6 +366,7 @@ matte_tuning:
 qc:
   enabled: true
   fail_on_regression: true
+  auto_stage_diagnosis_on_fail: true
   max_p95_flicker: 0.005
   max_p95_edge_flicker: 0.02
   min_mean_edge_confidence: 0.22
@@ -361,8 +382,10 @@ runtime:
 
 debug:
   export_stage_samples: false
+  auto_stage_samples_on_qc_fail: true
   sample_count: 5
   sample_frames: [0, 40, 81, 122, 162]
+  auto_sample_frames: []
   stage_dir: "debug_stages"
 ```
 

@@ -414,12 +414,21 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
     mt_offset_y_px = options.get("mt_offset_y_px")
     require_assignment = options.get("require_assignment")
     debug_stage_samples = options.get("debug_stage_samples")
+    debug_auto_on_qc_fail = options.get("debug_auto_on_qc_fail")
     debug_sample_count = options.get("debug_sample_count")
     debug_sample_frames = options.get("debug_sample_frames")
+    debug_auto_sample_frames = options.get("debug_auto_sample_frames")
     debug_stage_dir = options.get("debug_stage_dir")
+    tc_outside_ema_enabled = options.get("tc_outside_ema_enabled")
+    tc_confidence_clamp = options.get("tc_confidence_clamp")
+    tc_edge_band_ema = options.get("tc_edge_band_ema")
+    tc_edge_band_ema_strength = options.get("tc_edge_band_ema_strength")
+    tc_edge_band_min_confidence = options.get("tc_edge_band_min_confidence")
+    tc_edge_snap_min_confidence = options.get("tc_edge_snap_min_confidence")
     resume = options.get("resume")
     qc = options.get("qc")
     qc_fail_on_regression = options.get("qc_fail_on_regression")
+    qc_auto_stage_diagnosis = options.get("qc_auto_stage_diagnosis")
     qc_sample_output_frames = options.get("qc_sample_output_frames")
     qc_max_output_roundtrip_mae = options.get("qc_max_output_roundtrip_mae")
     qc_alpha_range_eps = options.get("qc_alpha_range_eps")
@@ -551,6 +560,8 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
 
     if debug_stage_samples is not None:
         cfg.debug.export_stage_samples = bool(debug_stage_samples)
+    if debug_auto_on_qc_fail is not None:
+        cfg.debug.auto_stage_samples_on_qc_fail = bool(debug_auto_on_qc_fail)
     if debug_sample_count is not None:
         cfg.debug.sample_count = max(1, int(debug_sample_count))
     if debug_sample_frames:
@@ -566,8 +577,34 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
                     f"Invalid --debug-sample-frames token '{t}'. Use comma-separated integers."
                 ) from exc
         cfg.debug.sample_frames = parsed_frames
+    if debug_auto_sample_frames:
+        parsed_auto_frames: list[int] = []
+        for tok in str(debug_auto_sample_frames).split(","):
+            t = tok.strip()
+            if not t:
+                continue
+            try:
+                parsed_auto_frames.append(int(t))
+            except ValueError as exc:
+                raise click.BadParameter(
+                    f"Invalid --debug-auto-sample-frames token '{t}'. Use comma-separated integers."
+                ) from exc
+        cfg.debug.auto_sample_frames = parsed_auto_frames
     if debug_stage_dir:
         cfg.debug.stage_dir = str(debug_stage_dir)
+
+    if tc_outside_ema_enabled is not None:
+        cfg.temporal_cleanup.outside_band_ema_enabled = bool(tc_outside_ema_enabled)
+    if tc_confidence_clamp is not None:
+        cfg.temporal_cleanup.confidence_clamp_enabled = bool(tc_confidence_clamp)
+    if tc_edge_band_ema is not None:
+        cfg.temporal_cleanup.edge_band_ema_enabled = bool(tc_edge_band_ema)
+    if tc_edge_band_ema_strength is not None:
+        cfg.temporal_cleanup.edge_band_ema = float(tc_edge_band_ema_strength)
+    if tc_edge_band_min_confidence is not None:
+        cfg.temporal_cleanup.edge_band_min_confidence = float(tc_edge_band_min_confidence)
+    if tc_edge_snap_min_confidence is not None:
+        cfg.temporal_cleanup.edge_snap_min_confidence = float(tc_edge_snap_min_confidence)
 
     if resume is not None:
         cfg.runtime.resume = bool(resume)
@@ -575,6 +612,8 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
         cfg.qc.enabled = bool(qc)
     if qc_fail_on_regression is not None:
         cfg.qc.fail_on_regression = bool(qc_fail_on_regression)
+    if qc_auto_stage_diagnosis is not None:
+        cfg.qc.auto_stage_diagnosis_on_fail = bool(qc_auto_stage_diagnosis)
     if qc_sample_output_frames is not None:
         cfg.qc.sample_output_frames = int(qc_sample_output_frames)
     if qc_max_output_roundtrip_mae is not None:
@@ -902,6 +941,11 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
     help="Export sample alpha/rgb/overlay images for each stage (debug_stages).",
 )
 @click.option(
+    "--debug-auto-on-qc-fail/--no-debug-auto-on-qc-fail",
+    default=None,
+    help="Auto-export stage samples when QC gates fail.",
+)
+@click.option(
     "--debug-sample-count",
     default=None,
     type=int,
@@ -913,9 +957,47 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
     help="Comma-separated absolute frame indices for stage debug sampling.",
 )
 @click.option(
+    "--debug-auto-sample-frames",
+    default=None,
+    help="Comma-separated frame indices for auto diagnosis when QC fails.",
+)
+@click.option(
     "--debug-stage-dir",
     default=None,
     help="Debug stage artifact subdirectory under output_dir.",
+)
+@click.option(
+    "--tc-outside-ema-enabled/--no-tc-outside-ema-enabled",
+    default=None,
+    help="Enable Stage 4 outside-edge EMA smoothing.",
+)
+@click.option(
+    "--tc-confidence-clamp/--no-tc-confidence-clamp",
+    default=None,
+    help="Apply confidence-gated clamp before temporal blending.",
+)
+@click.option(
+    "--tc-edge-band-ema/--no-tc-edge-band-ema",
+    default=None,
+    help="Enable micro-EMA smoothing inside edge band.",
+)
+@click.option(
+    "--tc-edge-band-ema-strength",
+    default=None,
+    type=float,
+    help="EMA strength used for edge-band micro smoothing.",
+)
+@click.option(
+    "--tc-edge-band-min-confidence",
+    default=None,
+    type=float,
+    help="Minimum confidence for edge-band EMA blending.",
+)
+@click.option(
+    "--tc-edge-snap-min-confidence",
+    default=None,
+    type=float,
+    help="Minimum confidence required for edge snap replacement.",
 )
 @click.option("--resume/--no-resume", default=None, help="Use stage cache resume")
 @click.option("--qc/--no-qc", default=None, help="Enable/disable Option B QC evaluation")
@@ -923,6 +1005,11 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
     "--qc-fail-on-regression/--no-qc-fail-on-regression",
     default=None,
     help="Fail the run if QC regression gates fail",
+)
+@click.option(
+    "--qc-auto-stage-diagnosis/--no-qc-auto-stage-diagnosis",
+    default=None,
+    help="When QC gates fail, auto-export per-stage diagnosis artifacts.",
 )
 @click.option("--qc-sample-output-frames", default=None, type=int, help="QC output round-trip sample count")
 @click.option("--qc-max-output-roundtrip-mae", default=None, type=float, help="QC max output round-trip MAE")
@@ -1024,12 +1111,21 @@ def main(
     propagate_source,
     propagate_only,
     debug_stage_samples,
+    debug_auto_on_qc_fail,
     debug_sample_count,
     debug_sample_frames,
+    debug_auto_sample_frames,
     debug_stage_dir,
+    tc_outside_ema_enabled,
+    tc_confidence_clamp,
+    tc_edge_band_ema,
+    tc_edge_band_ema_strength,
+    tc_edge_band_min_confidence,
+    tc_edge_snap_min_confidence,
     resume,
     qc,
     qc_fail_on_regression,
+    qc_auto_stage_diagnosis,
     qc_sample_output_frames,
     qc_max_output_roundtrip_mae,
     qc_alpha_range_eps,
