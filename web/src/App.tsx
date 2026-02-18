@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { FaLayerGroup, FaPlay, FaList, FaCog, FaMagic } from 'react-icons/fa'
 import { clsx } from 'clsx'
-import RunTab, { RUN_STEPS_BASE, type RunStepId } from './components/RunTab'
+import RunTab, { RUN_STEPS_BASE } from './components/RunTab'
+import type { RunStepId, RunViewMode } from './components/RunTab'
 import JobsTab from './components/JobsTab'
 import SettingsTab from './components/SettingsTab'
 import QCTab from './components/QCTab'
@@ -32,9 +33,11 @@ function SidebarItem({ active, icon, label, shortcut, onClick }: { active: boole
 
 function AppInner() {
     const [activeTab, setActiveTab] = useState<Tab>('run')
-    const [activeRunStep, setActiveRunStep] = useState<RunStepId>('io')
-    const [runStepJumpNonce, setRunStepJumpNonce] = useState(0)
     const [activeJobId, setActiveJobId] = useState<string | null>(null)
+    const [runViewMode, setRunViewMode] = useState<RunViewMode>('wizard')
+    const [activeRunStage, setActiveRunStage] = useState<RunStepId>('io')
+    const [requestedRunStage, setRequestedRunStage] = useState<RunStepId | null>(null)
+    const [runStageRequestNonce, setRunStageRequestNonce] = useState(0)
     const prevJobStatuses = useRef<Record<string, string>>({})
     const { addToast } = useToast()
 
@@ -133,21 +136,22 @@ function AppInner() {
                             shortcut="Ctrl+1"
                             onClick={() => setActiveTab('run')}
                         />
-                        {activeTab === 'run' && (
-                            <div className="ml-4 mr-1 mt-1 mb-2 border-l border-gray-700/60 pl-3 pr-1 space-y-1 max-h-[55vh] overflow-auto">
+                        {activeTab === 'run' && runViewMode === 'pro' && (
+                            <div className="ml-4 mr-1 mt-1 mb-2 space-y-1 border-l border-gray-700/60 pl-2">
                                 {RUN_STEPS_BASE.map((step) => (
                                     <button
                                         key={step.id}
                                         type="button"
                                         onClick={() => {
-                                            setActiveRunStep(step.id)
-                                            setRunStepJumpNonce(n => n + 1)
+                                            setActiveTab('run')
+                                            setRequestedRunStage(step.id)
+                                            setRunStageRequestNonce((n) => n + 1)
                                         }}
                                         className={clsx(
-                                            'w-full text-left text-xs rounded px-2 py-1.5 transition-colors border',
-                                            activeRunStep === step.id
-                                                ? 'bg-brand-500/15 border-brand-500/35 text-brand-300'
-                                                : 'bg-gray-900/50 border-gray-700 text-gray-300 hover:bg-gray-800'
+                                            'w-full text-left text-xs rounded px-2 py-1.5 transition-colors',
+                                            activeRunStage === step.id
+                                                ? 'bg-brand-500/15 text-brand-300'
+                                                : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
                                         )}
                                     >
                                         {step.label}
@@ -182,12 +186,14 @@ function AppInner() {
 
                 {/* Tab Content */}
                 <main className="flex-1 overflow-auto bg-gray-900 p-6 relative">
-                    <div className="max-w-5xl mx-auto">
+                    <div className={clsx(activeTab === 'run' && runViewMode === 'pro' ? 'max-w-none' : 'max-w-5xl mx-auto')}>
                         {activeTab === 'run' && (
                             <RunTab
                                 onSuccess={() => setActiveTab('jobs')}
-                                focusStep={activeRunStep}
-                                focusStepNonce={runStepJumpNonce}
+                                onRunModeChange={setRunViewMode}
+                                onProStageChange={setActiveRunStage}
+                                requestedProStage={requestedRunStage}
+                                requestedProStageNonce={runStageRequestNonce}
                             />
                         )}
                         {activeTab === 'jobs' && <JobsTab />}

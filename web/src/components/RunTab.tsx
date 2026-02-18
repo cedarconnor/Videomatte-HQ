@@ -5,6 +5,8 @@ import { Section } from './ui/Section'
 import { Input } from './ui/Input'
 import { Select } from './ui/Select'
 import { Switch } from './ui/Switch'
+import WizardLayout from './wizard/WizardLayout'
+import DashboardLayout from './dashboard/DashboardLayout'
 
 interface ProjectKeyframe {
     frame: number
@@ -51,6 +53,7 @@ type RangeBuilderBackend = 'sam' | 'samurai_video_predictor'
 type PropagationBackend = 'flow' | 'samurai_video_predictor' | 'sam2_video_predictor' | 'cutie'
 type AssignmentSourceMode = 'generate' | 'import'
 type BuilderWorkflowMode = 'single' | 'multiple'
+export type RunViewMode = 'wizard' | 'pro'
 export type RunStepId =
     | 'io'
     | 'assignment'
@@ -113,18 +116,25 @@ const MATTE_TUNING_PRESETS: MatteTuningPreset[] = [
 ]
 
 export const RUN_STEPS_BASE: Array<{ id: RunStepId; label: string }> = [
-    { id: 'io', label: '1. Input / Output' },
-    { id: 'assignment', label: '2. Assignment' },
-    { id: 'memory', label: '3. Memory' },
-    { id: 'background', label: '4. Background' },
-    { id: 'roi', label: '5. ROI / Tracking' },
-    { id: 'global', label: '6. Global Pass' },
-    { id: 'refine', label: '7. Edge Refinement' },
-    { id: 'tuning', label: '8. Matte Tuning' },
-    { id: 'post', label: '9. Post-Processing' },
-    { id: 'runtime', label: '10. Runtime' },
-    { id: 'debug', label: '11. Debug Exports' },
-    { id: 'qc', label: '12. QC Gates' },
+    { id: 'io', label: 'Video & Output' },
+    { id: 'assignment', label: 'Subject Masks' },
+    { id: 'memory', label: 'Motion Tracking' },
+    { id: 'background', label: 'Background Cleanup' },
+    { id: 'roi', label: 'Subject Framing' },
+    { id: 'global', label: 'Global Matte Pass' },
+    { id: 'refine', label: 'Edge Detail Refinement' },
+    { id: 'tuning', label: 'Final Edge Tuning' },
+    { id: 'post', label: 'Color Cleanup & Foreground' },
+    { id: 'runtime', label: 'Hardware & Preview' },
+    { id: 'debug', label: 'Debug Samples' },
+    { id: 'qc', label: 'Quality Gates' },
+]
+
+const WIZARD_STEPS = [
+    { id: 1, label: 'Setup & Import' },
+    { id: 2, label: 'Select Subject' },
+    { id: 3, label: 'Refine Edges' },
+    { id: 4, label: 'Render' },
 ]
 
 // Default Configuration
@@ -396,15 +406,26 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
 
 interface RunTabProps {
     onSuccess: () => void
-    focusStep?: RunStepId
-    focusStepNonce?: number
+    onRunModeChange?: (mode: RunViewMode) => void
+    onProStageChange?: (stageId: RunStepId) => void
+    requestedProStage?: RunStepId | null
+    requestedProStageNonce?: number
 }
 
-export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabProps) {
+export default function RunTab({
+    onSuccess,
+    onRunModeChange,
+    onProStageChange,
+    requestedProStage,
+    requestedProStageNonce,
+}: RunTabProps) {
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [status, setStatus] = useState<string | null>(null)
     const [showAdvanced, setShowAdvanced] = useState(false)
+    const [runViewMode, setRunViewMode] = useState<RunViewMode>('wizard')
+    const [wizardStep, setWizardStep] = useState<number>(1)
+    const [activeProStage, setActiveProStage] = useState<RunStepId>('io')
     const [projectSummary, setProjectSummary] = useState<ProjectSummary | null>(null)
     const [assignmentMaskPath, setAssignmentMaskPath] = useState("")
     const [assignmentFrame, setAssignmentFrame] = useState(0)
@@ -499,11 +520,34 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                 if (typeof prefs.showAdvanced === 'boolean') {
                     setShowAdvanced(prefs.showAdvanced)
                 }
+                if (prefs.runViewMode === 'wizard' || prefs.runViewMode === 'pro') {
+                    setRunViewMode(prefs.runViewMode)
+                }
             } catch (e) {
                 console.error("Error parsing prefs", e)
             }
         }
     }, [])
+
+    useEffect(() => {
+        localStorage.setItem(
+            'videomatte_ui_prefs',
+            JSON.stringify({
+                showAdvanced,
+                runViewMode,
+            })
+        )
+    }, [showAdvanced, runViewMode])
+
+    useEffect(() => {
+        onRunModeChange?.(runViewMode)
+    }, [runViewMode, onRunModeChange])
+
+    useEffect(() => {
+        if (runViewMode === 'pro') {
+            onProStageChange?.(activeProStage)
+        }
+    }, [runViewMode, activeProStage, onProStageChange])
 
     const updateConfig = (section: keyof VideoMatteConfig, field: string, value: any) => {
         setConfig(prev => ({
@@ -1214,8 +1258,7 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
-    async function handleSubmit(e: React.FormEvent) {
-        e.preventDefault()
+    async function submitPipelineJob() {
         setLoading(true)
         setError(null)
         setStatus(null)
@@ -1247,15 +1290,12 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
         }
     }
 
-    const activeBuilderBox = builderDraftBox ?? builderBox
+    async function handleSubmit(e: React.FormEvent) {
+        e.preventDefault()
+        await submitPipelineJob()
+    }
 
-    useEffect(() => {
-        if (!focusStep) return
-        const el = document.getElementById(`run-step-${focusStep}`)
-        if (el) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }
-    }, [focusStep, focusStepNonce])
+    const activeBuilderBox = builderDraftBox ?? builderBox
 
     const assignmentBusy =
         assignmentLoading ||
@@ -1265,50 +1305,407 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
         builderSuggestingBoxes ||
         propagateRunning
 
-    return (
-        <div className="space-y-4 pb-20">
-            <div className="border-b border-gray-800 pb-2 flex justify-between items-end">
-                <div>
-                    <h2 className="text-xl font-bold text-white">New Matting Job</h2>
-                    <p className="text-sm text-gray-400">Configure and start a new video matting pipeline.</p>
+    const hasAssignment = (projectSummary?.keyframe_count ?? 0) > 0
+    const tightnessSliderValue = Math.round(Math.max(0, Math.min(100, (-config.matte_tuning.shrink_grow_px / 2) * 100)))
+    const softnessSliderValue = Math.round(Math.max(0, Math.min(100, (config.matte_tuning.feather_px / 4) * 100)))
+    const inputBasename = (() => {
+        const raw = String(config.io.input || "").trim()
+        if (!raw) return "video"
+        const parts = raw.split(/[/\\]/)
+        return parts[parts.length - 1] || raw
+    })()
+
+    const setWizardTightness = (sliderValue: number) => {
+        const normalized = Math.max(0, Math.min(100, sliderValue))
+        const mapped = Math.round((-2 * normalized) / 100)
+        updateConfig('matte_tuning', 'shrink_grow_px', mapped)
+    }
+
+    const setWizardSoftness = (sliderValue: number) => {
+        const normalized = Math.max(0, Math.min(100, sliderValue))
+        const mapped = Math.round((4 * normalized) / 100)
+        updateConfig('matte_tuning', 'feather_px', mapped)
+    }
+
+    const scrollToRunStage = (stageId: string) => {
+        const normalized = stageId.replace(/^run-step-/, '') as RunStepId
+        setActiveProStage(normalized)
+        const el = document.getElementById(`run-step-${normalized}`)
+        if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+    }
+
+    useEffect(() => {
+        if (runViewMode === 'pro' && requestedProStage) {
+            scrollToRunStage(requestedProStage)
+        }
+    }, [runViewMode, requestedProStage, requestedProStageNonce])
+
+    useEffect(() => {
+        if (runViewMode !== 'pro') return
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                const visible = entries
+                    .filter((entry) => entry.isIntersecting)
+                    .sort((a, b) => Math.abs(a.boundingClientRect.top) - Math.abs(b.boundingClientRect.top))
+                if (visible.length === 0) return
+                const next = (visible[0].target as HTMLElement).id.replace(/^run-step-/, '') as RunStepId
+                setActiveProStage(next)
+            },
+            {
+                root: null,
+                rootMargin: '-120px 0px -55% 0px',
+                threshold: [0.05, 0.2, 0.4],
+            }
+        )
+
+        RUN_STEPS_BASE.forEach((stage) => {
+            const el = document.getElementById(`run-step-${stage.id}`)
+            if (el) observer.observe(el)
+        })
+
+        return () => observer.disconnect()
+    }, [runViewMode, showAdvanced])
+
+    const proStages = RUN_STEPS_BASE.map((s) => ({ id: s.id, label: s.label }))
+
+    if (runViewMode === 'wizard') {
+        return (
+            <WizardLayout
+                title="New Matting Job (Wizard)"
+                subtitle="Step-by-step setup for the production workflow."
+                steps={WIZARD_STEPS}
+                currentStep={wizardStep}
+                onSwitchToPro={() => setRunViewMode('pro')}
+            >
+                <div className="space-y-4">
+                    {error && (
+                        <div className="bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-lg flex items-center gap-2 text-sm">
+                            <FaExclamationCircle />
+                            {error}
+                        </div>
+                    )}
+                    {status && (
+                        <div className="bg-green-500/20 border border-green-500/20 text-green-400 p-3 rounded-lg text-sm">
+                            {status}
+                        </div>
+                    )}
+
+                    {wizardStep === 1 && (
+                        <div className="space-y-3">
+                            <h3 className="text-lg font-semibold text-white">Let's start a new matte.</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <Input
+                                    label="Input Video or Frame Sequence"
+                                    value={config.io.input}
+                                    onChange={e => updateConfig('io', 'input', e.target.value)}
+                                    placeholder="TestFiles\\6138680-uhd_3840_2160_24fps.mp4"
+                                    tooltip="Use a video path or frame pattern like frame_%05d.png."
+                                />
+                                <Input
+                                    label="Output Folder"
+                                    value={config.io.output_dir}
+                                    onChange={e => updateConfig('io', 'output_dir', e.target.value)}
+                                    tooltip="Where alpha frames and project files will be written."
+                                />
+                                <Input
+                                    label="Start Frame"
+                                    type="number"
+                                    value={config.io.frame_start}
+                                    onChange={e => updateConfig('io', 'frame_start', parseInt(e.target.value || "0"))}
+                                />
+                                <Input
+                                    label="End Frame (-1 = full clip)"
+                                    type="number"
+                                    value={config.io.frame_end}
+                                    onChange={e => updateConfig('io', 'frame_end', parseInt(e.target.value || "-1"))}
+                                />
+                            </div>
+                            <div className="flex justify-end">
+                                <button
+                                    type="button"
+                                    disabled={!config.io.input}
+                                    onClick={() => setWizardStep(2)}
+                                    className="px-4 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Next: Select Subject
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {wizardStep === 2 && (
+                        <div className="space-y-3">
+                            <h3 className="text-lg font-semibold text-white">Who is the subject?</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                <Input
+                                    label="Keyframe Index"
+                                    type="number"
+                                    value={assignmentFrame}
+                                    onChange={e => setAssignmentFrame(parseInt(e.target.value || "0"))}
+                                />
+                                <Select
+                                    label="Anchor Type"
+                                    value={assignmentKind}
+                                    onChange={e => setAssignmentKind(e.target.value as 'initial' | 'correction')}
+                                    options={[
+                                        { value: 'initial', label: 'Initial Anchor' },
+                                        { value: 'correction', label: 'Correction Anchor' },
+                                    ]}
+                                />
+                                <Input
+                                    label="Prompt Text"
+                                    value={builderPrompt}
+                                    onChange={e => setBuilderPrompt(e.target.value)}
+                                    placeholder="person"
+                                />
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <button
+                                    type="button"
+                                    onClick={handleLoadBuilderFrame}
+                                    disabled={assignmentBusy}
+                                    className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-white text-sm disabled:opacity-50"
+                                >
+                                    {builderLoadingFrame ? "Loading..." : "Load Frame"}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleSuggestBuilderBoxes}
+                                    disabled={assignmentBusy || !builderFrameDataUrl}
+                                    className="px-3 py-2 rounded bg-purple-600 hover:bg-purple-500 text-white text-sm disabled:opacity-50"
+                                >
+                                    {builderSuggestingBoxes ? "Detecting..." : "Auto-Detect"}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleBuildMaskFromPrompts}
+                                    disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
+                                    className="px-3 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white text-sm disabled:opacity-50"
+                                >
+                                    {builderBuildingMask ? "Building..." : "Build Anchor Mask"}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleBuildMaskRangeFromPrompts}
+                                    disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
+                                    className="px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-sm disabled:opacity-50"
+                                >
+                                    {builderBuildingRange ? "Tracking..." : "Track Forward (Range)"}
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div className="rounded border border-gray-700 p-2 bg-gray-900">
+                                    <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Frame Preview</div>
+                                    {builderFrameDataUrl ? (
+                                        <img src={builderFrameDataUrl} alt="frame preview" className="w-full rounded border border-gray-800" />
+                                    ) : (
+                                        <div className="text-xs text-gray-500 py-6 text-center">Load a frame to begin.</div>
+                                    )}
+                                </div>
+                                <div className="rounded border border-gray-700 p-2 bg-gray-900">
+                                    <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Mask Preview</div>
+                                    {builderMaskPreviewUrl ? (
+                                        <img src={builderMaskPreviewUrl} alt="mask preview" className="w-full rounded border border-gray-800" />
+                                    ) : (
+                                        <div className="text-xs text-gray-500 py-6 text-center">Build a mask to preview.</div>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="rounded border border-gray-700 bg-gray-900 p-2">
+                                <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Keyframes</div>
+                                <div className="text-sm text-gray-300">
+                                    {hasAssignment
+                                        ? `Loaded ${projectSummary?.keyframe_count ?? 0} keyframe assignment(s).`
+                                        : "No keyframes yet. Build or import at least one mask."}
+                                </div>
+                            </div>
+                            <div className="flex justify-between">
+                                <button
+                                    type="button"
+                                    onClick={() => setWizardStep(1)}
+                                    className="px-4 py-2 rounded border border-gray-700 bg-gray-900 text-gray-200 hover:bg-gray-800"
+                                >
+                                    Back
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={!hasAssignment}
+                                    onClick={() => setWizardStep(3)}
+                                    className="px-4 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Next: Refine Edges
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {wizardStep === 3 && (
+                        <div className="space-y-3">
+                            <h3 className="text-lg font-semibold text-white">How does it look?</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <label className="rounded border border-gray-700 p-3 bg-gray-900 space-y-2">
+                                    <div className="text-sm text-gray-200 font-semibold">Edge Tightness</div>
+                                    <input
+                                        type="range"
+                                        min={0}
+                                        max={100}
+                                        step={1}
+                                        value={tightnessSliderValue}
+                                        onChange={e => setWizardTightness(parseInt(e.target.value || "0"))}
+                                        className="w-full"
+                                    />
+                                    <div className="text-xs text-gray-400">Loose &lt;-&gt; Tight</div>
+                                </label>
+                                <label className="rounded border border-gray-700 p-3 bg-gray-900 space-y-2">
+                                    <div className="text-sm text-gray-200 font-semibold">Edge Softness</div>
+                                    <input
+                                        type="range"
+                                        min={0}
+                                        max={100}
+                                        step={1}
+                                        value={softnessSliderValue}
+                                        onChange={e => setWizardSoftness(parseInt(e.target.value || "0"))}
+                                        className="w-full"
+                                    />
+                                    <div className="text-xs text-gray-400">Hard &lt;-&gt; Soft</div>
+                                </label>
+                            </div>
+                            <Switch
+                                label="Enable De-Spill"
+                                checked={Boolean(config.postprocess.despill.enabled)}
+                                onChange={v => updateNestedConfig('postprocess', 'despill', 'enabled', v)}
+                                tooltip="Reduces background color contamination on subject edges."
+                            />
+                            <div className="flex justify-between">
+                                <button
+                                    type="button"
+                                    onClick={() => setWizardStep(2)}
+                                    className="px-4 py-2 rounded border border-gray-700 bg-gray-900 text-gray-200 hover:bg-gray-800"
+                                >
+                                    Back
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setWizardStep(4)}
+                                    className="px-4 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white font-semibold"
+                                >
+                                    Next: Render
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {wizardStep === 4 && (
+                        <div className="space-y-3">
+                            <h3 className="text-lg font-semibold text-white">Ready to Process</h3>
+                            <div className="rounded border border-gray-700 bg-gray-900 p-3 text-sm text-gray-300">
+                                Processing <span className="font-semibold text-white">{inputBasename}</span> from frame{" "}
+                                <span className="font-semibold text-white">{config.io.frame_start}</span> to{" "}
+                                <span className="font-semibold text-white">
+                                    {config.io.frame_end >= 0 ? config.io.frame_end : "end"}
+                                </span>.
+                            </div>
+                            <div className="flex justify-between">
+                                <button
+                                    type="button"
+                                    onClick={() => setWizardStep(3)}
+                                    className="px-4 py-2 rounded border border-gray-700 bg-gray-900 text-gray-200 hover:bg-gray-800"
+                                >
+                                    Back
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void submitPipelineJob()}
+                                    disabled={loading || !config.io.input || (config.assignment.require_assignment && !hasAssignment)}
+                                    className="px-5 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                                >
+                                    {loading ? <FaSpinner className="animate-spin" /> : <FaPlay />}
+                                    Start Render
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
-                {!showAdvanced && (
-                    <div className="text-xs text-gray-500 italic bg-gray-800 px-2 py-1 rounded">
-                        Advanced hidden
+            </WizardLayout>
+        )
+    }
+
+    return (
+        <DashboardLayout
+            title="New Matting Job (Pro)"
+            subtitle="Full pipeline controls and diagnostics."
+            stages={proStages}
+            activeStage={activeProStage}
+            onStageClick={scrollToRunStage}
+            onSwitchToWizard={() => setRunViewMode('wizard')}
+            showLeftNav={false}
+            headerActions={
+                <div className="flex items-center gap-2">
+                    {!showAdvanced && (
+                        <div className="text-xs text-gray-500 italic bg-gray-800 px-2 py-1 rounded">
+                            Advanced hidden
+                        </div>
+                    )}
+                    <button
+                        type="button"
+                        onClick={() => setShowAdvanced(v => !v)}
+                        className="px-3 py-2 rounded border border-gray-700 bg-gray-900 text-gray-200 text-xs hover:bg-gray-800"
+                    >
+                        {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => void submitPipelineJob()}
+                        disabled={loading || !config.io.input || (config.assignment.require_assignment && !hasAssignment)}
+                        className="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-lg font-bold text-sm shadow-lg shadow-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
+                    >
+                        {loading ? <FaSpinner className="animate-spin" /> : <FaPlay />}
+                        Start Pipeline
+                    </button>
+                </div>
+            }
+            rightPanel={
+                <div className="space-y-3">
+                    <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Assignments</div>
+                        <div className="text-sm text-gray-200">
+                            {hasAssignment ? `${projectSummary?.keyframe_count ?? 0} keyframe(s)` : 'None yet'}
+                        </div>
+                    </div>
+                    <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Run Mode</div>
+                        <div className="text-sm text-gray-300">Production locked workflow</div>
+                    </div>
+                    <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Context Help</div>
+                        <p className="text-xs text-gray-400">
+                            Hover over controls to view parameter descriptions.
+                        </p>
+                    </div>
+                </div>
+            }
+        >
+            <div className="space-y-4">
+                {error && (
+                    <div className="bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-lg flex items-center gap-2 text-sm">
+                        <FaExclamationCircle />
+                        {error}
                     </div>
                 )}
-            </div>
-
-            {error && (
-                <div className="bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-lg flex items-center gap-2 text-sm">
-                    <FaExclamationCircle />
-                    {error}
-                </div>
-            )}
-            {status && (
-                <div className="bg-green-500/20 border border-green-500/20 text-green-400 p-3 rounded-lg text-sm">
-                    {status}
-                </div>
-            )}
-
-            <form id="run-job-form" onSubmit={handleSubmit} className="space-y-3">
-                <div className="sticky top-2 z-30">
-                    <div className="rounded-lg border border-gray-700 bg-gray-900/90 backdrop-blur px-3 py-3 shadow-lg">
-                        <button
-                            type="submit"
-                            disabled={loading || !config.io.input}
-                            className="w-full py-3 bg-brand-500 hover:bg-brand-600 text-white rounded-lg font-bold text-base shadow-lg shadow-brand-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 transition-colors"
-                        >
-                            {loading ? <FaSpinner className="animate-spin" /> : <FaPlay />}
-                            Start Pipeline
-                        </button>
+                {status && (
+                    <div className="bg-green-500/20 border border-green-500/20 text-green-400 p-3 rounded-lg text-sm">
+                        {status}
                     </div>
-                </div>
+                )}
 
-                <div className="space-y-2">
+                <form id="run-job-form" onSubmit={handleSubmit} className="space-y-3">
+                    <div className="space-y-2">
                 {/* 1. IO Section */}
                 <div id="run-step-io" className="scroll-mt-28">
-                <Section title="Input / Output" defaultOpen={true} tooltip="Configure file paths, frame ranges, and formats.">
+                <Section title="Video Input and Output" defaultOpen={true} tooltip="Set source media, output folder, frame range, and alpha format.">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         {/* Drop zone for input file */}
                         <div
@@ -1417,7 +1814,7 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
 
                 {/* 2. Subject Assignment */}
                 <div id="run-step-assignment" className="scroll-mt-28">
-                <Section title="Subject Assignment (Mask-First)" defaultOpen={true} tooltip="Default workflow: generate masks from your loaded video/frames. Existing-mask import is optional.">
+                <Section title="Subject Mask Setup" defaultOpen={true} tooltip="Create subject masks from your video. Importing external masks is optional.">
                     <div className="space-y-3">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Input
@@ -2048,9 +2445,9 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                 {/* 3. Memory Propagation */}
                 <div id="run-step-memory" className="scroll-mt-28">
                 <Section
-                    title="Memory Propagation (Stage 2)"
+                    title="Subject Tracking Memory"
                     defaultOpen={true}
-                    tooltip="Coarse alpha generation from keyframe memory anchors. Includes optional propagated region constraint."
+                    tooltip="Tracks the selected subject across the clip before edge refinement."
                 >
                     <div className="space-y-3">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
@@ -2064,85 +2461,83 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                                 tooltip="Stage 2 is locked to MatAnyone for low-resolution temporal alpha propagation."
                                 disabled
                             />
-                            <Input
-                                label="Memory anchor count"
-                                type="number"
-                                value={config.memory.memory_frames}
-                                onChange={e => updateConfig('memory', 'memory_frames', parseInt(e.target.value || "1"))}
-                                tooltip="Target number of anchors kept in memory."
-                            />
-                            <Input
-                                label="Anchor time window"
-                                type="number"
-                                value={config.memory.window}
-                                onChange={e => updateConfig('memory', 'window', parseInt(e.target.value || "1"))}
-                                tooltip="Frame distance weight for anchor influence."
-                            />
-                            <Input
-                                label="Max Anchors"
-                                type="number"
-                                value={config.memory.max_anchors}
-                                onChange={e => updateConfig('memory', 'max_anchors', parseInt(e.target.value || "1"))}
-                                tooltip="Hard cap on total memory anchors."
-                            />
-                            <Input
-                                label="Reanchor Threshold"
-                                type="number"
-                                step="0.01"
-                                value={config.memory.confidence_reanchor_threshold}
-                                onChange={e => updateConfig('memory', 'confidence_reanchor_threshold', parseFloat(e.target.value))}
-                                tooltip="If mean confidence drops below this, memory pass can auto-add anchor candidates."
-                            />
-                            <Input
-                                label="Auto Anchor Min Gap"
-                                type="number"
-                                value={config.memory.auto_anchor_min_gap || 0}
-                                onChange={e => updateConfig('memory', 'auto_anchor_min_gap', parseInt(e.target.value || "0"))}
-                                tooltip="Minimum frame gap between automatically-added anchors."
-                            />
+                            {showAdvanced ? (
+                                <>
+                                    <Input
+                                        label="Memory anchor count"
+                                        type="number"
+                                        value={config.memory.memory_frames}
+                                        onChange={e => updateConfig('memory', 'memory_frames', parseInt(e.target.value || "1"))}
+                                        tooltip="Target number of anchors kept in memory."
+                                    />
+                                    <Input
+                                        label="Anchor time window"
+                                        type="number"
+                                        value={config.memory.window}
+                                        onChange={e => updateConfig('memory', 'window', parseInt(e.target.value || "1"))}
+                                        tooltip="Frame distance weight for anchor influence."
+                                    />
+                                    <Input
+                                        label="Max Anchors"
+                                        type="number"
+                                        value={config.memory.max_anchors}
+                                        onChange={e => updateConfig('memory', 'max_anchors', parseInt(e.target.value || "1"))}
+                                        tooltip="Hard cap on total memory anchors."
+                                    />
+                                    <Input
+                                        label="Reanchor Threshold"
+                                        type="number"
+                                        step="0.01"
+                                        value={config.memory.confidence_reanchor_threshold}
+                                        onChange={e => updateConfig('memory', 'confidence_reanchor_threshold', parseFloat(e.target.value))}
+                                        tooltip="If mean confidence drops below this, memory pass can auto-add anchor candidates."
+                                    />
+                                    <Input
+                                        label="Auto Anchor Min Gap"
+                                        type="number"
+                                        value={config.memory.auto_anchor_min_gap || 0}
+                                        onChange={e => updateConfig('memory', 'auto_anchor_min_gap', parseInt(e.target.value || "0"))}
+                                        tooltip="Minimum frame gap between automatically-added anchors."
+                                    />
+                                </>
+                            ) : (
+                                <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2 md:col-span-1">
+                                    Using production defaults for memory anchors and reanchor behavior. Switch on Advanced to tune.
+                                </div>
+                            )}
                         </div>
 
                         <div className="border-t border-gray-700/50 pt-3 space-y-2">
-                            <Switch
-                                label="Constrain tracking to subject region"
-                                checked={Boolean(config.memory.region_constraint_enabled)}
-                                onChange={v => updateConfig('memory', 'region_constraint_enabled', v)}
-                                tooltip="Build a full-range subject region prior and clamp Stage-2 alpha outside it."
-                            />
-                            {config.memory.region_constraint_enabled && (
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                                    <Select
-                                        label="Region source"
-                                        value={config.memory.region_constraint_source || 'none'}
-                                        onChange={e => updateConfig('memory', 'region_constraint_source', e.target.value)}
-                                        options={[
-                                            { value: 'propagated_mask', label: 'Tracked Subject Mask (Locked)' },
-                                        ]}
-                                        tooltip="Stage 1 tracked subject mask is used directly as the region prior."
-                                        disabled
+                            {showAdvanced ? (
+                                <>
+                                    <Switch
+                                        label="Constrain tracking to subject region"
+                                        checked={Boolean(config.memory.region_constraint_enabled)}
+                                        onChange={v => updateConfig('memory', 'region_constraint_enabled', v)}
+                                        tooltip="Build a full-range subject region prior and clamp Stage-2 alpha outside it."
                                     />
-                                    <Input
-                                        label="Region anchor frame"
-                                        type="number"
-                                        value={config.memory.region_constraint_anchor_frame ?? -1}
-                                        onChange={e => updateConfig('memory', 'region_constraint_anchor_frame', parseInt(e.target.value || "-1"))}
-                                        tooltip="-1 means first available keyframe anchor."
-                                    />
-                                    <Select
-                                        label="Region propagation method"
-                                        value={config.memory.region_constraint_backend || 'sam2_video_predictor'}
-                                        onChange={e => updateConfig('memory', 'region_constraint_backend', e.target.value)}
-                                        options={[
-                                            { value: 'sam2_video_predictor', label: 'SAM2/Samurai Video Predictor (Locked)' },
-                                        ]}
-                                        tooltip="Region prior propagation is locked to SAM2/Samurai."
-                                        disabled
-                                    />
-                                    <div className="text-xs text-amber-300/90 border border-amber-500/40 rounded px-3 py-2 bg-amber-500/10 md:col-span-2">
-                                        Optical-flow fallback is disabled. If SAM2/Samurai cannot run, the job stops with an error.
-                                    </div>
-                                    {['samurai_video_predictor', 'sam2_video_predictor'].includes(config.memory.region_constraint_backend || '') && (
-                                        <>
+                                    {config.memory.region_constraint_enabled && (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                            <Select
+                                                label="Region source"
+                                                value={config.memory.region_constraint_source || 'none'}
+                                                onChange={e => updateConfig('memory', 'region_constraint_source', e.target.value)}
+                                                options={[
+                                                    { value: 'propagated_mask', label: 'Tracked Subject Mask (Locked)' },
+                                                ]}
+                                                tooltip="Stage 1 tracked subject mask is used directly as the region prior."
+                                                disabled
+                                            />
+                                            <Input
+                                                label="Region anchor frame"
+                                                type="number"
+                                                value={config.memory.region_constraint_anchor_frame ?? -1}
+                                                onChange={e => updateConfig('memory', 'region_constraint_anchor_frame', parseInt(e.target.value || "-1"))}
+                                                tooltip="-1 means first available keyframe anchor."
+                                            />
+                                            <div className="text-xs text-amber-300/90 border border-amber-500/40 rounded px-3 py-2 bg-amber-500/10 md:col-span-2">
+                                                Region propagation backend is fixed to SAM2/Samurai. Optical-flow fallback is disabled.
+                                            </div>
                                             <Input
                                                 label="Samurai model config path"
                                                 value={config.memory.region_constraint_samurai_model_cfg || ""}
@@ -2167,84 +2562,73 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                                                 onChange={v => updateConfig('memory', 'region_constraint_samurai_offload_state_to_cpu', v)}
                                                 tooltip="Reduce VRAM by offloading predictor state to CPU."
                                             />
-                                        </>
+                                            <Input
+                                                label="Minimum allowed region size"
+                                                type="number"
+                                                step="0.0001"
+                                                value={config.memory.region_constraint_flow_min_coverage ?? 0.002}
+                                                onChange={e => updateConfig('memory', 'region_constraint_flow_min_coverage', parseFloat(e.target.value))}
+                                                tooltip="Reject unstable prior frames that become too small."
+                                            />
+                                            <Input
+                                                label="Maximum allowed region size"
+                                                type="number"
+                                                step="0.0001"
+                                                value={config.memory.region_constraint_flow_max_coverage ?? 0.98}
+                                                onChange={e => updateConfig('memory', 'region_constraint_flow_max_coverage', parseFloat(e.target.value))}
+                                                tooltip="Reject unstable prior frames that become unrealistically large."
+                                            />
+                                            <Input
+                                                label="Foreground mask threshold"
+                                                type="number"
+                                                step="0.01"
+                                                value={config.memory.region_constraint_threshold ?? 0.2}
+                                                onChange={e => updateConfig('memory', 'region_constraint_threshold', parseFloat(e.target.value))}
+                                                tooltip="Foreground threshold used when converting propagated masks to prior regions."
+                                            />
+                                            <Input
+                                                label="Bounding box margin (px)"
+                                                type="number"
+                                                value={config.memory.region_constraint_bbox_margin_px ?? 96}
+                                                onChange={e => updateConfig('memory', 'region_constraint_bbox_margin_px', parseInt(e.target.value || "0"))}
+                                                tooltip="Extra margin around detected subject bbox."
+                                            />
+                                            <Input
+                                                label="Bounding box expand ratio"
+                                                type="number"
+                                                step="0.01"
+                                                value={config.memory.region_constraint_bbox_expand_ratio ?? 0.15}
+                                                onChange={e => updateConfig('memory', 'region_constraint_bbox_expand_ratio', parseFloat(e.target.value))}
+                                                tooltip="Relative bbox expansion based on subject size."
+                                            />
+                                            <Input
+                                                label="Expand constrained region (px)"
+                                                type="number"
+                                                value={config.memory.region_constraint_dilate_px ?? 24}
+                                                onChange={e => updateConfig('memory', 'region_constraint_dilate_px', parseInt(e.target.value || "0"))}
+                                                tooltip="Morphological expansion to avoid accidental limb cropping."
+                                            />
+                                            <Input
+                                                label="Soften constrained region (px)"
+                                                type="number"
+                                                value={config.memory.region_constraint_soften_px ?? 0}
+                                                onChange={e => updateConfig('memory', 'region_constraint_soften_px', parseInt(e.target.value || "0"))}
+                                                tooltip="Gaussian soft edge on the region prior."
+                                            />
+                                            <Input
+                                                label="Outside-region confidence cap"
+                                                type="number"
+                                                step="0.01"
+                                                value={config.memory.region_constraint_outside_confidence_cap ?? 0.05}
+                                                onChange={e => updateConfig('memory', 'region_constraint_outside_confidence_cap', parseFloat(e.target.value))}
+                                                tooltip="Maximum confidence outside constrained region."
+                                            />
+                                        </div>
                                     )}
-                                    <Input
-                                        label="Flow processing scale"
-                                        type="number"
-                                        step="0.01"
-                                        value={config.memory.region_constraint_flow_downscale ?? 0.5}
-                                        onChange={e => updateConfig('memory', 'region_constraint_flow_downscale', parseFloat(e.target.value))}
-                                        tooltip="Lower = faster but less precise propagation."
-                                    />
-                                    <Input
-                                        label="Minimum allowed region size"
-                                        type="number"
-                                        step="0.0001"
-                                        value={config.memory.region_constraint_flow_min_coverage ?? 0.002}
-                                        onChange={e => updateConfig('memory', 'region_constraint_flow_min_coverage', parseFloat(e.target.value))}
-                                        tooltip="Reject unstable prior frames that become too small."
-                                    />
-                                    <Input
-                                        label="Maximum allowed region size"
-                                        type="number"
-                                        step="0.0001"
-                                        value={config.memory.region_constraint_flow_max_coverage ?? 0.98}
-                                        onChange={e => updateConfig('memory', 'region_constraint_flow_max_coverage', parseFloat(e.target.value))}
-                                        tooltip="Reject unstable prior frames that become unrealistically large."
-                                    />
-                                    <Input
-                                        label="Flow edge smoothing"
-                                        type="number"
-                                        value={config.memory.region_constraint_flow_feather_px ?? 1}
-                                        onChange={e => updateConfig('memory', 'region_constraint_flow_feather_px', parseInt(e.target.value || "0"))}
-                                        tooltip="Smoothing during flow-based prior propagation."
-                                    />
-                                    <Input
-                                        label="Foreground mask threshold"
-                                        type="number"
-                                        step="0.01"
-                                        value={config.memory.region_constraint_threshold ?? 0.2}
-                                        onChange={e => updateConfig('memory', 'region_constraint_threshold', parseFloat(e.target.value))}
-                                        tooltip="Foreground threshold used when converting propagated masks to prior regions."
-                                    />
-                                    <Input
-                                        label="Bounding box margin (px)"
-                                        type="number"
-                                        value={config.memory.region_constraint_bbox_margin_px ?? 96}
-                                        onChange={e => updateConfig('memory', 'region_constraint_bbox_margin_px', parseInt(e.target.value || "0"))}
-                                        tooltip="Extra margin around detected subject bbox."
-                                    />
-                                    <Input
-                                        label="Bounding box expand ratio"
-                                        type="number"
-                                        step="0.01"
-                                        value={config.memory.region_constraint_bbox_expand_ratio ?? 0.15}
-                                        onChange={e => updateConfig('memory', 'region_constraint_bbox_expand_ratio', parseFloat(e.target.value))}
-                                        tooltip="Relative bbox expansion based on subject size."
-                                    />
-                                    <Input
-                                        label="Expand constrained region (px)"
-                                        type="number"
-                                        value={config.memory.region_constraint_dilate_px ?? 24}
-                                        onChange={e => updateConfig('memory', 'region_constraint_dilate_px', parseInt(e.target.value || "0"))}
-                                        tooltip="Morphological expansion to avoid accidental limb cropping."
-                                    />
-                                    <Input
-                                        label="Soften constrained region (px)"
-                                        type="number"
-                                        value={config.memory.region_constraint_soften_px ?? 0}
-                                        onChange={e => updateConfig('memory', 'region_constraint_soften_px', parseInt(e.target.value || "0"))}
-                                        tooltip="Gaussian soft edge on the region prior."
-                                    />
-                                    <Input
-                                        label="Outside-region confidence cap"
-                                        type="number"
-                                        step="0.01"
-                                        value={config.memory.region_constraint_outside_confidence_cap ?? 0.05}
-                                        onChange={e => updateConfig('memory', 'region_constraint_outside_confidence_cap', parseFloat(e.target.value))}
-                                        tooltip="Maximum confidence outside constrained region."
-                                    />
+                                </>
+                            ) : (
+                                <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                    Subject-region constraint is enabled by default using SAM2/Samurai tracked masks. Advanced controls are hidden.
                                 </div>
                             )}
                         </div>
@@ -2252,9 +2636,17 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                 </Section>
                 </div>
 
+                {!showAdvanced && (
+                    <div className="rounded border border-gray-700 bg-gray-900/50 px-3 py-2 text-xs text-gray-400">
+                        Advanced stage internals are hidden. Enable <span className="font-semibold text-gray-300">Show Advanced</span> to tune background cleanup, subject framing, and global-pass behavior.
+                    </div>
+                )}
+
+                {showAdvanced && (
+                <>
                 {/* 4. Background */}
                 <div id="run-step-background" className="scroll-mt-28">
-                <Section title="Background Plate" tooltip="Settings for clean plate estimation and handling via inpainting.">
+                <Section title="Background Cleanup (Advanced)" tooltip="Settings for clean plate estimation and inpainting fallback.">
                     <div className="space-y-2">
                         <Switch
                             label="Enable Plate Estimation"
@@ -2293,9 +2685,9 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                 </Section>
                 </div>
 
-                {/* 3. ROI */}
+                {/* 5. ROI */}
                 <div id="run-step-roi" className="scroll-mt-28">
-                <Section title="ROI & Tracking" tooltip="Subject detection and Region of Interest tracking settings.">
+                <Section title="Subject Framing (Advanced)" tooltip="Controls for subject detection and region-of-interest tracking.">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         <Input
                             label="Detect Every (frames)" type="number"
@@ -2329,9 +2721,9 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                 </Section>
                 </div>
 
-                {/* 4. Global Pass */}
+                {/* 6. Global Pass */}
                 <div id="run-step-global" className="scroll-mt-28">
-                <Section title="Global Pass (Pass A)" tooltip="First pass: Generates a coarse, full-frame matte." defaultOpen={true}>
+                <Section title="Global Matte Pass (Advanced)" tooltip="Low-resolution temporal matte generation before final refinement." defaultOpen={true}>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         <Select
                             label="Global Model"
@@ -2366,6 +2758,8 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                     </div>
                 </Section>
                 </div>
+                </>
+                )}
 
                 {/* 5. Intermediate Pass */}
                 {showAdvanced && (
@@ -2452,38 +2846,48 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
 
                 {/* 7. Refine */}
                 <div id="run-step-refine" className="scroll-mt-28">
-                <Section title="Edge Refinement (Stage 3)" tooltip="Boundary-focused refinement using MEMatte at full resolution tiles.">
+                <Section title="Edge Detail Refinement" tooltip="Boundary-focused refinement using MEMatte at full-resolution tiles.">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                        <Select
-                            label="Refine Backend"
-                            value={config.refine.backend || 'mematte'}
-                            onChange={e => updateConfig('refine', 'backend', e.target.value)}
-                            options={[
-                                { value: 'mematte', label: 'MEMatte Tile Refiner (Locked)' },
-                            ]}
-                            tooltip="Stage 3 is locked to MEMatte for high-resolution edge recovery."
-                            disabled
-                        />
+                        {showAdvanced ? (
+                            <Select
+                                label="Refine Backend"
+                                value={config.refine.backend || 'mematte'}
+                                onChange={e => updateConfig('refine', 'backend', e.target.value)}
+                                options={[
+                                    { value: 'mematte', label: 'MEMatte Tile Refiner (Locked)' },
+                                ]}
+                                tooltip="Stage 3 is locked to MEMatte for high-resolution edge recovery."
+                                disabled
+                            />
+                        ) : (
+                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                Refinement backend is locked to MEMatte.
+                            </div>
+                        )}
                         <Input
                             label="Unknown Band (px)" type="number"
                             value={config.refine.unknown_band_px}
                             onChange={e => updateConfig('refine', 'unknown_band_px', parseInt(e.target.value))}
                             tooltip="Width of the unknown band to refine."
                         />
-                        <Input
-                            label="Tile Size" type="number"
-                            value={config.refine.tile_size}
-                            onChange={e => updateConfig('refine', 'tile_size', parseInt(e.target.value))}
-                            tooltip="Refinement tile size in pixels."
-                        />
-                        <Input
-                            label="Tile Overlap" type="number"
-                            value={config.refine.overlap}
-                            onChange={e => updateConfig('refine', 'overlap', parseInt(e.target.value))}
-                            tooltip="Tile overlap in pixels for seam blending."
-                        />
+                        {showAdvanced && (
+                            <>
+                                <Input
+                                    label="Tile Size" type="number"
+                                    value={config.refine.tile_size}
+                                    onChange={e => updateConfig('refine', 'tile_size', parseInt(e.target.value))}
+                                    tooltip="Refinement tile size in pixels."
+                                />
+                                <Input
+                                    label="Tile Overlap" type="number"
+                                    value={config.refine.overlap}
+                                    onChange={e => updateConfig('refine', 'overlap', parseInt(e.target.value))}
+                                    tooltip="Tile overlap in pixels for seam blending."
+                                />
+                            </>
+                        )}
                     </div>
-                    {config.refine.backend === 'mematte' && (
+                    {config.refine.backend === 'mematte' && showAdvanced && (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 mt-3">
                             <Input
                                 label="MEMatte Repo Dir"
@@ -2516,12 +2920,17 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                             />
                         </div>
                     )}
+                    {config.refine.backend === 'mematte' && !showAdvanced && (
+                        <div className="mt-3 text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                            MEMatte model paths and token settings are hidden in basic view and auto-resolved from defaults.
+                        </div>
+                    )}
                 </Section>
                 </div>
 
                 <div id="run-step-tuning" className="scroll-mt-28">
                 <Section
-                    title="Matte Tuning"
+                    title="Final Edge Tuning"
                     tooltip="Artist-facing matte tuning: trimap width, choke/expand, feather, and XY offsets."
                     defaultOpen={showAdvanced}
                 >
@@ -2774,7 +3183,7 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
 
                 {/* 9. Despill & Output */}
                 <div id="run-step-post" className="scroll-mt-28">
-                <Section title="Post-Processing" tooltip="Final color correction (despill) and outputting foreground.">
+                <Section title="Color Cleanup and Foreground" tooltip="Final despill cleanup and optional foreground output.">
                     <div className="space-y-2">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Switch
@@ -2819,7 +3228,7 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
 
                 {/* 10. Preview & Runtime */}
                 <div id="run-step-runtime" className="scroll-mt-28">
-                <Section title="Runtime & Preview" tooltip="Hardware configuration and live preview settings." defaultOpen={true}>
+                <Section title="Hardware and Live Preview" tooltip="Device, precision, and live preview controls." defaultOpen={true}>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         <Select
                             label="Device"
@@ -2889,7 +3298,7 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
 
                 <div id="run-step-debug" className="scroll-mt-28">
                 <Section
-                    title="Debug Stage Exports"
+                    title="Debug Sample Exports"
                     tooltip="Export per-stage sample frames and diagnosis artifacts to isolate where matte quality breaks."
                     defaultOpen={showAdvanced}
                 >
@@ -2953,7 +3362,7 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
 
                 <div id="run-step-qc" className="scroll-mt-28">
                 <Section
-                    title="QC & Regression Gates"
+                    title="Quality Control Gates"
                     tooltip="Option B QC metrics and regression thresholds. Enable hard-fail to stop runs that exceed limits."
                     defaultOpen={showAdvanced}
                 >
@@ -3065,8 +3474,9 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                     </div>
                 </Section>
                 </div>
-                </div>
-            </form >
-        </div >
+                    </div>
+                </form>
+            </div>
+        </DashboardLayout>
     )
 }
