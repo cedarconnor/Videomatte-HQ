@@ -23,7 +23,7 @@ Implement the `UI_REDESIGN_SPEC.md` redesign with progressive disclosure:
 - [x] Phase 4: Basic/Advanced visibility split.
   - Apply clear `Basic` defaults.
   - Hide backend internals specified as `HIDDEN` in spec.
-- [ ] Phase 5: UX delighters.
+- [x] Phase 5: UX delighters.
   - Smart defaults for input.
   - Immediate validation warnings.
   - Keyboard shortcuts in mask builder (`F`, `B`, `Enter`).
@@ -34,9 +34,9 @@ Implement the `UI_REDESIGN_SPEC.md` redesign with progressive disclosure:
   - Update README + Beginner Guide for new UI flow.
 
 ## In Progress
-- Continuing **Phase 5/6**:
-  - UX delighters and component extraction remain pending.
-  - README/BEGINNER_GUIDE wording pass for final redesigned flow remains pending.
+- Continuing **Phase 6**:
+  - `RunTab.tsx` is still monolithic and should be split into wizard/pro section components.
+  - Additional Pro help-context UX can be added in right panel.
 
 ## Review Notes
 - Current `RunTab.tsx` is monolithic; first pass will add shells and mode routing without breaking existing run behavior.
@@ -45,4 +45,9 @@ Implement the `UI_REDESIGN_SPEC.md` redesign with progressive disclosure:
   - Inner Pro stage sidebar is hidden to remove nested navigation confusion.
   - Pro stage labels and major section titles were renamed to plain-English wording.
   - Advanced-only stages (background/framing/global) are hidden by default with a clear notice.
-  - Validation: `cd web && npm run build` passed; `python -m pytest -q` passed (`42 passed, 1 skipped`).
+  - Added UI delighters:
+    - Auto-suggest input from `TestFiles` when exactly one clip is present.
+    - Live output-folder warning if destination exists and overwrite is off.
+    - Mask builder shortcuts: `F`, `B`, `Enter`.
+    - Completion toast action: `View Result (A/B)` opens Job Queue.
+  - Validation: `cd web && npm run build` passed; `python -m pytest -q` passed (`43 passed, 1 skipped`).

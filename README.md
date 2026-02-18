@@ -234,27 +234,28 @@ Then open `http://localhost:5173`.
 Keyboard shortcuts: `Ctrl+1-4` to switch tabs, `J/K` or arrow keys for frame navigation in QC, `Shift` for 10-frame jumps, `Home/End` for first/last frame.
 
 ### Run Job tab
-Configure and launch a new matting job. All pipeline settings are exposed in collapsible sections:
+Two UI modes are available:
 
-- **Input / Output** — video path (drag-and-drop or type), output directory, alpha pattern, frame range, alpha format (PNG 8/16-bit, EXR), shot type, DWAA quality
-- **Subject Assignment (Mask-First)** — project file, keyframe index, anchor type (`initial`/`correction`), mask import, auto-apply suggested reprocess range
-- **Initial Mask Builder (Phase 3)** — load a frame, auto-detect subjects with text prompts (`Suggest Boxes`), draw/adjust box, add FG/BG points, then build/import an anchor mask
-- **Stage 1 Prompt Range Build** — locked to `SAM2/Samurai Video Predictor` for anchor and range mask generation from prompts
-- **Phase 4: Long-Range Propagation Assist** — locked to `SAM2/Samurai Video Predictor` for adding correction anchors across a range
-- **Memory Propagation (Stage 2)** — coarse alpha controls and optional full-range region constraint settings (`propagated_bbox`, `propagated_mask`, or `nearest_keyframe_bbox`)
-- **Background Plate** — background estimation settings
-- **ROI & Tracking** — region-of-interest and tracking configuration
-- **Global Pass (Pass A)** — global matting model selection (RVM), resolution, chunk length
-- **Intermediate (Pass A')** — intermediate pass settings
-- **Band & Trimap** — trimap generation and band configuration
-- **Detail Refinement (Pass B)** — tile-based detail refinement
-- **Matte Tuning** — one-click presets (`Subtle`, `Balanced`, `Aggressive`, `Reset`) plus manual controls (trimap width, shrink/grow, feather, offset X/Y)
-- **Temporal Stability (Pass C)** — temporal cleanup settings
-- **Post-Processing** — post-processing options
-- **Runtime & Preview** — device (CUDA/CPU), precision (FP16/FP32), IO workers, live preview settings
-- **Debug Stage Exports** — export sampled stage outputs and write `debug_stages/diagnosis.json` + `debug_stages/diagnosis.md`
-- **Auto Stage Diagnosis on QC Fail** — optional automatic stage sample export + diagnosis when QC gates fail
-- **QC & Regression Gates** — all QC thresholds exposed (flicker, edge confidence, band spike, roundtrip MAE)
+- **Wizard (default)**: 4-step happy path (`Setup`, `Select Subject`, `Refine Edges`, `Render`)
+- **Pro Mode**: full dashboard with advanced controls
+
+In **Pro Mode**, run-stage navigation is in the app left sidebar under **Run Job**:
+
+- **Video & Output**
+- **Subject Masks**
+- **Motion Tracking** (MatAnyone, with SAM2/Samurai region constraint)
+- **Background Cleanup / Subject Framing / Global Matte Pass** (advanced-only)
+- **Edge Detail Refinement** (MEMatte)
+- **Final Edge Tuning**
+- **Color Cleanup & Foreground**
+- **Hardware & Preview**
+- **Debug Samples**
+- **Quality Gates**
+
+Mask builder shortcuts:
+- `F`: foreground point tool
+- `B`: background point tool
+- `Enter`: build mask
 
 ![Mask Builder — auto-detect subject and build initial mask](docs/images/mask_builder_result.png)
 
@@ -282,6 +283,8 @@ Configure and launch a new matting job. All pipeline settings are exposed in col
 - `GET /api/jobs/{job_id}`
 - `GET /api/jobs/{job_id}/logs`
 - `POST /api/jobs/{job_id}/cancel`
+- `GET /api/fs/input-suggestions`
+- `POST /api/fs/path-info`
 - `POST /api/project/state`
 - `POST /api/assignments/import`
 - `POST /api/assignments/suggest-range`

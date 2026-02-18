@@ -62,7 +62,14 @@ function AppInner() {
                         const prevStatus = prevJobStatuses.current[job.id]
                         if (prevStatus && prevStatus !== job.status) {
                             if (job.status === 'completed') {
-                                addToast(`Job ${job.id.slice(0, 8)} completed successfully!`, 'success')
+                                addToast(
+                                    `Job ${job.id.slice(0, 8)} completed successfully!`,
+                                    'success',
+                                    {
+                                        label: 'View Result (A/B)',
+                                        onClick: () => setActiveTab('jobs'),
+                                    }
+                                )
                             } else if (job.status === 'failed') {
                                 addToast(`Job ${job.id.slice(0, 8)} failed: ${job.error || 'Unknown error'}`, 'error')
                             }

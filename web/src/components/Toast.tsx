@@ -8,10 +8,16 @@ interface Toast {
     id: number
     message: string
     type: ToastType
+    actionLabel?: string
+    onAction?: () => void
 }
 
 interface ToastContextValue {
-    addToast: (message: string, type?: ToastType) => void
+    addToast: (
+        message: string,
+        type?: ToastType,
+        action?: { label: string; onClick: () => void }
+    ) => void
 }
 
 const ToastContext = createContext<ToastContextValue>({ addToast: () => {} })
@@ -25,9 +31,19 @@ let nextId = 0
 export function ToastProvider({ children }: { children: React.ReactNode }) {
     const [toasts, setToasts] = useState<Toast[]>([])
 
-    const addToast = useCallback((message: string, type: ToastType = 'info') => {
+    const addToast = useCallback((
+        message: string,
+        type: ToastType = 'info',
+        action?: { label: string; onClick: () => void }
+    ) => {
         const id = nextId++
-        setToasts(prev => [...prev, { id, message, type }])
+        setToasts(prev => [...prev, {
+            id,
+            message,
+            type,
+            actionLabel: action?.label,
+            onAction: action?.onClick,
+        }])
         setTimeout(() => {
             setToasts(prev => prev.filter(t => t.id !== id))
         }, 5000)
@@ -63,6 +79,18 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                     >
                         <span className="text-lg">{icons[toast.type]}</span>
                         <span className="flex-1">{toast.message}</span>
+                        {toast.actionLabel && toast.onAction && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    toast.onAction?.()
+                                    removeToast(toast.id)
+                                }}
+                                className="text-[11px] px-2 py-1 rounded border border-current/30 hover:bg-white/10 transition-colors"
+                            >
+                                {toast.actionLabel}
+                            </button>
+                        )}
                         <button onClick={() => removeToast(toast.id)} className="opacity-50 hover:opacity-100 transition-opacity">
                             <FaTimes className="text-xs" />
                         </button>

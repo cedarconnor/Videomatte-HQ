@@ -42,41 +42,42 @@ run_web.bat
 
 In the **Run Job** tab:
 
-1. Set **Input Path**:
-   - Video file path, or frame pattern like `input_frames/frame_%05d.png`
-2. Set **Output Directory**:
-   - Example: `output`
-3. In **Subject Assignment (Mask-First)**:
-   - **Keyframe Index**: `0`
-   - **Anchor Type**: `Initial`
-   - If you already have a mask image:
-     - Set **Mask Path**
-     - Click **Import Mask**
-    - If you do not have a mask image, use **Initial Mask Builder (Phase 3)**:
-      - Click **Load Frame**
-      - (Optional) Enter a prompt like `person` and click **Suggest Boxes**
-      - Draw one box around the subject
-      - Add a few FG points on the subject and BG points on the background (if needed)
-      - Click **Build Anchor Mask** (locked to SAM2/Samurai in Multiple Mask Frames mode)
-      - If the subject moves a lot, click **Build + Import Range** (also SAM2/Samurai)
-      - Set **Samurai Model Cfg Path** and **Samurai Checkpoint Path** before building
-    - Optional after your first keyframe is imported/built: use **Phase 4: Long-Range Propagation Assist**
-      - The current **Keyframe Index** is used as the anchor
-      - Backend is **SAM2/Samurai Video Predictor** (set model cfg/checkpoint first)
-      - Set your propagation range start/end
-      - Click **Propagate Keyframes** to auto-add correction anchors across the shot
-4. In **Matte Tuning**:
-    - Start with preset **Balanced**
-5. In **Memory Propagation (Stage 2)**:
-    - Keep **Enable Region Constraint** turned on (recommended)
-    - Keep **Region Source** on `Tracked Subject Mask` (this is the locked default)
-6. Optional in **Edge Refinement (Stage 3)**:
-   - Backend is locked to `mematte` for high-resolution edge detail
-   - Set:
-      - **MEMatte Repo Dir**: `third_party/MEMatte`
-      - **MEMatte Checkpoint**: `third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth`
-      - **MEMatte Max Tokens**: start with `12000` to `18500`
-7. Click **Start Pipeline**
+1. In **Wizard Step 1 (Setup)**, set:
+   - **Input Video or Frame Sequence**
+   - **Output Folder**
+   - Optional frame range (`Start Frame`, `End Frame`)
+2. Go to **Wizard Step 2 (Select Subject)**:
+   - Click **Load Frame**
+   - Optional: type prompt `person` and click **Auto-Detect**
+   - Draw one subject box
+   - Add FG/BG points if needed
+   - Click **Build Anchor Mask**
+3. Go to **Wizard Step 3 (Refine Edges)**:
+   - Adjust **Edge Tightness**
+   - Adjust **Edge Softness**
+   - Toggle **Enable De-Spill** as needed
+4. Go to **Wizard Step 4 (Render)** and click **Start Render**
+
+If you need full controls, switch to **Pro Mode** and use the left sidebar run stages:
+- **Video & Output**
+- **Subject Masks**
+- **Motion Tracking**
+- **Edge Detail Refinement**
+- **Final Edge Tuning**
+- **Hardware & Preview**
+
+Quick mask-builder shortcuts:
+- `F` = foreground points
+- `B` = background points
+- `Enter` = build mask
+
+If you switch to **Pro Mode**, keep these defaults unless you are troubleshooting:
+
+1. In **Subject Masks**, build at least one keyframe mask.
+2. In **Motion Tracking**, keep region constraint enabled.
+3. In **Edge Detail Refinement**, keep backend on MEMatte.
+4. In **Final Edge Tuning**, start with **Balanced** preset.
+5. Click **Start Pipeline**.
 
 ## 5) Check Progress and Quality
 

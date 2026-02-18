@@ -12,6 +12,7 @@ from videomatte_hq_web.server import (
     BuildAssignmentMaskRequest,
     BuildAssignmentMaskRangeRequest,
     ImportAssignmentRequest,
+    PathInfoRequest,
     PromptBox,
     PromptPoint,
     PropagateAssignmentMasksRequest,
@@ -22,6 +23,8 @@ from videomatte_hq_web.server import (
     build_assignment_mask,
     build_assignment_mask_range,
     import_assignment,
+    list_input_suggestions,
+    path_info,
     propagate_assignment_masks,
     project_state,
     suggest_assignment_range,
@@ -147,6 +150,31 @@ async def test_assignment_mask_builder_preview_and_build(tmp_path: Path, monkeyp
     )
     assert suggested_boxes["status"] == "ok"
     assert len(suggested_boxes["candidates"]) >= 1
+
+
+@pytest.mark.anyio
+async def test_input_suggestions_and_path_info(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    test_files = tmp_path / "TestFiles"
+    test_files.mkdir(parents=True, exist_ok=True)
+    (test_files / "notes.txt").write_text("ignore", encoding="utf-8")
+    (test_files / "shot_b.mp4").write_bytes(b"")
+    (test_files / "shot_a.mov").write_bytes(b"")
+
+    suggestions = await list_input_suggestions()
+    assert suggestions["status"] == "ok"
+    assert len(suggestions["paths"]) == 2
+    assert suggestions["paths"][0].endswith("shot_a.mov")
+    assert suggestions["paths"][1].endswith("shot_b.mp4")
+
+    out_dir = tmp_path / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    info = await path_info(PathInfoRequest(path="output"))
+    assert info["status"] == "ok"
+    assert info["exists"] is True
+    assert info["is_dir"] is True
+    assert info["is_file"] is False
 
 
 @pytest.mark.anyio

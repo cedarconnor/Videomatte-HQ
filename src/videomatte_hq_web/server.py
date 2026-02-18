@@ -178,6 +178,10 @@ class PropagateAssignmentMasksRequest(BaseModel):
     overwrite_existing: bool = False
 
 
+class PathInfoRequest(BaseModel):
+    path: str = Field(min_length=1)
+
+
 def _build_project_summary(cfg: VideoMatteConfig) -> dict:
     project_path, project = ensure_project(cfg)
     keyframes = [
@@ -297,6 +301,50 @@ def _png_data_url_from_rgb_u8(rgb: np.ndarray) -> str:
         raise ValueError("Failed to encode frame preview PNG.")
     payload = base64.b64encode(encoded.tobytes()).decode("ascii")
     return f"data:image/png;base64,{payload}"
+
+
+@app.get("/api/fs/input-suggestions")
+async def list_input_suggestions():
+    """Suggest likely input files for quick-start UI defaults."""
+    try:
+        root = Path.cwd() / "TestFiles"
+        if not root.exists() or not root.is_dir():
+            return {"status": "ok", "paths": []}
+
+        allowed = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".mxf"}
+        paths: list[str] = []
+        for child in sorted(root.iterdir()):
+            if not child.is_file():
+                continue
+            if child.suffix.lower() not in allowed:
+                continue
+            paths.append(str(child))
+
+        return {"status": "ok", "paths": paths}
+    except Exception as e:
+        logger.exception("Failed to list input suggestions")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/fs/path-info")
+async def path_info(req: PathInfoRequest):
+    """Return path existence details for live UI validation."""
+    try:
+        raw = req.path.strip()
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        exists = p.exists()
+        return {
+            "status": "ok",
+            "resolved_path": str(p),
+            "exists": bool(exists),
+            "is_dir": bool(exists and p.is_dir()),
+            "is_file": bool(exists and p.is_file()),
+        }
+    except Exception as e:
+        logger.exception("Failed to resolve path info")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/jobs")

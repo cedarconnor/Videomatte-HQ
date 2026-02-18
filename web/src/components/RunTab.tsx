@@ -485,6 +485,8 @@ export default function RunTab({
     const [builderBuildingMask, setBuilderBuildingMask] = useState(false)
     const [builderDragStart, setBuilderDragStart] = useState<BuilderPoint | null>(null)
     const builderImgRef = useRef<HTMLImageElement | null>(null)
+    const [outputDirWarning, setOutputDirWarning] = useState<string | null>(null)
+    const inputSuggestionAppliedRef = useRef(false)
 
     // Initialize config with localStorage defaults if available
     const [config, setConfig] = useState<VideoMatteConfig>(() => {
@@ -574,6 +576,75 @@ export default function RunTab({
             }
         })
     }
+
+    useEffect(() => {
+        if (inputSuggestionAppliedRef.current) return
+        if (String(config.io.input || "").trim()) return
+        inputSuggestionAppliedRef.current = true
+
+        let cancelled = false
+        void (async () => {
+            try {
+                const res = await fetch('/api/fs/input-suggestions')
+                if (!res.ok) return
+                const data = await res.json() as { paths?: string[] }
+                const paths = Array.isArray(data.paths) ? data.paths.filter(Boolean) : []
+                if (cancelled || paths.length !== 1) return
+
+                const suggested = String(paths[0])
+                updateConfig('io', 'input', suggested)
+                const currentOut = String(config.io.output_dir || "").trim().toLowerCase()
+                if (!currentOut || currentOut === 'output') {
+                    const fileName = suggested.split(/[/\\]/).pop() || "video"
+                    const stem = fileName.replace(/\.[^.]+$/, "") || "video"
+                    updateConfig('io', 'output_dir', `output/${stem}`)
+                }
+            } catch {
+                // silent: smart defaults are optional
+            }
+        })()
+
+        return () => {
+            cancelled = true
+        }
+    }, [config.io.input, config.io.output_dir])
+
+    useEffect(() => {
+        const raw = String(config.io.output_dir || "").trim()
+        if (!raw) {
+            setOutputDirWarning("Choose an output folder before starting the render.")
+            return
+        }
+
+        let cancelled = false
+        const timer = window.setTimeout(async () => {
+            try {
+                const res = await fetch('/api/fs/path-info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: raw }),
+                })
+                if (!res.ok) {
+                    if (!cancelled) setOutputDirWarning(null)
+                    return
+                }
+                const data = await res.json() as { exists?: boolean; is_dir?: boolean }
+                if (cancelled) return
+                if (Boolean(data.exists) && Boolean(data.is_dir) && !config.io.force_overwrite) {
+                    setOutputDirWarning("Output folder already exists. Enable 'Force Overwrite' or pick a new folder.")
+                    return
+                }
+                setOutputDirWarning(null)
+            } catch {
+                if (!cancelled) setOutputDirWarning(null)
+            }
+        }, 250)
+
+        return () => {
+            cancelled = true
+            window.clearTimeout(timer)
+        }
+    }, [config.io.output_dir, config.io.force_overwrite])
 
     const [dragOver, setDragOver] = useState(false)
 
@@ -1305,6 +1376,46 @@ export default function RunTab({
         builderSuggestingBoxes ||
         propagateRunning
 
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (assignmentSourceMode !== 'generate') return
+
+            const target = e.target as HTMLElement | null
+            const tag = target?.tagName?.toLowerCase()
+            if (target?.isContentEditable || tag === 'input' || tag === 'textarea' || tag === 'select') {
+                return
+            }
+
+            const key = e.key.toLowerCase()
+            if (key === 'f') {
+                e.preventDefault()
+                setBuilderTool('fg')
+                setStatus("Mask builder tool: Foreground points (F).")
+                return
+            }
+            if (key === 'b') {
+                e.preventDefault()
+                setBuilderTool('bg')
+                setStatus("Mask builder tool: Background points (B).")
+                return
+            }
+            if (e.key === 'Enter') {
+                if (!builderFrameDataUrl || !builderBox || assignmentBusy) return
+                e.preventDefault()
+                void handleBuildMaskFromPrompts()
+            }
+        }
+
+        window.addEventListener('keydown', onKeyDown)
+        return () => window.removeEventListener('keydown', onKeyDown)
+    }, [
+        assignmentSourceMode,
+        builderFrameDataUrl,
+        builderBox,
+        assignmentBusy,
+        handleBuildMaskFromPrompts,
+    ])
+
     const hasAssignment = (projectSummary?.keyframe_count ?? 0) > 0
     const tightnessSliderValue = Math.round(Math.max(0, Math.min(100, (-config.matte_tuning.shrink_grow_px / 2) * 100)))
     const softnessSliderValue = Math.round(Math.max(0, Math.min(100, (config.matte_tuning.feather_px / 4) * 100)))
@@ -1423,6 +1534,11 @@ export default function RunTab({
                                     onChange={e => updateConfig('io', 'frame_end', parseInt(e.target.value || "-1"))}
                                 />
                             </div>
+                            {outputDirWarning && (
+                                <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
+                                    {outputDirWarning}
+                                </div>
+                            )}
                             <div className="flex justify-end">
                                 <button
                                     type="button"
@@ -1733,7 +1849,7 @@ export default function RunTab({
                                 </div>
                             ) : (
                                 <Input
-                                    label="Input Path"
+                                    label="Input Video or Frame Path"
                                     name="input"
                                     value={config.io.input}
                                     onChange={e => updateConfig('io', 'input', e.target.value)}
@@ -1749,7 +1865,7 @@ export default function RunTab({
                             tooltip="Directory where results will be saved."
                         />
                         <Input
-                            label="Alpha Pattern"
+                            label="Output File Naming (Alpha Frames)"
                             value={config.io.output_alpha}
                             onChange={e => updateConfig('io', 'output_alpha', e.target.value)}
                             tooltip="Naming pattern for output alpha frames (printf format)."
@@ -1794,7 +1910,7 @@ export default function RunTab({
                                 tooltip="File format for the alpha matte."
                             />
                             <Input
-                                label="DWAA Quality"
+                                label="EXR Compression Quality"
                                 type="number"
                                 step="0.1"
                                 value={config.io.alpha_dwaa_quality}
@@ -1808,6 +1924,11 @@ export default function RunTab({
                             onChange={v => updateConfig('io', 'force_overwrite', v)}
                             tooltip="Overwrite existing files in the output directory."
                         />
+                        {outputDirWarning && (
+                            <div className="md:col-span-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
+                                {outputDirWarning}
+                            </div>
+                        )}
                     </div>
                 </Section>
                 </div>
@@ -2193,6 +2314,9 @@ export default function RunTab({
                                     <div>
                                         <div className="text-xs text-gray-400 mb-1">
                                             Step 1: Prompt auto-detect or draw a subject box. Step 2: Add FG/BG points if needed.
+                                        </div>
+                                        <div className="text-[11px] text-gray-500 mb-1">
+                                            Shortcuts: <span className="font-mono">F</span> foreground point, <span className="font-mono">B</span> background point, <span className="font-mono">Enter</span> build mask.
                                         </div>
                                         <div
                                             className={`relative inline-block border border-gray-700 rounded overflow-hidden ${builderTool === 'box' ? 'cursor-crosshair' : 'cursor-cell'}`}
