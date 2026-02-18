@@ -25,6 +25,12 @@ export const Tooltip: React.FC<TooltipProps> = ({ content }) => {
     const handleMouseEnter = () => {
         updatePosition();
         setIsVisible(true);
+        window.dispatchEvent(new CustomEvent('vmhq-help-show', { detail: { content } }));
+    };
+
+    const handleMouseLeave = () => {
+        setIsVisible(false);
+        window.dispatchEvent(new CustomEvent('vmhq-help-clear'));
     };
 
     // Update position on scroll/resize while visible
@@ -46,7 +52,7 @@ export const Tooltip: React.FC<TooltipProps> = ({ content }) => {
                 ref={triggerRef}
                 className="relative inline-block ml-1 cursor-help text-gray-500 hover:text-brand-400 transition-colors"
                 onMouseEnter={handleMouseEnter}
-                onMouseLeave={() => setIsVisible(false)}
+                onMouseLeave={handleMouseLeave}
             >
                 <FaQuestionCircle className="text-[10px]" />
             </div>

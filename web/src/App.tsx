@@ -197,6 +197,7 @@ function AppInner() {
                         {activeTab === 'run' && (
                             <RunTab
                                 onSuccess={() => setActiveTab('jobs')}
+                                onLaunchQC={() => setActiveTab('qc')}
                                 onRunModeChange={setRunViewMode}
                                 onProStageChange={setActiveRunStage}
                                 requestedProStage={requestedRunStage}

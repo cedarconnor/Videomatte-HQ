@@ -15,6 +15,8 @@ interface DashboardLayoutProps {
     showLeftNav?: boolean
     headerActions?: ReactNode
     rightPanel?: ReactNode
+    rightPanelCollapsed?: boolean
+    onToggleRightPanel?: () => void
     children: ReactNode
 }
 
@@ -28,11 +30,15 @@ export default function DashboardLayout({
     showLeftNav = true,
     headerActions,
     rightPanel,
+    rightPanelCollapsed = false,
+    onToggleRightPanel,
     children,
 }: DashboardLayoutProps) {
     const gridClass = showLeftNav
         ? 'grid grid-cols-1 xl:grid-cols-[260px_minmax(0,1fr)_300px] gap-4 pb-20'
-        : 'grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-4 pb-20'
+        : rightPanelCollapsed
+            ? 'grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_60px] gap-4 pb-20'
+            : 'grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-4 pb-20'
 
     return (
         <div className={gridClass}>
@@ -92,14 +98,25 @@ export default function DashboardLayout({
             </section>
 
             <aside className="rounded-xl border border-gray-800 bg-gray-900/70 p-3 h-fit xl:sticky xl:top-4">
-                {rightPanel || (
+                {onToggleRightPanel && (
+                    <div className="flex justify-end mb-2">
+                        <button
+                            type="button"
+                            onClick={onToggleRightPanel}
+                            className="text-[11px] px-2 py-1 rounded border border-gray-700 bg-gray-900 text-gray-300 hover:bg-gray-800"
+                        >
+                            {rightPanelCollapsed ? 'Expand' : 'Collapse'}
+                        </button>
+                    </div>
+                )}
+                {!rightPanelCollapsed && (rightPanel || (
                     <div className="space-y-2">
                         <div className="text-xs uppercase tracking-wide text-gray-500">Context Help</div>
                         <p className="text-xs text-gray-400">
                             Hover-focused help panel will be added in later phases.
                         </p>
                     </div>
-                )}
+                ))}
             </aside>
         </div>
     )

@@ -7,6 +7,14 @@ import { Select } from './ui/Select'
 import { Switch } from './ui/Switch'
 import WizardLayout from './wizard/WizardLayout'
 import DashboardLayout from './dashboard/DashboardLayout'
+import StepSetup from './wizard/StepSetup'
+import StepSubject from './wizard/StepSubject'
+import StepRefine from './wizard/StepRefine'
+import StepRender from './wizard/StepRender'
+import IOSection from './dashboard/sections/IOSection'
+import MaskSection from './dashboard/sections/MaskSection'
+import RefineSection from './dashboard/sections/RefineSection'
+import MaskBuilder from './shared/MaskBuilder'
 
 interface ProjectKeyframe {
     frame: number
@@ -406,6 +414,7 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
 
 interface RunTabProps {
     onSuccess: () => void
+    onLaunchQC?: () => void
     onRunModeChange?: (mode: RunViewMode) => void
     onProStageChange?: (stageId: RunStepId) => void
     requestedProStage?: RunStepId | null
@@ -414,6 +423,7 @@ interface RunTabProps {
 
 export default function RunTab({
     onSuccess,
+    onLaunchQC,
     onRunModeChange,
     onProStageChange,
     requestedProStage,
@@ -472,10 +482,10 @@ export default function RunTab({
     const [propagateMaxNewKeyframes, setPropagateMaxNewKeyframes] = useState(24)
     const [propagateFallbackToFlow] = useState(false)
     const [propagateOverwriteExisting, setPropagateOverwriteExisting] = useState(false)
-    const [propagateFlowDownscale, setPropagateFlowDownscale] = useState(0.5)
-    const [propagateFlowMinCoverage, setPropagateFlowMinCoverage] = useState(0.002)
-    const [propagateFlowMaxCoverage, setPropagateFlowMaxCoverage] = useState(0.98)
-    const [propagateFlowFeatherPx, setPropagateFlowFeatherPx] = useState(1)
+    const [propagateFlowDownscale] = useState(0.5)
+    const [propagateFlowMinCoverage] = useState(0.002)
+    const [propagateFlowMaxCoverage] = useState(0.98)
+    const [propagateFlowFeatherPx] = useState(1)
     const [propagateSamuraiModelCfg, setPropagateSamuraiModelCfg] = useState("third_party/samurai/sam2/sam2/configs/sam2.1/sam2.1_hiera_l.yaml")
     const [propagateSamuraiCheckpoint, setPropagateSamuraiCheckpoint] = useState("third_party/samurai/checkpoints/sam2.1_hiera_large.pt")
     const [propagateSamuraiOffloadVideoToCpu, setPropagateSamuraiOffloadVideoToCpu] = useState(false)
@@ -487,6 +497,16 @@ export default function RunTab({
     const builderImgRef = useRef<HTMLImageElement | null>(null)
     const [outputDirWarning, setOutputDirWarning] = useState<string | null>(null)
     const inputSuggestionAppliedRef = useRef(false)
+    const [wizardJobId, setWizardJobId] = useState<string | null>(null)
+    const [wizardJobState, setWizardJobState] = useState<'idle' | 'queued' | 'running' | 'completed' | 'failed'>('idle')
+    const [wizardProgressPct, setWizardProgressPct] = useState(0)
+    const [wizardProgressLabel, setWizardProgressLabel] = useState('Waiting to start')
+    const [wizardTimeRemaining, setWizardTimeRemaining] = useState('Time remaining: --')
+    const [wizardJobError, setWizardJobError] = useState<string | null>(null)
+    const wizardJobStartRef = useRef<number | null>(null)
+    const [recentJobs, setRecentJobs] = useState<Array<{ id: string; status: string; error?: string | null }>>([])
+    const [contextHelpText, setContextHelpText] = useState("Hover over controls to view parameter descriptions.")
+    const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
 
     // Initialize config with localStorage defaults if available
     const [config, setConfig] = useState<VideoMatteConfig>(() => {
@@ -645,6 +665,136 @@ export default function RunTab({
             window.clearTimeout(timer)
         }
     }, [config.io.output_dir, config.io.force_overwrite])
+
+    useEffect(() => {
+        if (!showAdvanced && assignmentSourceMode !== 'generate') {
+            setAssignmentSourceMode('generate')
+        }
+    }, [showAdvanced, assignmentSourceMode])
+
+    useEffect(() => {
+        const onShow = (evt: Event) => {
+            const custom = evt as CustomEvent<{ content?: string }>
+            const content = String(custom.detail?.content || "").trim()
+            if (content) {
+                setContextHelpText(content)
+            }
+        }
+        const onClear = () => {
+            setContextHelpText("Hover over controls to view parameter descriptions.")
+        }
+
+        window.addEventListener('vmhq-help-show', onShow as EventListener)
+        window.addEventListener('vmhq-help-clear', onClear)
+        return () => {
+            window.removeEventListener('vmhq-help-show', onShow as EventListener)
+            window.removeEventListener('vmhq-help-clear', onClear)
+        }
+    }, [])
+
+    useEffect(() => {
+        let cancelled = false
+        const poll = async () => {
+            try {
+                const res = await fetch('/api/jobs')
+                if (!res.ok) return
+                const data = await res.json() as Array<{ id: string; status: string; error?: string | null }>
+                if (cancelled) return
+                setRecentJobs(Array.isArray(data) ? data.slice(0, 5) : [])
+            } catch {
+                // silent
+            }
+        }
+        void poll()
+        const timer = window.setInterval(() => {
+            void poll()
+        }, 3000)
+        return () => {
+            cancelled = true
+            window.clearInterval(timer)
+        }
+    }, [])
+
+    useEffect(() => {
+        if (!wizardJobId) return
+        if (wizardJobState === 'completed' || wizardJobState === 'failed') return
+
+        const formatRemaining = (ms: number): string => {
+            if (!Number.isFinite(ms) || ms <= 0) return "Time remaining: --"
+            const totalSec = Math.max(0, Math.round(ms / 1000))
+            const m = Math.floor(totalSec / 60)
+            const s = totalSec % 60
+            return `Time remaining: ${m}:${String(s).padStart(2, '0')}`
+        }
+
+        const parseFrameProgress = (logs: string): { current: number; total: number } | null => {
+            const matches = [...logs.matchAll(/frame\s+(\d+)\/(\d+)/gi)]
+            if (matches.length === 0) return null
+            const last = matches[matches.length - 1]
+            const current = parseInt(last[1], 10)
+            const total = parseInt(last[2], 10)
+            if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) return null
+            return { current, total }
+        }
+
+        let cancelled = false
+        const poll = async () => {
+            try {
+                const [jobRes, logsRes] = await Promise.all([
+                    fetch(`/api/jobs/${wizardJobId}`),
+                    fetch(`/api/jobs/${wizardJobId}/logs`),
+                ])
+                if (!jobRes.ok || !logsRes.ok) return
+                const jobData = await jobRes.json() as { status?: string; error?: string | null }
+                const logsData = await logsRes.json() as { logs?: string }
+                if (cancelled) return
+
+                const state = String(jobData.status || "queued").toLowerCase() as 'queued' | 'running' | 'completed' | 'failed'
+                setWizardJobState(state)
+                if (state === 'failed') {
+                    setWizardJobError(jobData.error || "Job failed")
+                }
+
+                const frame = parseFrameProgress(String(logsData.logs || ""))
+                if (frame) {
+                    const pct = Math.max(0, Math.min(1, frame.current / frame.total))
+                    setWizardProgressPct(state === 'completed' ? 1 : pct)
+                    setWizardProgressLabel(`Frame ${frame.current}/${frame.total}`)
+                    if (!wizardJobStartRef.current) {
+                        wizardJobStartRef.current = Date.now()
+                    }
+                    if (pct > 0.01 && state !== 'completed') {
+                        const elapsed = Date.now() - wizardJobStartRef.current
+                        const remaining = elapsed * (1 - pct) / pct
+                        setWizardTimeRemaining(formatRemaining(remaining))
+                    } else if (state === 'completed') {
+                        setWizardTimeRemaining("Render complete")
+                    }
+                } else if (state === 'queued') {
+                    setWizardProgressLabel("Queued")
+                } else if (state === 'running') {
+                    setWizardProgressLabel("Running")
+                }
+
+                if (state === 'completed') {
+                    setWizardProgressPct(1)
+                    setWizardTimeRemaining("Render complete")
+                    setWizardProgressLabel("Completed")
+                }
+            } catch {
+                // silent
+            }
+        }
+
+        void poll()
+        const timer = window.setInterval(() => {
+            void poll()
+        }, 1500)
+        return () => {
+            cancelled = true
+            window.clearInterval(timer)
+        }
+    }, [wizardJobId, wizardJobState])
 
     const [dragOver, setDragOver] = useState(false)
 
@@ -1329,10 +1479,14 @@ export default function RunTab({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
-    async function submitPipelineJob() {
+    async function submitPipelineJob(options?: { navigateOnSubmit?: boolean }): Promise<string | null> {
+        const navigateOnSubmit = options?.navigateOnSubmit ?? (runViewMode === 'pro')
         setLoading(true)
         setError(null)
         setStatus(null)
+        if (!navigateOnSubmit) {
+            setWizardJobError(null)
+        }
 
         try {
             const lockedConfig = lockWorkflowConfig(config)
@@ -1353,9 +1507,31 @@ export default function RunTab({
 
             if (!res.ok) throw new Error(await parseApiError(res))
 
-            onSuccess()
+            const data = await res.json() as { id: string }
+            const jobId = String(data.id || "")
+            if (!jobId) {
+                throw new Error("Job queued but no job id was returned by the server.")
+            }
+
+            if (navigateOnSubmit) {
+                onSuccess()
+            } else {
+                setWizardJobId(jobId)
+                setWizardJobState('queued')
+                setWizardProgressPct(0)
+                setWizardProgressLabel("Queued")
+                setWizardTimeRemaining("Time remaining: --")
+                wizardJobStartRef.current = Date.now()
+                setStatus(`Render started. Job ${jobId.slice(0, 8)} is running.`)
+            }
+            return jobId
         } catch (err: any) {
             setError(err.message)
+            if (!navigateOnSubmit) {
+                setWizardJobState('failed')
+                setWizardJobError(String(err?.message || err))
+            }
+            return null
         } finally {
             setLoading(false)
         }
@@ -1425,6 +1601,27 @@ export default function RunTab({
         const parts = raw.split(/[/\\]/)
         return parts[parts.length - 1] || raw
     })()
+    const projectName = (() => {
+        const explicit = String(config.project.path || "").trim()
+        if (explicit) {
+            const parts = explicit.split(/[/\\]/)
+            const base = parts[parts.length - 1] || "project.vmhqproj"
+            return base.replace(/\.vmhqproj$/i, "")
+        }
+        const out = String(config.io.output_dir || "").trim()
+        if (!out) return "project"
+        const parts = out.split(/[/\\]/).filter(Boolean)
+        return parts[parts.length - 1] || "project"
+    })()
+
+    const handleSavePreset = () => {
+        try {
+            localStorage.setItem('videomatte_run_preset_latest', JSON.stringify(config))
+            setStatus(`Saved preset for project "${projectName}".`)
+        } catch {
+            setError("Failed to save preset in local storage.")
+        }
+    }
 
     const setWizardTightness = (sliderValue: number) => {
         const normalized = Math.max(0, Math.min(100, sliderValue))
@@ -1505,244 +1702,99 @@ export default function RunTab({
                     )}
 
                     {wizardStep === 1 && (
-                        <div className="space-y-3">
-                            <h3 className="text-lg font-semibold text-white">Let's start a new matte.</h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <Input
-                                    label="Input Video or Frame Sequence"
-                                    value={config.io.input}
-                                    onChange={e => updateConfig('io', 'input', e.target.value)}
-                                    placeholder="TestFiles\\6138680-uhd_3840_2160_24fps.mp4"
-                                    tooltip="Use a video path or frame pattern like frame_%05d.png."
-                                />
-                                <Input
-                                    label="Output Folder"
-                                    value={config.io.output_dir}
-                                    onChange={e => updateConfig('io', 'output_dir', e.target.value)}
-                                    tooltip="Where alpha frames and project files will be written."
-                                />
-                                <Input
-                                    label="Start Frame"
-                                    type="number"
-                                    value={config.io.frame_start}
-                                    onChange={e => updateConfig('io', 'frame_start', parseInt(e.target.value || "0"))}
-                                />
-                                <Input
-                                    label="End Frame (-1 = full clip)"
-                                    type="number"
-                                    value={config.io.frame_end}
-                                    onChange={e => updateConfig('io', 'frame_end', parseInt(e.target.value || "-1"))}
-                                />
-                            </div>
-                            {outputDirWarning && (
-                                <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
-                                    {outputDirWarning}
-                                </div>
-                            )}
-                            <div className="flex justify-end">
-                                <button
-                                    type="button"
-                                    disabled={!config.io.input}
-                                    onClick={() => setWizardStep(2)}
-                                    className="px-4 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    Next: Select Subject
-                                </button>
-                            </div>
-                        </div>
+                        <StepSetup
+                            input={config.io.input}
+                            outputDir={config.io.output_dir}
+                            frameStart={config.io.frame_start}
+                            frameEnd={config.io.frame_end}
+                            outputDirWarning={outputDirWarning}
+                            onInputChange={(v) => updateConfig('io', 'input', v)}
+                            onOutputDirChange={(v) => updateConfig('io', 'output_dir', v)}
+                            onFrameStartChange={(v) => updateConfig('io', 'frame_start', v)}
+                            onFrameEndChange={(v) => updateConfig('io', 'frame_end', v)}
+                            onNext={() => setWizardStep(2)}
+                        />
                     )}
 
                     {wizardStep === 2 && (
-                        <div className="space-y-3">
-                            <h3 className="text-lg font-semibold text-white">Who is the subject?</h3>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                                <Input
-                                    label="Keyframe Index"
-                                    type="number"
-                                    value={assignmentFrame}
-                                    onChange={e => setAssignmentFrame(parseInt(e.target.value || "0"))}
-                                />
-                                <Select
-                                    label="Anchor Type"
-                                    value={assignmentKind}
-                                    onChange={e => setAssignmentKind(e.target.value as 'initial' | 'correction')}
-                                    options={[
-                                        { value: 'initial', label: 'Initial Anchor' },
-                                        { value: 'correction', label: 'Correction Anchor' },
-                                    ]}
-                                />
-                                <Input
-                                    label="Prompt Text"
-                                    value={builderPrompt}
-                                    onChange={e => setBuilderPrompt(e.target.value)}
-                                    placeholder="person"
-                                />
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                                <button
-                                    type="button"
-                                    onClick={handleLoadBuilderFrame}
-                                    disabled={assignmentBusy}
-                                    className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-white text-sm disabled:opacity-50"
-                                >
-                                    {builderLoadingFrame ? "Loading..." : "Load Frame"}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={handleSuggestBuilderBoxes}
-                                    disabled={assignmentBusy || !builderFrameDataUrl}
-                                    className="px-3 py-2 rounded bg-purple-600 hover:bg-purple-500 text-white text-sm disabled:opacity-50"
-                                >
-                                    {builderSuggestingBoxes ? "Detecting..." : "Auto-Detect"}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={handleBuildMaskFromPrompts}
-                                    disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
-                                    className="px-3 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white text-sm disabled:opacity-50"
-                                >
-                                    {builderBuildingMask ? "Building..." : "Build Anchor Mask"}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={handleBuildMaskRangeFromPrompts}
-                                    disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
-                                    className="px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-sm disabled:opacity-50"
-                                >
-                                    {builderBuildingRange ? "Tracking..." : "Track Forward (Range)"}
-                                </button>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <div className="rounded border border-gray-700 p-2 bg-gray-900">
-                                    <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Frame Preview</div>
-                                    {builderFrameDataUrl ? (
-                                        <img src={builderFrameDataUrl} alt="frame preview" className="w-full rounded border border-gray-800" />
-                                    ) : (
-                                        <div className="text-xs text-gray-500 py-6 text-center">Load a frame to begin.</div>
-                                    )}
-                                </div>
-                                <div className="rounded border border-gray-700 p-2 bg-gray-900">
-                                    <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Mask Preview</div>
-                                    {builderMaskPreviewUrl ? (
-                                        <img src={builderMaskPreviewUrl} alt="mask preview" className="w-full rounded border border-gray-800" />
-                                    ) : (
-                                        <div className="text-xs text-gray-500 py-6 text-center">Build a mask to preview.</div>
-                                    )}
-                                </div>
-                            </div>
-                            <div className="rounded border border-gray-700 bg-gray-900 p-2">
-                                <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">Keyframes</div>
-                                <div className="text-sm text-gray-300">
-                                    {hasAssignment
-                                        ? `Loaded ${projectSummary?.keyframe_count ?? 0} keyframe assignment(s).`
-                                        : "No keyframes yet. Build or import at least one mask."}
-                                </div>
-                            </div>
-                            <div className="flex justify-between">
-                                <button
-                                    type="button"
-                                    onClick={() => setWizardStep(1)}
-                                    className="px-4 py-2 rounded border border-gray-700 bg-gray-900 text-gray-200 hover:bg-gray-800"
-                                >
-                                    Back
-                                </button>
-                                <button
-                                    type="button"
-                                    disabled={!hasAssignment}
-                                    onClick={() => setWizardStep(3)}
-                                    className="px-4 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    Next: Refine Edges
-                                </button>
-                            </div>
-                        </div>
+                        <StepSubject
+                            assignmentFrame={assignmentFrame}
+                            assignmentKind={assignmentKind}
+                            builderPrompt={builderPrompt}
+                            assignmentBusy={assignmentBusy}
+                            builderLoadingFrame={builderLoadingFrame}
+                            builderSuggestingBoxes={builderSuggestingBoxes}
+                            builderBuildingMask={builderBuildingMask}
+                            builderBuildingRange={builderBuildingRange}
+                            hasAssignment={hasAssignment}
+                            keyframeCount={projectSummary?.keyframe_count ?? 0}
+                            keyframes={(projectSummary?.keyframes || []).map((k) => ({
+                                frame: k.frame,
+                                kind: k.kind,
+                                mask_asset: k.mask_asset,
+                            }))}
+                            builderFrameDataUrl={builderFrameDataUrl}
+                            builderFrameSize={builderFrameSize}
+                            builderMaskPreviewUrl={builderMaskPreviewUrl}
+                            builderBox={builderBox}
+                            activeBuilderBox={activeBuilderBox}
+                            builderFgPoints={builderFgPoints}
+                            builderBgPoints={builderBgPoints}
+                            builderPointRadius={builderPointRadius}
+                            builderTool={builderTool}
+                            builderImgRef={builderImgRef}
+                            onBuilderToolChange={setBuilderTool}
+                            onAssignmentFrameChange={setAssignmentFrame}
+                            onAssignmentKindChange={setAssignmentKind}
+                            onBuilderPromptChange={setBuilderPrompt}
+                            onLoadFrame={handleLoadBuilderFrame}
+                            onAutoDetect={handleSuggestBuilderBoxes}
+                            onBuildMask={() => void handleBuildMaskFromPrompts()}
+                            onTrackForward={() => void handleBuildMaskRangeFromPrompts()}
+                            onBack={() => setWizardStep(1)}
+                            onNext={() => setWizardStep(3)}
+                            onMouseDown={handleBuilderMouseDown}
+                            onMouseMove={handleBuilderMouseMove}
+                            onMouseUp={handleBuilderMouseUp}
+                            onMouseLeave={handleBuilderMouseLeave}
+                            onClick={handleBuilderClick}
+                        />
                     )}
 
                     {wizardStep === 3 && (
-                        <div className="space-y-3">
-                            <h3 className="text-lg font-semibold text-white">How does it look?</h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <label className="rounded border border-gray-700 p-3 bg-gray-900 space-y-2">
-                                    <div className="text-sm text-gray-200 font-semibold">Edge Tightness</div>
-                                    <input
-                                        type="range"
-                                        min={0}
-                                        max={100}
-                                        step={1}
-                                        value={tightnessSliderValue}
-                                        onChange={e => setWizardTightness(parseInt(e.target.value || "0"))}
-                                        className="w-full"
-                                    />
-                                    <div className="text-xs text-gray-400">Loose &lt;-&gt; Tight</div>
-                                </label>
-                                <label className="rounded border border-gray-700 p-3 bg-gray-900 space-y-2">
-                                    <div className="text-sm text-gray-200 font-semibold">Edge Softness</div>
-                                    <input
-                                        type="range"
-                                        min={0}
-                                        max={100}
-                                        step={1}
-                                        value={softnessSliderValue}
-                                        onChange={e => setWizardSoftness(parseInt(e.target.value || "0"))}
-                                        className="w-full"
-                                    />
-                                    <div className="text-xs text-gray-400">Hard &lt;-&gt; Soft</div>
-                                </label>
-                            </div>
-                            <Switch
-                                label="Enable De-Spill"
-                                checked={Boolean(config.postprocess.despill.enabled)}
-                                onChange={v => updateNestedConfig('postprocess', 'despill', 'enabled', v)}
-                                tooltip="Reduces background color contamination on subject edges."
-                            />
-                            <div className="flex justify-between">
-                                <button
-                                    type="button"
-                                    onClick={() => setWizardStep(2)}
-                                    className="px-4 py-2 rounded border border-gray-700 bg-gray-900 text-gray-200 hover:bg-gray-800"
-                                >
-                                    Back
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setWizardStep(4)}
-                                    className="px-4 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white font-semibold"
-                                >
-                                    Next: Render
-                                </button>
-                            </div>
-                        </div>
+                        <StepRefine
+                            tightnessSliderValue={tightnessSliderValue}
+                            softnessSliderValue={softnessSliderValue}
+                            despillEnabled={Boolean(config.postprocess.despill.enabled)}
+                            rawPreviewUrl={builderFrameDataUrl}
+                            alphaPreviewUrl={builderMaskPreviewUrl}
+                            onTightnessChange={setWizardTightness}
+                            onSoftnessChange={setWizardSoftness}
+                            onDespillChange={(v) => updateNestedConfig('postprocess', 'despill', 'enabled', v)}
+                            onBack={() => setWizardStep(2)}
+                            onNext={() => setWizardStep(4)}
+                        />
                     )}
 
                     {wizardStep === 4 && (
-                        <div className="space-y-3">
-                            <h3 className="text-lg font-semibold text-white">Ready to Process</h3>
-                            <div className="rounded border border-gray-700 bg-gray-900 p-3 text-sm text-gray-300">
-                                Processing <span className="font-semibold text-white">{inputBasename}</span> from frame{" "}
-                                <span className="font-semibold text-white">{config.io.frame_start}</span> to{" "}
-                                <span className="font-semibold text-white">
-                                    {config.io.frame_end >= 0 ? config.io.frame_end : "end"}
-                                </span>.
-                            </div>
-                            <div className="flex justify-between">
-                                <button
-                                    type="button"
-                                    onClick={() => setWizardStep(3)}
-                                    className="px-4 py-2 rounded border border-gray-700 bg-gray-900 text-gray-200 hover:bg-gray-800"
-                                >
-                                    Back
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => void submitPipelineJob()}
-                                    disabled={loading || !config.io.input || (config.assignment.require_assignment && !hasAssignment)}
-                                    className="px-5 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                                >
-                                    {loading ? <FaSpinner className="animate-spin" /> : <FaPlay />}
-                                    Start Render
-                                </button>
-                            </div>
-                        </div>
+                        <StepRender
+                            inputBasename={inputBasename}
+                            frameStart={config.io.frame_start}
+                            frameEnd={config.io.frame_end}
+                            loading={loading}
+                            canStart={Boolean(config.io.input) && (!config.assignment.require_assignment || hasAssignment)}
+                            jobId={wizardJobId}
+                            jobState={wizardJobState}
+                            progressPct={wizardProgressPct}
+                            progressLabel={wizardProgressLabel}
+                            timeRemaining={wizardTimeRemaining}
+                            jobError={wizardJobError}
+                            onBack={() => setWizardStep(3)}
+                            onStart={() => void submitPipelineJob({ navigateOnSubmit: false })}
+                            onLaunchQC={() => {
+                                if (onLaunchQC) onLaunchQC()
+                            }}
+                        />
                     )}
                 </div>
             </WizardLayout>
@@ -1758,8 +1810,20 @@ export default function RunTab({
             onStageClick={scrollToRunStage}
             onSwitchToWizard={() => setRunViewMode('wizard')}
             showLeftNav={false}
+            rightPanelCollapsed={rightPanelCollapsed}
+            onToggleRightPanel={() => setRightPanelCollapsed((v) => !v)}
             headerActions={
                 <div className="flex items-center gap-2">
+                    <div className="hidden lg:block text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 bg-gray-900">
+                        Project: <span className="text-gray-200 font-semibold">{projectName}</span>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={handleSavePreset}
+                        className="px-3 py-2 rounded border border-gray-700 bg-gray-900 text-gray-200 text-xs hover:bg-gray-800"
+                    >
+                        Save Preset
+                    </button>
                     {!showAdvanced && (
                         <div className="text-xs text-gray-500 italic bg-gray-800 px-2 py-1 rounded">
                             Advanced hidden
@@ -1786,6 +1850,40 @@ export default function RunTab({
             rightPanel={
                 <div className="space-y-3">
                     <div>
+                        <div className="text-xs uppercase tracking-wide text-gray-500">Mini Job Queue</div>
+                        <div className="mt-1 space-y-1 max-h-32 overflow-auto border border-gray-700 rounded p-2 bg-gray-900/40">
+                            {recentJobs.length === 0 ? (
+                                <div className="text-xs text-gray-500">No jobs yet.</div>
+                            ) : (
+                                recentJobs.map((job) => (
+                                    <div key={job.id} className="flex items-center justify-between text-xs">
+                                        <span className="font-mono text-gray-300">{job.id.slice(0, 8)}</span>
+                                        <span
+                                            className={
+                                                job.status === 'completed'
+                                                    ? 'text-green-400'
+                                                    : job.status === 'failed'
+                                                        ? 'text-red-400'
+                                                        : job.status === 'running'
+                                                            ? 'text-brand-300'
+                                                            : 'text-gray-400'
+                                            }
+                                        >
+                                            {job.status}
+                                        </span>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                        <button
+                            type="button"
+                            onClick={onSuccess}
+                            className="mt-2 w-full text-xs rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-gray-200 hover:bg-gray-800"
+                        >
+                            Open Job Queue
+                        </button>
+                    </div>
+                    <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Assignments</div>
                         <div className="text-sm text-gray-200">
                             {hasAssignment ? `${projectSummary?.keyframe_count ?? 0} keyframe(s)` : 'None yet'}
@@ -1797,8 +1895,8 @@ export default function RunTab({
                     </div>
                     <div>
                         <div className="text-xs uppercase tracking-wide text-gray-500">Context Help</div>
-                        <p className="text-xs text-gray-400">
-                            Hover over controls to view parameter descriptions.
+                        <p className="text-xs text-gray-300 border border-gray-700 rounded p-2 bg-gray-900/50 min-h-[72px]">
+                            {contextHelpText}
                         </p>
                     </div>
                 </div>
@@ -1820,8 +1918,7 @@ export default function RunTab({
                 <form id="run-job-form" onSubmit={handleSubmit} className="space-y-3">
                     <div className="space-y-2">
                 {/* 1. IO Section */}
-                <div id="run-step-io" className="scroll-mt-28">
-                <Section title="Video Input and Output" defaultOpen={true} tooltip="Set source media, output folder, frame range, and alpha format.">
+                <IOSection>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         {/* Drop zone for input file */}
                         <div
@@ -1897,45 +1994,51 @@ export default function RunTab({
                             ]}
                             tooltip="Camera motion type. 'Locked Off' assumes a static camera."
                         />
-                        <div className="grid grid-cols-2 gap-2">
-                            <Select
-                                label="Alpha Format"
-                                value={config.io.alpha_format}
-                                onChange={e => updateConfig('io', 'alpha_format', e.target.value)}
-                                options={[
-                                    { value: 'png16', label: 'PNG 16-bit' },
-                                    { value: 'png8', label: 'PNG 8-bit' },
-                                    { value: 'dwaa', label: 'EXR DWAA' }
-                                ]}
-                                tooltip="File format for the alpha matte."
-                            />
-                            <Input
-                                label="EXR Compression Quality"
-                                type="number"
-                                step="0.1"
-                                value={config.io.alpha_dwaa_quality}
-                                onChange={e => updateConfig('io', 'alpha_dwaa_quality', parseFloat(e.target.value))}
-                                tooltip="Compression quality for EXR DWAA. Higher is better."
-                            />
-                        </div>
-                        <Switch
-                            label="Force Overwrite"
-                            checked={config.io.force_overwrite}
-                            onChange={v => updateConfig('io', 'force_overwrite', v)}
-                            tooltip="Overwrite existing files in the output directory."
-                        />
+                        {showAdvanced ? (
+                            <>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <Select
+                                        label="Alpha Format"
+                                        value={config.io.alpha_format}
+                                        onChange={e => updateConfig('io', 'alpha_format', e.target.value)}
+                                        options={[
+                                            { value: 'png16', label: 'PNG 16-bit' },
+                                            { value: 'png8', label: 'PNG 8-bit' },
+                                            { value: 'dwaa', label: 'EXR DWAA' }
+                                        ]}
+                                        tooltip="File format for the alpha matte."
+                                    />
+                                    <Input
+                                        label="EXR Compression Quality"
+                                        type="number"
+                                        step="0.1"
+                                        value={config.io.alpha_dwaa_quality}
+                                        onChange={e => updateConfig('io', 'alpha_dwaa_quality', parseFloat(e.target.value))}
+                                        tooltip="Compression quality for EXR DWAA. Higher is better."
+                                    />
+                                </div>
+                                <Switch
+                                    label="Force Overwrite"
+                                    checked={config.io.force_overwrite}
+                                    onChange={v => updateConfig('io', 'force_overwrite', v)}
+                                    tooltip="Overwrite existing files in the output directory."
+                                />
+                            </>
+                        ) : (
+                            <div className="md:col-span-2 text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                Basic mode uses PNG 16-bit alpha format and keeps overwrite protection on.
+                            </div>
+                        )}
                         {outputDirWarning && (
                             <div className="md:col-span-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
                                 {outputDirWarning}
                             </div>
                         )}
                     </div>
-                </Section>
-                </div>
+                </IOSection>
 
                 {/* 2. Subject Assignment */}
-                <div id="run-step-assignment" className="scroll-mt-28">
-                <Section title="Subject Mask Setup" defaultOpen={true} tooltip="Create subject masks from your video. Importing external masks is optional.">
+                <MaskSection>
                     <div className="space-y-3">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                             <Input
@@ -1958,16 +2061,22 @@ export default function RunTab({
                                 onChange={e => setAssignmentFrame(parseInt(e.target.value || "0"))}
                                 tooltip="Frame index this mask corresponds to."
                             />
-                            <Select
-                                label="Assignment Source"
-                                value={assignmentSourceMode}
-                                onChange={e => setAssignmentSourceMode(e.target.value as AssignmentSourceMode)}
-                                options={[
-                                    { value: 'generate', label: 'Generate From Video (Default)' },
-                                    { value: 'import', label: 'Import Existing Mask File' },
-                                ]}
-                                tooltip="Use Generate From Video for the normal workflow. Switch to Import only when you already have a mask image."
-                            />
+                            {showAdvanced ? (
+                                <Select
+                                    label="Assignment Source"
+                                    value={assignmentSourceMode}
+                                    onChange={e => setAssignmentSourceMode(e.target.value as AssignmentSourceMode)}
+                                    options={[
+                                        { value: 'generate', label: 'Generate From Video (Default)' },
+                                        { value: 'import', label: 'Import Existing Mask File' },
+                                    ]}
+                                    tooltip="Use Generate From Video for the normal workflow. Switch to Import only when you already have a mask image."
+                                />
+                            ) : (
+                                <div className="rounded border border-gray-700 px-3 py-2 text-xs text-gray-300 flex items-center">
+                                    Source is locked to Generate From Video. Enable Advanced to import external masks.
+                                </div>
+                            )}
                             <Select
                                 label="Anchor type"
                                 value={assignmentKind}
@@ -1990,7 +2099,7 @@ export default function RunTab({
                                     tooltip="Single creates one keyframe mask. Multiple builds masks across a frame range."
                                 />
                             )}
-                            {assignmentSourceMode === 'import' && (
+                            {showAdvanced && assignmentSourceMode === 'import' && (
                                 <Input
                                     label="Mask Path"
                                     value={assignmentMaskPath}
@@ -1999,15 +2108,17 @@ export default function RunTab({
                                     tooltip="Filesystem path to keyframe mask image."
                                 />
                             )}
-                            <Switch
-                                label="Auto-apply suggested reprocess range"
-                                checked={autoApplySuggestedRange}
-                                onChange={setAutoApplySuggestedRange}
-                                tooltip="When you import a correction mask, automatically set the frame range that should be reprocessed."
-                            />
+                            {showAdvanced && (
+                                <Switch
+                                    label="Auto-apply suggested reprocess range"
+                                    checked={autoApplySuggestedRange}
+                                    onChange={setAutoApplySuggestedRange}
+                                    tooltip="When you import a correction mask, automatically set the frame range that should be reprocessed."
+                                />
+                            )}
                         </div>
                         <div className="flex gap-2">
-                            {assignmentSourceMode === 'import' && (
+                            {showAdvanced && assignmentSourceMode === 'import' && (
                                 <button
                                     type="button"
                                     onClick={handleImportAssignment}
@@ -2309,93 +2420,23 @@ export default function RunTab({
                                     )}
                                 </div>
                             )}
-                            {builderFrameDataUrl && builderFrameSize ? (
-                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                                    <div>
-                                        <div className="text-xs text-gray-400 mb-1">
-                                            Step 1: Prompt auto-detect or draw a subject box. Step 2: Add FG/BG points if needed.
-                                        </div>
-                                        <div className="text-[11px] text-gray-500 mb-1">
-                                            Shortcuts: <span className="font-mono">F</span> foreground point, <span className="font-mono">B</span> background point, <span className="font-mono">Enter</span> build mask.
-                                        </div>
-                                        <div
-                                            className={`relative inline-block border border-gray-700 rounded overflow-hidden ${builderTool === 'box' ? 'cursor-crosshair' : 'cursor-cell'}`}
-                                            onMouseDown={handleBuilderMouseDown}
-                                            onMouseMove={handleBuilderMouseMove}
-                                            onMouseUp={handleBuilderMouseUp}
-                                            onMouseLeave={handleBuilderMouseLeave}
-                                            onClick={handleBuilderClick}
-                                        >
-                                            <img
-                                                ref={builderImgRef}
-                                                src={builderFrameDataUrl}
-                                                alt="Assignment frame preview"
-                                                className="block max-h-[420px] w-auto select-none"
-                                                draggable={false}
-                                            />
-                                            <svg
-                                                className="absolute inset-0 w-full h-full pointer-events-none"
-                                                viewBox={`0 0 ${builderFrameSize.width} ${builderFrameSize.height}`}
-                                                preserveAspectRatio="xMinYMin meet"
-                                            >
-                                                {activeBuilderBox && (
-                                                    <rect
-                                                        x={Math.min(activeBuilderBox.x0, activeBuilderBox.x1)}
-                                                        y={Math.min(activeBuilderBox.y0, activeBuilderBox.y1)}
-                                                        width={Math.max(1, Math.abs(activeBuilderBox.x1 - activeBuilderBox.x0))}
-                                                        height={Math.max(1, Math.abs(activeBuilderBox.y1 - activeBuilderBox.y0))}
-                                                        fill="rgba(56, 189, 248, 0.18)"
-                                                        stroke="rgb(56, 189, 248)"
-                                                        strokeWidth={2}
-                                                    />
-                                                )}
-                                                {builderFgPoints.map((p, idx) => (
-                                                    <circle
-                                                        key={`fg-${idx}`}
-                                                        cx={p.x}
-                                                        cy={p.y}
-                                                        r={Math.max(2, builderPointRadius)}
-                                                        fill="rgba(34, 197, 94, 0.55)"
-                                                        stroke="rgb(34, 197, 94)"
-                                                        strokeWidth={1.5}
-                                                    />
-                                                ))}
-                                                {builderBgPoints.map((p, idx) => (
-                                                    <circle
-                                                        key={`bg-${idx}`}
-                                                        cx={p.x}
-                                                        cy={p.y}
-                                                        r={Math.max(2, builderPointRadius)}
-                                                        fill="rgba(239, 68, 68, 0.55)"
-                                                        stroke="rgb(239, 68, 68)"
-                                                        strokeWidth={1.5}
-                                                    />
-                                                ))}
-                                            </svg>
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <div className="text-xs text-gray-400 mb-1">
-                                            Prompt summary: box={builderBox ? "yes" : "no"}, FG points={builderFgPoints.length}, BG points={builderBgPoints.length}
-                                        </div>
-                                        {builderMaskPreviewUrl ? (
-                                            <img
-                                                src={builderMaskPreviewUrl}
-                                                alt="Built mask preview"
-                                                className="block max-h-[420px] w-auto border border-gray-700 rounded"
-                                            />
-                                        ) : (
-                                            <div className="h-[220px] border border-dashed border-gray-700 rounded flex items-center justify-center text-xs text-gray-500 px-3 text-center">
-                                                Built mask preview appears here after you click "Build + Import Mask".
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="text-xs text-gray-500">
-                                    Click "Load Frame" to start building an initial mask from box and points.
-                                </div>
-                            )}
+                            <MaskBuilder
+                                frameDataUrl={builderFrameDataUrl}
+                                frameSize={builderFrameSize}
+                                maskPreviewUrl={builderMaskPreviewUrl}
+                                builderBox={builderBox}
+                                activeBuilderBox={activeBuilderBox}
+                                fgPoints={builderFgPoints}
+                                bgPoints={builderBgPoints}
+                                pointRadius={builderPointRadius}
+                                builderTool={builderTool}
+                                imageRef={builderImgRef}
+                                onMouseDown={handleBuilderMouseDown}
+                                onMouseMove={handleBuilderMouseMove}
+                                onMouseUp={handleBuilderMouseUp}
+                                onMouseLeave={handleBuilderMouseLeave}
+                                onClick={handleBuilderClick}
+                            />
                         </div>
                         )}
                         <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
@@ -2452,38 +2493,8 @@ export default function RunTab({
                                     tooltip="Cap how many propagated correction anchors are added."
                                 />
                             </div>
-                            <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                                <Input
-                                    label="Flow Downscale"
-                                    type="number"
-                                    step="0.05"
-                                    value={propagateFlowDownscale}
-                                    onChange={e => setPropagateFlowDownscale(parseFloat(e.target.value || "0.5"))}
-                                    tooltip="Smaller is faster; larger can track finer motion."
-                                />
-                                <Input
-                                    label="Min Coverage"
-                                    type="number"
-                                    step="0.001"
-                                    value={propagateFlowMinCoverage}
-                                    onChange={e => setPropagateFlowMinCoverage(parseFloat(e.target.value || "0.002"))}
-                                    tooltip="Reject propagated masks that become too small."
-                                />
-                                <Input
-                                    label="Max Coverage"
-                                    type="number"
-                                    step="0.01"
-                                    value={propagateFlowMaxCoverage}
-                                    onChange={e => setPropagateFlowMaxCoverage(parseFloat(e.target.value || "0.98"))}
-                                    tooltip="Reject propagated masks that become unrealistically large."
-                                />
-                                <Input
-                                    label="Flow Feather (px)"
-                                    type="number"
-                                    value={propagateFlowFeatherPx}
-                                    onChange={e => setPropagateFlowFeatherPx(parseInt(e.target.value || "1"))}
-                                    tooltip="Softening applied during propagation smoothing."
-                                />
+                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                Flow guard rails are fixed to production defaults (downscale 0.5, coverage 0.002..0.98, feather 1 px).
                             </div>
                             {propagateBackend === 'samurai_video_predictor' && (
                                 <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
@@ -2563,8 +2574,7 @@ export default function RunTab({
                             </div>
                         )}
                     </div>
-                </Section>
-                </div>
+                </MaskSection>
 
                 {/* 3. Memory Propagation */}
                 <div id="run-step-memory" className="scroll-mt-28">
@@ -2969,12 +2979,11 @@ export default function RunTab({
                 )}
 
                 {/* 7. Refine */}
-                <div id="run-step-refine" className="scroll-mt-28">
-                <Section title="Edge Detail Refinement" tooltip="Boundary-focused refinement using MEMatte at full-resolution tiles.">
+                <RefineSection>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         {showAdvanced ? (
                             <Select
-                                label="Refine Backend"
+                                label="Edge Refinement Engine"
                                 value={config.refine.backend || 'mematte'}
                                 onChange={e => updateConfig('refine', 'backend', e.target.value)}
                                 options={[
@@ -3014,18 +3023,6 @@ export default function RunTab({
                     {config.refine.backend === 'mematte' && showAdvanced && (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 mt-3">
                             <Input
-                                label="MEMatte Repo Dir"
-                                value={config.refine.mematte_repo_dir || ''}
-                                onChange={e => updateConfig('refine', 'mematte_repo_dir', e.target.value)}
-                                tooltip="Path to the MEMatte repository folder."
-                            />
-                            <Input
-                                label="MEMatte Checkpoint"
-                                value={config.refine.mematte_checkpoint || ''}
-                                onChange={e => updateConfig('refine', 'mematte_checkpoint', e.target.value)}
-                                tooltip="Path to MEMatte checkpoint (.pth)."
-                            />
-                            <Input
                                 label="MEMatte Max Tokens"
                                 type="number"
                                 value={config.refine.mematte_max_number_token ?? 18500}
@@ -3042,6 +3039,9 @@ export default function RunTab({
                                 ]}
                                 tooltip="Enable MEMatte patch decoder mode."
                             />
+                            <div className="md:col-span-2 text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                MEMatte model files are auto-discovered from defaults; model path fields are intentionally hidden.
+                            </div>
                         </div>
                     )}
                     {config.refine.backend === 'mematte' && !showAdvanced && (
@@ -3049,8 +3049,7 @@ export default function RunTab({
                             MEMatte model paths and token settings are hidden in basic view and auto-resolved from defaults.
                         </div>
                     )}
-                </Section>
-                </div>
+                </RefineSection>
 
                 <div id="run-step-tuning" className="scroll-mt-28">
                 <Section
