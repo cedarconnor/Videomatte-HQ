@@ -3,6 +3,7 @@
 import base64
 import logging
 import re
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -206,6 +207,38 @@ def _normalize_sam2_backend_name(backend: str) -> str:
     raise ValueError(
         "Only SAM2/Samurai video predictor backend is supported for this workflow. "
         f"Received backend='{backend}'."
+    )
+
+
+def _is_runtime_dependency_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    hints = (
+        "winerror 127",
+        "c10_cuda.dll",
+        "torchvision",
+        "torch._c",
+        "torch cuda",
+        "sam2 runtime unavailable",
+        "samurai backend unavailable",
+        "failed to initialize samurai",
+        "could not import sam2",
+    )
+    return any(hint in text for hint in hints)
+
+
+def _format_runtime_dependency_detail(exc: Exception, *, context: str) -> str:
+    message = str(exc or "").strip() or exc.__class__.__name__
+    if not _is_runtime_dependency_error(exc):
+        return message
+    return (
+        f"{context} failed: {message}\n"
+        "\n"
+        "Runtime dependency issue detected (PyTorch/SAM2/Samurai).\n"
+        f"Backend interpreter: {sys.executable}\n"
+        "Use the project venv and verify:\n"
+        "  .\\.venv\\Scripts\\python -c \"import torch, torchvision; import importlib; importlib.import_module('sam2.build_sam')\"\n"
+        "If that command fails, reinstall matching CUDA wheels:\n"
+        "  .\\.venv\\Scripts\\pip install --upgrade --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128"
     )
 
 
@@ -493,7 +526,10 @@ async def build_assignment_mask(req: BuildAssignmentMaskRequest):
         }
     except Exception as e:
         logger.exception("Failed to build assignment mask")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=(503 if _is_runtime_dependency_error(e) else 400),
+            detail=_format_runtime_dependency_detail(e, context="Build assignment mask"),
+        )
 
 
 @app.post("/api/assignments/build-mask-range")
@@ -651,7 +687,10 @@ async def build_assignment_mask_range(req: BuildAssignmentMaskRangeRequest):
             source.close()
     except Exception as e:
         logger.exception("Failed to build assignment mask range")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=(503 if _is_runtime_dependency_error(e) else 400),
+            detail=_format_runtime_dependency_detail(e, context="Build assignment mask range"),
+        )
 
 
 @app.post("/api/assignments/suggest-boxes")
@@ -850,7 +889,10 @@ async def propagate_assignment_masks(req: PropagateAssignmentMasksRequest):
             source.close()
     except Exception as e:
         logger.exception("Failed to propagate assignment masks")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=(503 if _is_runtime_dependency_error(e) else 400),
+            detail=_format_runtime_dependency_detail(e, context="Propagate assignment masks"),
+        )
 
 
 @app.get("/api/jobs/{job_id}")

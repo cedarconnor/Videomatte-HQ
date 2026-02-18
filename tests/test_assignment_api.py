@@ -279,6 +279,60 @@ async def test_assignment_mask_builder_sam_range_with_prompt_tracking(
 
 
 @pytest.mark.anyio
+async def test_assignment_mask_builder_range_surfaces_runtime_dependency_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    frame = np.zeros((64, 96, 3), dtype=np.uint8)
+    frame[16:52, 24:60, :] = 220
+    assert cv2.imwrite(str(frames_dir / "frame_00000.png"), frame)
+
+    out_dir = tmp_path / "out_builder_runtime_hint"
+    cfg = VideoMatteConfig(
+        io={
+            "input": "frames/frame_%05d.png",
+            "output_dir": str(out_dir),
+            "output_alpha": "alpha/%05d.png",
+            "frame_start": 0,
+            "frame_end": 0,
+        },
+        assignment={"require_assignment": True},
+        project={"path": str(out_dir / "project.vmhqproj")},
+    )
+
+    import videomatte_hq_web.server as server_mod
+
+    def _raise_runtime_error(**kwargs):
+        raise RuntimeError("OSError: [WinError 127] The specified procedure could not be found (c10_cuda.dll)")
+
+    monkeypatch.setattr(server_mod, "build_prompt_masks_range", _raise_runtime_error)
+
+    with pytest.raises(Exception) as exc:
+        await build_assignment_mask_range(
+            BuildAssignmentMaskRangeRequest(
+                config=cfg.model_dump(mode="json"),
+                anchor_frame=0,
+                frame_start=0,
+                frame_end=0,
+                backend="sam2_video_predictor",
+                box=PromptBox(x0=20, y0=10, x1=62, y1=56),
+                fg_points=[PromptPoint(x=34, y=34)],
+                bg_points=[PromptPoint(x=4, y=4)],
+                save_stride=1,
+                kind="initial",
+            )
+        )
+    err_text = str(exc.value)
+    assert "Runtime dependency issue detected" in err_text
+    assert "WinError 127" in err_text
+    assert ".venv\\Scripts\\python" in err_text
+
+
+@pytest.mark.anyio
 async def test_assignment_phase4_propagation_flow_inserts_keyframes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

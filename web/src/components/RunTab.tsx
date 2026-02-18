@@ -411,7 +411,7 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
     const [assignmentLoading, setAssignmentLoading] = useState(false)
     const [assignmentKind, setAssignmentKind] = useState<'initial' | 'correction'>('initial')
     const [assignmentSourceMode, setAssignmentSourceMode] = useState<AssignmentSourceMode>('generate')
-    const [builderWorkflowMode, setBuilderWorkflowMode] = useState<BuilderWorkflowMode>('single')
+    const [builderWorkflowMode, setBuilderWorkflowMode] = useState<BuilderWorkflowMode>('multiple')
     const [autoApplySuggestedRange, setAutoApplySuggestedRange] = useState(true)
     const [suggestedRange, setSuggestedRange] = useState<SuggestedReprocessRange | null>(null)
     const [builderTool, setBuilderTool] = useState<BuilderTool>('box')
@@ -748,6 +748,69 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
 
         setBuilderBuildingMask(true)
         try {
+            if (builderWorkflowMode === 'multiple') {
+                const res = await fetch('/api/assignments/build-mask-range', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        config,
+                        anchor_frame: assignmentFrame,
+                        frame_start: assignmentFrame,
+                        frame_end: assignmentFrame,
+                        box: builderBox,
+                        fg_points: builderFgPoints,
+                        bg_points: builderBgPoints,
+                        backend: builderRangeBackend,
+                        point_radius: builderPointRadius,
+                        iter_count: builderIterCount,
+                        sam_model_id: builderSamModelId,
+                        sam_local_files_only: builderSamLocalOnly,
+                        sam_fallback_to_grabcut: builderSamFallbackToGrabcut,
+                        samurai_model_cfg: builderSamuraiModelCfg,
+                        samurai_checkpoint: builderSamuraiCheckpoint,
+                        samurai_offload_video_to_cpu: builderSamuraiOffloadVideoToCpu,
+                        samurai_offload_state_to_cpu: builderSamuraiOffloadStateToCpu,
+                        track_prompts_with_flow: false,
+                        track_bg_points_with_flow: false,
+                        flow_downscale: builderRangeFlowDownscale,
+                        save_stride: 1,
+                        kind: assignmentKind,
+                        source: "ui_builder_anchor",
+                        overwrite_existing: true,
+                    }),
+                })
+                if (!res.ok) throw new Error(await parseApiError(res))
+                const data = await res.json() as {
+                    project_path: string
+                    keyframe_count: number
+                    keyframes: ProjectKeyframe[]
+                    require_assignment: boolean
+                    inserted_count?: number
+                    backend_used?: string
+                    builder_note?: string | null
+                    suggested_reprocess_range?: SuggestedReprocessRange
+                }
+                setProjectSummary({
+                    project_path: data.project_path,
+                    keyframe_count: data.keyframe_count,
+                    keyframes: data.keyframes || [],
+                    require_assignment: data.require_assignment ?? true,
+                })
+                const backendUsedLabel = data.backend_used ? ` (${data.backend_used})` : ""
+                const inserted = data.inserted_count ?? 0
+                setStatus(`Built and imported anchor mask${backendUsedLabel} at frame ${assignmentFrame} (inserted ${inserted} keyframe).`)
+                if (data.builder_note) {
+                    setStatus(prev => prev ? `${prev} ${data.builder_note}` : data.builder_note || null)
+                }
+                if (data.suggested_reprocess_range) {
+                    setSuggestedRange(data.suggested_reprocess_range)
+                    if (assignmentKind === 'correction' && autoApplySuggestedRange) {
+                        applySuggestedRange(data.suggested_reprocess_range)
+                    }
+                }
+                return
+            }
+
             const res = await fetch('/api/assignments/build-mask', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1531,16 +1594,22 @@ export default function RunTab({ onSuccess, focusStep, focusStepNonce }: RunTabP
                                 </div>
                             )}
                             <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                                <Select
-                                    label="Mask Builder Backend"
-                                    value={builderBackend}
-                                    onChange={e => setBuilderBackend(e.target.value as BuilderBackend)}
-                                    options={[
-                                        { value: 'grabcut', label: 'GrabCut (Fast)' },
-                                        { value: 'sam', label: 'SAM (Phase 3)' },
-                                    ]}
-                                    tooltip="Phase 3: optional SAM backend for higher-quality prompt masks."
-                                />
+                                {builderWorkflowMode === 'single' ? (
+                                    <Select
+                                        label="Mask Builder Backend"
+                                        value={builderBackend}
+                                        onChange={e => setBuilderBackend(e.target.value as BuilderBackend)}
+                                        options={[
+                                            { value: 'grabcut', label: 'GrabCut (Fast)' },
+                                            { value: 'sam', label: 'SAM (Phase 3)' },
+                                        ]}
+                                        tooltip="Single-frame mode only. Multiple-frame mode is locked to SAM2/Samurai."
+                                    />
+                                ) : (
+                                    <div className="rounded border border-gray-700 px-3 py-2 text-xs text-gray-300 flex items-center">
+                                        Anchor backend is locked to SAM2/Samurai video predictor in Multiple Mask Frames mode.
+                                    </div>
+                                )}
                                 <Select
                                     label="Builder Tool"
                                     value={builderTool}

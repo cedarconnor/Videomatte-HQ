@@ -55,12 +55,11 @@ In the **Run Job** tab:
     - If you do not have a mask image, use **Initial Mask Builder (Phase 3)**:
       - Click **Load Frame**
       - (Optional) Enter a prompt like `person` and click **Suggest Boxes**
-      - Keep backend on **GrabCut** for fastest setup (or try **SAM** for cleaner edges)
       - Draw one box around the subject
       - Add a few FG points on the subject and BG points on the background (if needed)
-      - Click **Build + Import Mask**
-      - If the subject moves a lot, use **Range Backend = SAM2/Samurai Video Predictor** and click **Build + Import Range**
-      - Set **Samurai Model Cfg Path** and **Samurai Checkpoint Path** before the range build
+      - Click **Build Anchor Mask** (locked to SAM2/Samurai in Multiple Mask Frames mode)
+      - If the subject moves a lot, click **Build + Import Range** (also SAM2/Samurai)
+      - Set **Samurai Model Cfg Path** and **Samurai Checkpoint Path** before building
     - Optional after your first keyframe is imported/built: use **Phase 4: Long-Range Propagation Assist**
       - The current **Keyframe Index** is used as the anchor
       - Backend is **SAM2/Samurai Video Predictor** (set model cfg/checkpoint first)
@@ -145,8 +144,12 @@ Use a correction keyframe:
   - Increase **BBox Margin** slowly only if limbs are getting clipped
   - Enable **Debug Stage Exports** and check if `stage2_memory` is where leakage starts
 - If the mask builder or pipeline features fail with errors:
-  - Make sure you ran `run_web.bat` from the project folder (it activates the venv automatically)
+  - Make sure you ran `run_web.bat` from the project folder (it uses the local `.venv` Python)
   - Check that both servers are running (backend on port 8000, frontend on port 5173)
+  - Verify runtime manually:
+    - `.\.venv\Scripts\python -c "import torch, torchvision; import importlib; importlib.import_module('sam2.build_sam')"`
+  - If that command fails with `WinError 127` or `c10_cuda.dll`:
+    - `.\.venv\Scripts\pip install --upgrade --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128`
 - If `mematte` backend fails to start:
   - Confirm `third_party/MEMatte` exists
   - Confirm checkpoint file path exists

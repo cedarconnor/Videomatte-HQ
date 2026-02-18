@@ -238,9 +238,9 @@ Configure and launch a new matting job. All pipeline settings are exposed in col
 
 - **Input / Output** — video path (drag-and-drop or type), output directory, alpha pattern, frame range, alpha format (PNG 8/16-bit, EXR), shot type, DWAA quality
 - **Subject Assignment (Mask-First)** — project file, keyframe index, anchor type (`initial`/`correction`), mask import, auto-apply suggested reprocess range
-- **Initial Mask Builder (Phase 3)** — load a frame, auto-detect subjects with text prompts (`Suggest Boxes`), draw/adjust box, add FG/BG points, choose backend (`GrabCut` or optional `SAM`), build + import mask
-- **Stage 1 Prompt Range Build** — from the same prompts (box + FG/BG points), build and import masks across a selected frame range (`Samurai Video Predictor` or per-frame `SAM`)
-- **Phase 4: Long-Range Propagation Assist** — generate additional correction anchors from one keyframe over a range (`Samurai Video Predictor`, `Flow`, `SAM2VideoPredictor`, `Cutie` with fallback-to-flow)
+- **Initial Mask Builder (Phase 3)** — load a frame, auto-detect subjects with text prompts (`Suggest Boxes`), draw/adjust box, add FG/BG points, then build/import an anchor mask
+- **Stage 1 Prompt Range Build** — locked to `SAM2/Samurai Video Predictor` for anchor and range mask generation from prompts
+- **Phase 4: Long-Range Propagation Assist** — locked to `SAM2/Samurai Video Predictor` for adding correction anchors across a range
 - **Memory Propagation (Stage 2)** — coarse alpha controls and optional full-range region constraint settings (`propagated_bbox`, `propagated_mask`, or `nearest_keyframe_bbox`)
 - **Background Plate** — background estimation settings
 - **ROI & Tracking** — region-of-interest and tracking configuration
