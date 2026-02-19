@@ -52,6 +52,44 @@ def _inject_edge_jitter(clean: list[np.ndarray], seed: int = 7) -> list[np.ndarr
     return out
 
 
+def _build_global_translation_sequence(
+    num_frames: int,
+    h: int = 72,
+    w: int = 112,
+    dx: int = 2,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    yy, xx = np.mgrid[0:h, 0:w]
+    base_rgb = np.zeros((h, w, 3), dtype=np.float32)
+    base_rgb[..., 0] = 0.18 + 0.32 * np.sin(xx / 7.0) * np.cos(yy / 11.0)
+    base_rgb[..., 1] = 0.24 + 0.28 * np.cos(xx / 9.0)
+    base_rgb[..., 2] = 0.20 + 0.30 * np.sin((xx + yy) / 13.0)
+    base_rgb = np.clip(base_rgb, 0.0, 1.0).astype(np.float32)
+
+    base_alpha = np.zeros((h, w), dtype=np.float32)
+    base_alpha[12:60, 24:72] = 1.0
+    base_alpha = cv2.GaussianBlur(base_alpha, (0, 0), sigmaX=1.2).astype(np.float32)
+
+    frames: list[np.ndarray] = []
+    alphas: list[np.ndarray] = []
+    for t in range(num_frames):
+        shift = int(t * dx)
+        frames.append(np.roll(base_rgb, shift=shift, axis=1))
+        alphas.append(np.roll(base_alpha, shift=shift, axis=1))
+    return frames, alphas
+
+
+def _inject_translation_edge_noise(clean: list[np.ndarray], seed: int = 31) -> list[np.ndarray]:
+    rng = np.random.default_rng(seed)
+    out: list[np.ndarray] = []
+    for idx, alpha in enumerate(clean):
+        shifted = np.roll(alpha, shift=(1 if idx % 2 == 0 else -1), axis=1)
+        band = (shifted > 0.03) & (shifted < 0.97)
+        noise = rng.normal(loc=0.0, scale=0.14, size=shifted.shape).astype(np.float32)
+        shifted[band] = np.clip(shifted[band] + noise[band], 0.0, 1.0)
+        out.append(np.clip(shifted, 0.0, 1.0).astype(np.float32))
+    return out
+
+
 def _p95_edge_flicker(alphas: list[np.ndarray], lo: float = 0.05, hi: float = 0.95) -> float:
     values: list[float] = []
     for t in range(1, len(alphas)):
@@ -66,6 +104,51 @@ def _p95_edge_flicker(alphas: list[np.ndarray], lo: float = 0.05, hi: float = 0.
 def _mean_mae(pred: list[np.ndarray], ref: list[np.ndarray]) -> float:
     vals = [float(np.mean(np.abs(np.asarray(p, dtype=np.float32) - np.asarray(r, dtype=np.float32)))) for p, r in zip(pred, ref)]
     return float(np.mean(np.asarray(vals, dtype=np.float32))) if vals else 0.0
+
+
+def test_mitigation_motion_warp_passes_threshold() -> None:
+    frames, clean = _build_global_translation_sequence(num_frames=14)
+    noisy = _inject_translation_edge_noise(clean, seed=5)
+    conf = [np.full_like(a, 0.9, dtype=np.float32) for a in noisy]
+
+    cfg_no_warp = VideoMatteConfig(
+        temporal_cleanup={
+            "enabled": True,
+            "outside_band_ema_enabled": True,
+            "outside_band_ema": 0.22,
+            "min_confidence": 0.35,
+            "confidence_clamp_enabled": True,
+            "clamp_delta": 0.22,
+            "edge_band_ema_enabled": True,
+            "edge_band_ema": 0.12,
+            "edge_band_min_confidence": 0.35,
+            "edge_snap_enabled": False,
+            "edge_bg_threshold": 0.05,
+            "edge_fg_threshold": 0.95,
+            "edge_band_radius_px": 1,
+            "motion_warp_enabled": False,
+            "motion_warp_max_side": 160,
+        }
+    )
+
+    cfg_warp = VideoMatteConfig(
+        temporal_cleanup={
+            **cfg_no_warp.temporal_cleanup.model_dump(),
+            "motion_warp_enabled": True,
+        }
+    )
+
+    out_no_warp = run_pass_temporal_cleanup(DummySource(frames), noisy, conf, cfg_no_warp, anchor_frames={0})
+    out_warp = run_pass_temporal_cleanup(DummySource(frames), noisy, conf, cfg_warp, anchor_frames={0})
+
+    no_warp_flicker = _p95_edge_flicker(out_no_warp)
+    warp_flicker = _p95_edge_flicker(out_warp)
+    no_warp_mae = _mean_mae(out_no_warp, clean)
+    warp_mae = _mean_mae(out_warp, clean)
+
+    # Motion warp should keep edge flicker at parity while improving alignment error.
+    assert warp_flicker <= no_warp_flicker * 1.03
+    assert warp_mae <= no_warp_mae * 0.99
 
 
 def test_mitigation_edge_band_ema_passes_threshold() -> None:

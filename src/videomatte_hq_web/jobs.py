@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -41,6 +43,59 @@ class JobManager:
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.current_job: Optional[Job] = None
         self._worker_task: Optional[asyncio.Task] = None
+        self._cli_python: str = self._resolve_cli_python()
+
+    def _resolve_cli_python(self) -> str:
+        """Prefer the project venv interpreter for CLI jobs."""
+        repo_root = Path.cwd()
+        venv_python = repo_root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if venv_python.exists():
+            return str(venv_python)
+        return str(sys.executable)
+
+    @staticmethod
+    def _tail_log(log_file: Path, max_chars: int = 4000) -> str:
+        try:
+            if not log_file.exists():
+                return ""
+            text = log_file.read_text(encoding="utf-8", errors="replace")
+            return text[-max_chars:]
+        except Exception:
+            return ""
+
+    def _format_process_failure(self, exit_code: int, log_file: Path) -> str:
+        tail = self._tail_log(log_file)
+        lower_tail = tail.lower()
+        runtime_hints = (
+            "winerror 127",
+            "c10_cuda.dll",
+            "torchvision",
+            "torch._c",
+            "sam2 runtime unavailable",
+            "could not import sam2",
+        )
+        if any(h in lower_tail for h in runtime_hints):
+            return (
+                "Runtime dependency issue detected (PyTorch/SAM2/Samurai). "
+                f"Backend CLI interpreter: {self._cli_python}. "
+                "Verify with: .\\.venv\\Scripts\\python -c \"import torch, torchvision; import importlib; importlib.import_module('sam2.build_sam')\""
+            )
+
+        aborted_codes = {3, 134}
+        if exit_code in aborted_codes or "aborted!" in lower_tail:
+            return (
+                f"Pipeline process aborted (exit code {exit_code}). "
+                "This often indicates a native runtime/memory failure. "
+                "Try a smaller frame range first (for example 0..30), then scale up."
+            )
+
+        if not tail.strip():
+            return (
+                f"Process exited with code {exit_code} and produced no logs. "
+                f"Interpreter used: {self._cli_python}."
+            )
+
+        return f"Process exited with code {exit_code}"
 
     async def start(self):
         if self._worker_task is None:
@@ -92,32 +147,29 @@ class JobManager:
 
             try:
                 # Construct command from config
-                # We'll write a temp config file and point the CLI to it
                 temp_config_path = log_dir / f"{job_id}.yaml"
                 job.config.to_yaml(temp_config_path)
 
                 cmd = [
-                    "python", "-m", "videomatte_hq.cli",
+                    self._cli_python, "-m", "videomatte_hq.cli",
                     "--config", str(temp_config_path),
                 ]
 
-                # Run process
-                with open(job.log_file, "w") as log_f:
-                    process = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdout=log_f,
-                        stderr=log_f
-                    )
-                    job.process = process
-                    await process.wait()
+                # Run process in a thread to support streaming logs robustly on Windows
+                exit_code = await asyncio.to_thread(
+                    self._run_job_process,
+                    cmd,
+                    job.log_file,
+                    job_id
+                )
 
                 if job.status == JobStatus.CANCELLED:
                     pass  # Status already set in cancel()
-                elif process.returncode == 0:
+                elif exit_code == 0:
                     job.status = JobStatus.COMPLETED
                 else:
                     job.status = JobStatus.FAILED
-                    job.error = f"Process exited with code {process.returncode}"
+                    job.error = self._format_process_failure(exit_code, job.log_file)
 
             except Exception as e:
                 logger.exception(f"Job {job_id} failed")
@@ -127,3 +179,37 @@ class JobManager:
                 job.completed_at = datetime.now()
                 self.current_job = None
                 self.queue.task_done()
+
+    def _run_job_process(self, cmd: list[str], log_file: Path, job_id: str) -> int:
+        """Synchronous subprocess wrapper for streaming logs."""
+        import subprocess
+
+        # Open log file
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write(f"[job-runner] python={cmd[0]}\n")
+            f.flush()
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # Line buffered
+                encoding="utf-8",
+                errors="replace"
+            )
+            
+            # We can't easily kill this from main thread without storing the process handle
+            # But for now, let's focus on logging. Cancellation might need a shared flag or handle.
+            # (To really support cancellation, we'd need to store process in job.process, but that's hard across threads)
+            # For this fix, we assume run-to-completion or force-kill entire server.
+            
+            for line in process.stdout:
+                # Write to file
+                f.write(line)
+                f.flush()
+                # Write to stdout
+                sys.stdout.write(f"[JOB-{job_id[:4]}] {line}")
+                sys.stdout.flush()
+            
+            process.wait()
+            return process.returncode

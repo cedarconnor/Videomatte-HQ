@@ -166,6 +166,20 @@ def _nearest_keyframe_mask(frame_idx: int, local_keyframes: dict[int, np.ndarray
     return local_keyframes[int(anchor)]
 
 
+def _dynamic_coverage_bounds(anchor_cov: float, min_cov: float, max_cov: float) -> tuple[float, float]:
+    """Derive a tighter, anchor-relative coverage band for propagated guidance."""
+
+    anchor_cov = float(np.clip(anchor_cov, 0.0, 1.0))
+    min_cov = float(np.clip(min_cov, 0.0, 1.0))
+    max_cov = float(np.clip(max_cov, 0.0, 1.0))
+
+    lower = max(min_cov, anchor_cov * 0.45)
+    upper = min(max_cov, max(anchor_cov * 1.90, anchor_cov + 0.04))
+    if upper <= lower:
+        upper = min(1.0, lower + 0.01)
+    return float(lower), float(upper)
+
+
 def build_memory_region_priors(
     source: Any,
     keyframe_masks: dict[int, np.ndarray],
@@ -249,11 +263,26 @@ def build_memory_region_priors(
     soften_px = max(0, int(getattr(cfg.memory, "region_constraint_soften_px", 0)))
     min_cov = float(np.clip(getattr(cfg.memory, "region_constraint_flow_min_coverage", 0.002), 0.0, 1.0))
     max_cov = float(np.clip(getattr(cfg.memory, "region_constraint_flow_max_coverage", 0.98), 0.0, 1.0))
+    dynamic_min_cov, dynamic_max_cov = _dynamic_coverage_bounds(
+        anchor_cov=anchor_cov,
+        min_cov=min_cov,
+        max_cov=max_cov,
+    )
+    logger.info(
+        "Memory region prior: anchor_cov=%.3f dynamic_cov_band=[%.3f, %.3f] (base_cfg=[%.3f, %.3f])",
+        anchor_cov,
+        dynamic_min_cov,
+        dynamic_max_cov,
+        min_cov,
+        max_cov,
+    )
 
     priors: list[np.ndarray] = []
     guidance_masks: list[np.ndarray] = []
     coverages: list[float] = []
     prev_prior: np.ndarray | None = None
+    prev_guidance: np.ndarray | None = None
+    guidance_fallback_count = 0
 
     for t in range(num_frames):
         if mode in {"propagated_bbox", "propagated_mask"}:
@@ -265,8 +294,19 @@ def build_memory_region_priors(
 
         if base.shape[:2] != (full_h, full_w):
             base = cv2.resize(base, (full_w, full_h), interpolation=cv2.INTER_LINEAR)
-            base = np.clip(base, 0.0, 1.0).astype(np.float32)
-        guidance_masks.append(np.clip(base, 0.0, 1.0).astype(np.float32))
+        base = np.clip(base, 0.0, 1.0).astype(np.float32)
+
+        # Guard against propagation collapse/explosion by snapping back to stable guidance.
+        guidance_cov = float(base.mean())
+        low_guard = dynamic_min_cov * 0.55
+        high_guard = min(1.0, dynamic_max_cov * 1.35)
+        if guidance_cov < low_guard or guidance_cov > high_guard:
+            fallback = prev_guidance if prev_guidance is not None else anchor_alpha
+            base = np.clip(np.asarray(fallback, dtype=np.float32), 0.0, 1.0)
+            guidance_cov = float(base.mean())
+            guidance_fallback_count += 1
+        guidance_masks.append(base.copy())
+        prev_guidance = base
 
         if mode in {"propagated_bbox", "nearest_keyframe_bbox"}:
             prior = _mask_to_bbox_prior(
@@ -282,17 +322,34 @@ def build_memory_region_priors(
         prior = _soften_prior(prior, radius_px=soften_px)
 
         cov = float(prior.mean())
-        if cov < min_cov or cov > max_cov:
+        if cov < dynamic_min_cov or cov > dynamic_max_cov:
             if prev_prior is not None:
                 prior = prev_prior.copy()
                 cov = float(prior.mean())
             else:
-                prior = np.ones((full_h, full_w), dtype=np.float32)
-                cov = 1.0
+                anchor_prior = (
+                    _mask_to_bbox_prior(
+                        alpha=anchor_alpha,
+                        threshold=threshold,
+                        margin_px=margin_px,
+                        expand_ratio=expand_ratio,
+                    )
+                    if mode in {"propagated_bbox", "nearest_keyframe_bbox"}
+                    else (anchor_alpha >= threshold).astype(np.float32)
+                )
+                prior = _soften_prior(_dilate_binary(anchor_prior, radius_px=dilate_px), radius_px=soften_px)
+                cov = float(prior.mean())
 
         priors.append(np.clip(prior, 0.0, 1.0).astype(np.float32))
         coverages.append(cov)
         prev_prior = priors[-1]
+
+    if guidance_fallback_count > 0:
+        fallback_note = (
+            f"Stage1 guidance stabilized with {guidance_fallback_count} frame fallback(s) "
+            f"to anchor/previous mask (cov band {dynamic_min_cov:.3f}..{dynamic_max_cov:.3f})."
+        )
+        note = f"{note} {fallback_note}".strip() if note else fallback_note
 
     return MemoryRegionPriorResult(
         priors=priors,

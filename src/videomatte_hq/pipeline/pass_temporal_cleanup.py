@@ -28,11 +28,91 @@ def _to_rgb_float(frame: np.ndarray) -> np.ndarray:
     return np.clip(out, 0.0, 1.0)
 
 
+def _to_gray_u8(frame: np.ndarray) -> np.ndarray:
+    rgb = _to_rgb_float(frame)
+    if rgb.ndim == 3 and rgb.shape[2] >= 3:
+        gray = cv2.cvtColor((rgb[..., :3] * 255.0).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    else:
+        gray = (np.squeeze(rgb) * 255.0).astype(np.uint8)
+    return gray
+
+
 def _dilate(mask: np.ndarray, radius: int) -> np.ndarray:
     if radius <= 0:
         return mask
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
     return cv2.dilate(mask.astype(np.uint8), kernel).astype(bool)
+
+
+def _estimate_backflow(prev_frame: np.ndarray, curr_frame: np.ndarray, max_side: int) -> np.ndarray:
+    prev_gray = _to_gray_u8(prev_frame)
+    curr_gray = _to_gray_u8(curr_frame)
+    if prev_gray.shape != curr_gray.shape:
+        raise ValueError(f"Flow frame shape mismatch: prev={prev_gray.shape} curr={curr_gray.shape}")
+
+    h, w = curr_gray.shape
+    limit = max(int(max_side), 0)
+    scale = 1.0
+    prev_work = prev_gray
+    curr_work = curr_gray
+
+    if limit > 0 and max(h, w) > limit:
+        scale = float(limit) / float(max(h, w))
+        w_work = max(8, int(round(w * scale)))
+        h_work = max(8, int(round(h * scale)))
+        prev_work = cv2.resize(prev_gray, (w_work, h_work), interpolation=cv2.INTER_AREA)
+        curr_work = cv2.resize(curr_gray, (w_work, h_work), interpolation=cv2.INTER_AREA)
+
+    # Backward flow: displacement from current frame pixels into previous frame coordinates.
+    backflow = cv2.calcOpticalFlowFarneback(
+        curr_work,
+        prev_work,
+        None,
+        pyr_scale=0.5,
+        levels=3,
+        winsize=21,
+        iterations=3,
+        poly_n=7,
+        poly_sigma=1.5,
+        flags=0,
+    )
+
+    if scale != 1.0:
+        backflow = cv2.resize(backflow, (w, h), interpolation=cv2.INTER_LINEAR)
+        backflow[..., 0] /= scale
+        backflow[..., 1] /= scale
+
+    return backflow.astype(np.float32)
+
+
+def _build_remap_grids(height: int, width: int) -> tuple[np.ndarray, np.ndarray]:
+    grid_x, grid_y = np.meshgrid(
+        np.arange(width, dtype=np.float32),
+        np.arange(height, dtype=np.float32),
+    )
+    return grid_x, grid_y
+
+
+def _warp_with_backflow(
+    src: np.ndarray,
+    backflow: np.ndarray,
+    grid_x: np.ndarray,
+    grid_y: np.ndarray,
+) -> np.ndarray:
+    if src.shape[:2] != backflow.shape[:2]:
+        raise ValueError(f"Warp shape mismatch: src={src.shape[:2]} flow={backflow.shape[:2]}")
+    if grid_x.shape != src.shape[:2] or grid_y.shape != src.shape[:2]:
+        raise ValueError(f"Warp grid shape mismatch: grid={grid_x.shape} src={src.shape[:2]}")
+
+    map_x = grid_x + backflow[..., 0]
+    map_y = grid_y + backflow[..., 1]
+    return cv2.remap(
+        src.astype(np.float32),
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
 
 
 def _resolve_local_anchor_frames(
@@ -91,6 +171,8 @@ def run_pass_temporal_cleanup(
     edge_snap_min_conf = float(
         np.clip(getattr(cfg.temporal_cleanup, "edge_snap_min_confidence", 0.0), 0.0, 1.0)
     )
+    motion_warp_enabled = bool(getattr(cfg.temporal_cleanup, "motion_warp_enabled", False))
+    motion_warp_max_side = max(int(getattr(cfg.temporal_cleanup, "motion_warp_max_side", 960)), 0)
 
     reset_frames = max(int(cfg.temporal_cleanup.anchor_reset_frames), 1)
     local_anchors = _resolve_local_anchor_frames(
@@ -103,6 +185,9 @@ def run_pass_temporal_cleanup(
 
     output = [np.clip(alphas[0], 0.0, 1.0).astype(np.float32)]
     last_anchor = 0
+    remap_grid_x: np.ndarray | None = None
+    remap_grid_y: np.ndarray | None = None
+    motion_warp_failures = 0
 
     for t in range(1, len(alphas)):
         if t in local_anchors:
@@ -112,12 +197,41 @@ def run_pass_temporal_cleanup(
         prev = output[t - 1]
         conf_curr = np.clip(confidences[t], 0.0, 1.0).astype(np.float32)
         conf_prev = np.clip(confidences[t - 1], 0.0, 1.0).astype(np.float32)
+        prev_for_blend = prev
+        conf_prev_for_pair = conf_prev
+
+        if motion_warp_enabled and (outside_ema_enabled or edge_band_ema_enabled):
+            try:
+                backflow = _estimate_backflow(
+                    prev_frame=source[t - 1],
+                    curr_frame=source[t],
+                    max_side=motion_warp_max_side,
+                )
+                if backflow.shape[:2] == curr.shape[:2]:
+                    if (
+                        remap_grid_x is None
+                        or remap_grid_y is None
+                        or remap_grid_x.shape != curr.shape[:2]
+                        or remap_grid_y.shape != curr.shape[:2]
+                    ):
+                        remap_grid_x, remap_grid_y = _build_remap_grids(curr.shape[0], curr.shape[1])
+                    prev_for_blend = _warp_with_backflow(prev_for_blend, backflow, remap_grid_x, remap_grid_y)
+                    conf_prev_for_pair = _warp_with_backflow(conf_prev, backflow, remap_grid_x, remap_grid_y)
+            except Exception as exc:
+                motion_warp_failures += 1
+                if motion_warp_failures == 1:
+                    logger.warning(
+                        "Temporal cleanup: disabling motion warp after flow failure at frame %d: %s",
+                        t,
+                        exc,
+                    )
+                motion_warp_enabled = False
 
         edge_band = (curr > edge_lo) & (curr < edge_hi)
         edge_band = _dilate(edge_band, edge_radius)
         safe_region = ~edge_band
 
-        conf_pair = np.minimum(conf_curr, conf_prev)
+        conf_pair = np.minimum(conf_curr, np.clip(conf_prev_for_pair, 0.0, 1.0))
         conf_scale = np.clip((conf_pair - min_conf) / max(1.0 - min_conf, 1e-6), 0.0, 1.0)
         if outside_ema_enabled:
             ema_map = base_ema * conf_scale
@@ -136,15 +250,11 @@ def run_pass_temporal_cleanup(
             edge_ema_map *= ramp
 
         if clamp_delta > 0.0:
-            clamped_prev = np.clip(prev, curr - clamp_delta, curr + clamp_delta)
+            clamped_prev = np.clip(prev_for_blend, curr - clamp_delta, curr + clamp_delta)
             if confidence_clamp_enabled:
-                prev_for_blend = prev.copy()
+                prev_for_blend = prev_for_blend.copy()
                 clamp_mask = conf_pair >= min_conf
                 prev_for_blend[clamp_mask] = clamped_prev[clamp_mask]
-            else:
-                prev_for_blend = prev
-        else:
-            prev_for_blend = prev
 
         outside_blend = curr * (1.0 - ema_map) + prev_for_blend * ema_map
         edge_blend = curr * (1.0 - edge_ema_map) + prev_for_blend * edge_ema_map
@@ -168,10 +278,11 @@ def run_pass_temporal_cleanup(
 
         if t == 1 or (t + 1) % 50 == 0:
             logger.info(
-                "Temporal cleanup: frame %d/%d, edge_cov=%.3f",
+                "Temporal cleanup: frame %d/%d, edge_cov=%.3f motion_warp=%s",
                 t + 1,
                 len(alphas),
                 float(edge_band.mean()),
+                "on" if motion_warp_enabled else "off",
             )
 
     return output

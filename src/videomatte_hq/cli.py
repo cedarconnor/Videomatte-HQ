@@ -26,6 +26,37 @@ from videomatte_hq.utils.image import frame_to_rgb_u8
 logger = logging.getLogger("videomatte_hq")
 
 
+def _is_runtime_dependency_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    hints = (
+        "winerror 127",
+        "c10_cuda.dll",
+        "torchvision",
+        "torch._c",
+        "torch cuda",
+        "sam2 runtime unavailable",
+        "samurai backend unavailable",
+        "failed to initialize samurai",
+        "could not import sam2",
+    )
+    return any(hint in text for hint in hints)
+
+
+def _format_runtime_dependency_error(exc: Exception, *, context: str) -> str:
+    message = str(exc or "").strip() or exc.__class__.__name__
+    if not _is_runtime_dependency_error(exc):
+        return f"{context} failed: {message}"
+    return (
+        f"{context} failed: {message}\n\n"
+        "Runtime dependency issue detected (PyTorch/SAM2/Samurai).\n"
+        f"Current interpreter: {sys.executable}\n"
+        "Use the project venv and verify:\n"
+        "  .\\.venv\\Scripts\\python -c \"import torch, torchvision; import importlib; importlib.import_module('sam2.build_sam')\"\n"
+        "If that command fails, reinstall matching CUDA wheels:\n"
+        "  .\\.venv\\Scripts\\pip install --upgrade --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128"
+    )
+
+
 
 def setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
@@ -425,6 +456,8 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
     tc_edge_band_ema_strength = options.get("tc_edge_band_ema_strength")
     tc_edge_band_min_confidence = options.get("tc_edge_band_min_confidence")
     tc_edge_snap_min_confidence = options.get("tc_edge_snap_min_confidence")
+    tc_motion_warp = options.get("tc_motion_warp")
+    tc_motion_warp_max_side = options.get("tc_motion_warp_max_side")
     resume = options.get("resume")
     qc = options.get("qc")
     qc_fail_on_regression = options.get("qc_fail_on_regression")
@@ -605,6 +638,10 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
         cfg.temporal_cleanup.edge_band_min_confidence = float(tc_edge_band_min_confidence)
     if tc_edge_snap_min_confidence is not None:
         cfg.temporal_cleanup.edge_snap_min_confidence = float(tc_edge_snap_min_confidence)
+    if tc_motion_warp is not None:
+        cfg.temporal_cleanup.motion_warp_enabled = bool(tc_motion_warp)
+    if tc_motion_warp_max_side is not None:
+        cfg.temporal_cleanup.motion_warp_max_side = int(tc_motion_warp_max_side)
 
     if resume is not None:
         cfg.runtime.resume = bool(resume)
@@ -999,6 +1036,17 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, options: dict[str, object]) -> N
     type=float,
     help="Minimum confidence required for edge snap replacement.",
 )
+@click.option(
+    "--tc-motion-warp/--no-tc-motion-warp",
+    default=None,
+    help="Warp previous matte/confidence into current frame before temporal blending.",
+)
+@click.option(
+    "--tc-motion-warp-max-side",
+    default=None,
+    type=int,
+    help="Max frame side used for optical-flow motion warp estimation.",
+)
 @click.option("--resume/--no-resume", default=None, help="Use stage cache resume")
 @click.option("--qc/--no-qc", default=None, help="Enable/disable Option B QC evaluation")
 @click.option(
@@ -1122,6 +1170,8 @@ def main(
     tc_edge_band_ema_strength,
     tc_edge_band_min_confidence,
     tc_edge_snap_min_confidence,
+    tc_motion_warp,
+    tc_motion_warp_max_side,
     resume,
     qc,
     qc_fail_on_regression,
@@ -1208,9 +1258,17 @@ def main(
     if assign_only or propagate_only:
         return
 
-    from videomatte_hq.pipeline.orchestrator import run_pipeline
+    try:
+        from videomatte_hq.pipeline.orchestrator import run_pipeline
+    except Exception as exc:
+        raise click.ClickException(_format_runtime_dependency_error(exc, context="Pipeline startup")) from exc
 
-    run_pipeline(cfg)
+    try:
+        run_pipeline(cfg)
+    except Exception as exc:
+        if _is_runtime_dependency_error(exc):
+            raise click.ClickException(_format_runtime_dependency_error(exc, context="Pipeline execution")) from exc
+        raise
 
 
 if __name__ == "__main__":

@@ -159,6 +159,8 @@ class TemporalCleanupConfig(VMBaseModel):
     edge_snap_radius: int = 2
     edge_snap_eps: float = 0.01
     edge_snap_min_confidence: float = 0.0
+    motion_warp_enabled: bool = False
+    motion_warp_max_side: int = 960
     clamp_delta: float = 0.25
 
 

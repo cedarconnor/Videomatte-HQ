@@ -152,7 +152,7 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         output_dir: "output",
         output_alpha: "alpha/frame_%05d.png",
         frame_start: 0,
-        frame_end: -1,
+        frame_end: 30,
         shot_type: "locked_off",
         alpha_format: "png16",
         alpha_dwaa_quality: 45.0,
