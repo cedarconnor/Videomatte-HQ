@@ -9,8 +9,8 @@ import WizardLayout from './wizard/WizardLayout'
 import DashboardLayout from './dashboard/DashboardLayout'
 import StepSetup from './wizard/StepSetup'
 import StepSubject from './wizard/StepSubject'
-import StepRefine from './wizard/StepRefine'
 import StepRender from './wizard/StepRender'
+import StepStageApproval from './wizard/StepStageApproval'
 import IOSection from './dashboard/sections/IOSection'
 import MaskSection from './dashboard/sections/MaskSection'
 import RefineSection from './dashboard/sections/RefineSection'
@@ -62,6 +62,7 @@ type PropagationBackend = 'flow' | 'samurai_video_predictor' | 'sam2_video_predi
 type AssignmentSourceMode = 'generate' | 'import'
 type BuilderWorkflowMode = 'single' | 'multiple'
 export type RunViewMode = 'wizard' | 'pro'
+type WizardApprovalStage = 'memory' | 'refine' | 'matte_tuning'
 export type RunStepId =
     | 'io'
     | 'assignment'
@@ -141,8 +142,10 @@ export const RUN_STEPS_BASE: Array<{ id: RunStepId; label: string }> = [
 const WIZARD_STEPS = [
     { id: 1, label: 'Setup & Import' },
     { id: 2, label: 'Select Subject' },
-    { id: 3, label: 'Refine Edges' },
-    { id: 4, label: 'Render' },
+    { id: 3, label: 'Run MatAnyone' },
+    { id: 4, label: 'Run MEMatte' },
+    { id: 5, label: 'Tune Edges' },
+    { id: 6, label: 'Render' },
 ]
 
 // Default Configuration
@@ -196,9 +199,9 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         region_constraint_samurai_offload_video_to_cpu: false,
         region_constraint_samurai_offload_state_to_cpu: false,
         region_constraint_threshold: 0.2,
-        region_constraint_bbox_margin_px: 96,
-        region_constraint_bbox_expand_ratio: 0.15,
-        region_constraint_dilate_px: 24,
+        region_constraint_bbox_margin_px: 192,
+        region_constraint_bbox_expand_ratio: 0.30,
+        region_constraint_dilate_px: 48,
         region_constraint_soften_px: 0,
         region_constraint_outside_confidence_cap: 0.05,
     },
@@ -398,6 +401,7 @@ const DEFAULT_CONFIG: VideoMatteConfig = {
         workers_io: 4,
         cache_dir: ".cache",
         resume: true,
+        stop_after_stage: "io",
         verbose: false
     },
     debug: {
@@ -496,6 +500,7 @@ export default function RunTab({
     const [builderDragStart, setBuilderDragStart] = useState<BuilderPoint | null>(null)
     const builderImgRef = useRef<HTMLImageElement | null>(null)
     const [outputDirWarning, setOutputDirWarning] = useState<string | null>(null)
+    const [browseBusy, setBrowseBusy] = useState(false)
     const inputSuggestionAppliedRef = useRef(false)
     const [wizardJobId, setWizardJobId] = useState<string | null>(null)
     const [wizardJobState, setWizardJobState] = useState<'idle' | 'queued' | 'running' | 'completed' | 'failed'>('idle')
@@ -503,6 +508,12 @@ export default function RunTab({
     const [wizardProgressLabel, setWizardProgressLabel] = useState('Waiting to start')
     const [wizardTimeRemaining, setWizardTimeRemaining] = useState('Time remaining: --')
     const [wizardJobError, setWizardJobError] = useState<string | null>(null)
+    const [wizardActiveStage, setWizardActiveStage] = useState<'render' | WizardApprovalStage>('render')
+    const [wizardStageApproved, setWizardStageApproved] = useState<Record<WizardApprovalStage, boolean>>({
+        memory: false,
+        refine: false,
+        matte_tuning: false,
+    })
     const wizardJobStartRef = useRef<number | null>(null)
     const [recentJobs, setRecentJobs] = useState<Array<{ id: string; status: string; error?: string | null }>>([])
     const [contextHelpText, setContextHelpText] = useState("Hover over controls to view parameter descriptions.")
@@ -768,7 +779,7 @@ export default function RunTab({
                         const remaining = elapsed * (1 - pct) / pct
                         setWizardTimeRemaining(formatRemaining(remaining))
                     } else if (state === 'completed') {
-                        setWizardTimeRemaining("Render complete")
+                        setWizardTimeRemaining(wizardActiveStage === 'render' ? "Render complete" : "Stage complete")
                     }
                 } else if (state === 'queued') {
                     setWizardProgressLabel("Queued")
@@ -778,8 +789,11 @@ export default function RunTab({
 
                 if (state === 'completed') {
                     setWizardProgressPct(1)
-                    setWizardTimeRemaining("Render complete")
+                    setWizardTimeRemaining(wizardActiveStage === 'render' ? "Render complete" : "Stage complete")
                     setWizardProgressLabel("Completed")
+                    if (wizardActiveStage !== 'render') {
+                        setStatus("Stage run completed. Review outputs, then click Approve to continue.")
+                    }
                 }
             } catch {
                 // silent
@@ -794,7 +808,7 @@ export default function RunTab({
             cancelled = true
             window.clearInterval(timer)
         }
-    }, [wizardJobId, wizardJobState])
+    }, [wizardActiveStage, wizardJobId, wizardJobState])
 
     const [dragOver, setDragOver] = useState(false)
 
@@ -841,6 +855,63 @@ export default function RunTab({
             updateConfig('io', 'input', text.trim())
         }
     }, [])
+
+    async function handleBrowseInputPath() {
+        setBrowseBusy(true)
+        setError(null)
+        try {
+            const initial = String(config.io.input || config.io.output_dir || "").trim()
+            const res = await fetch(`/api/fs/pick-input?initial=${encodeURIComponent(initial)}`)
+            if (!res.ok) throw new Error(await parseApiError(res))
+            const data = await res.json() as { path?: string }
+            const picked = String(data.path || "").trim()
+            if (picked) {
+                updateConfig('io', 'input', picked)
+            }
+        } catch (err: any) {
+            setError(err.message || String(err))
+        } finally {
+            setBrowseBusy(false)
+        }
+    }
+
+    async function handleBrowseOutputDir() {
+        setBrowseBusy(true)
+        setError(null)
+        try {
+            const initial = String(config.io.output_dir || config.io.input || "").trim()
+            const res = await fetch(`/api/fs/pick-output-dir?initial=${encodeURIComponent(initial)}`)
+            if (!res.ok) throw new Error(await parseApiError(res))
+            const data = await res.json() as { path?: string }
+            const picked = String(data.path || "").trim()
+            if (picked) {
+                updateConfig('io', 'output_dir', picked)
+            }
+        } catch (err: any) {
+            setError(err.message || String(err))
+        } finally {
+            setBrowseBusy(false)
+        }
+    }
+
+    async function handleBrowseInputDir() {
+        setBrowseBusy(true)
+        setError(null)
+        try {
+            const initial = String(config.io.input || config.io.output_dir || "").trim()
+            const res = await fetch(`/api/fs/pick-output-dir?initial=${encodeURIComponent(initial)}`)
+            if (!res.ok) throw new Error(await parseApiError(res))
+            const data = await res.json() as { path?: string }
+            const picked = String(data.path || "").trim()
+            if (picked) {
+                updateConfig('io', 'input', picked)
+            }
+        } catch (err: any) {
+            setError(err.message || String(err))
+        } finally {
+            setBrowseBusy(false)
+        }
+    }
 
     async function parseApiError(res: Response): Promise<string> {
         try {
@@ -1013,8 +1084,8 @@ export default function RunTab({
 
         setBuilderBuildingMask(true)
         try {
-            // Force single mode if we are in Wizard, or if explicit single mode
-            const effectiveMode = runViewMode === 'wizard' ? 'single' : builderWorkflowMode
+            // Wizard defaults to multi-frame Samurai-backed build flow unless user explicitly switches.
+            const effectiveMode = builderWorkflowMode
 
             if (effectiveMode === 'multiple') {
                 const res = await fetch('/api/assignments/build-mask-range', {
@@ -1064,6 +1135,7 @@ export default function RunTab({
                     keyframes: data.keyframes || [],
                     require_assignment: data.require_assignment ?? true,
                 })
+                clearApprovalsFrom('memory')
                 const backendUsedLabel = data.backend_used ? ` (${data.backend_used})` : ""
                 const inserted = data.inserted_count ?? 0
                 setStatus(`Built and imported anchor mask${backendUsedLabel} at frame ${assignmentFrame} (inserted ${inserted} keyframe).`)
@@ -1117,6 +1189,7 @@ export default function RunTab({
                 keyframes: data.keyframes || [],
                 require_assignment: data.require_assignment ?? true,
             })
+            clearApprovalsFrom('memory')
             if (data.mask_preview_data_url) {
                 setBuilderMaskPreviewUrl(data.mask_preview_data_url)
             }
@@ -1212,6 +1285,7 @@ export default function RunTab({
                 keyframes: data.keyframes || [],
                 require_assignment: data.require_assignment ?? true,
             })
+            clearApprovalsFrom('memory')
 
             const inserted = data.inserted_count ?? (data.inserted_frames?.length ?? 0)
             const backendUsedLabel = data.backend_used ? ` (${data.backend_used})` : ""
@@ -1290,6 +1364,7 @@ export default function RunTab({
                 keyframes: data.keyframes || [],
                 require_assignment: data.require_assignment ?? true,
             })
+            clearApprovalsFrom('memory')
 
             const inserted = data.inserted_count ?? (data.inserted_frames?.length ?? 0)
             const backendUsedLabel = data.backend_used ? ` (${data.backend_used})` : ""
@@ -1457,6 +1532,7 @@ export default function RunTab({
                 keyframes: data.keyframes || [],
                 require_assignment: data.require_assignment ?? true
             })
+            clearApprovalsFrom('memory')
             if (range) {
                 setSuggestedRange(range)
                 if (assignmentKind === 'correction' && autoApplySuggestedRange) {
@@ -1482,17 +1558,35 @@ export default function RunTab({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
-    async function submitPipelineJob(options?: { navigateOnSubmit?: boolean }): Promise<string | null> {
+    async function submitPipelineJob(options?: {
+        navigateOnSubmit?: boolean
+        stopAfterStage?: 'assignment' | 'memory' | 'refine' | 'temporal_cleanup' | 'matte_tuning' | 'io'
+        wizardStage?: 'render' | WizardApprovalStage
+    }): Promise<string | null> {
         const navigateOnSubmit = options?.navigateOnSubmit ?? (runViewMode === 'pro')
+        const stopAfterStage = options?.stopAfterStage ?? 'io'
+        const wizardStage = options?.wizardStage ?? 'render'
         setLoading(true)
         setError(null)
         setStatus(null)
         if (!navigateOnSubmit) {
             setWizardJobError(null)
+            setWizardActiveStage(wizardStage)
         }
 
         try {
-            const lockedConfig = lockWorkflowConfig(config)
+            const baseConfig = lockWorkflowConfig(config)
+            const lockedConfig: VideoMatteConfig = {
+                ...baseConfig,
+                runtime: {
+                    ...baseConfig.runtime,
+                    stop_after_stage: stopAfterStage,
+                },
+                qc: {
+                    ...baseConfig.qc,
+                    enabled: stopAfterStage === 'io' ? baseConfig.qc.enabled : false,
+                },
+            }
             setConfig(lockedConfig)
 
             if (lockedConfig.assignment.require_assignment) {
@@ -1525,7 +1619,11 @@ export default function RunTab({
                 setWizardProgressLabel("Queued")
                 setWizardTimeRemaining("Time remaining: --")
                 wizardJobStartRef.current = Date.now()
-                setStatus(`Render started. Job ${jobId.slice(0, 8)} is running.`)
+                if (stopAfterStage === 'io') {
+                    setStatus(`Render started. Job ${jobId.slice(0, 8)} is running.`)
+                } else {
+                    setStatus(`Stage run started (${stopAfterStage}). Job ${jobId.slice(0, 8)} is running.`)
+                }
             }
             return jobId
         } catch (err: any) {
@@ -1543,6 +1641,35 @@ export default function RunTab({
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault()
         await submitPipelineJob()
+    }
+
+    const WIZARD_APPROVAL_ORDER: WizardApprovalStage[] = ['memory', 'refine', 'matte_tuning']
+
+    function clearApprovalsFrom(stage: WizardApprovalStage) {
+        const startIdx = WIZARD_APPROVAL_ORDER.indexOf(stage)
+        if (startIdx < 0) return
+        setWizardStageApproved(prev => {
+            const next = { ...prev }
+            for (let i = startIdx; i < WIZARD_APPROVAL_ORDER.length; i += 1) {
+                next[WIZARD_APPROVAL_ORDER[i]] = false
+            }
+            return next
+        })
+    }
+
+    function handleApproveWizardStage(stage: WizardApprovalStage) {
+        if (wizardJobState !== 'completed' || wizardActiveStage !== stage) return
+        setWizardStageApproved(prev => ({ ...prev, [stage]: true }))
+        setStatus(`Approved ${stage} stage. Continue to the next step.`)
+    }
+
+    async function runWizardApprovalStage(stage: WizardApprovalStage) {
+        clearApprovalsFrom(stage)
+        await submitPipelineJob({
+            navigateOnSubmit: false,
+            stopAfterStage: stage,
+            wizardStage: stage,
+        })
     }
 
     const activeBuilderBox = builderDraftBox ?? builderBox
@@ -1616,6 +1743,12 @@ export default function RunTab({
         const parts = out.split(/[/\\]/).filter(Boolean)
         return parts[parts.length - 1] || "project"
     })()
+    const stageReviewPaths: Record<WizardApprovalStage, string> = {
+        memory: `${config.io.output_dir}/stages/stage2_memory/alpha`,
+        refine: `${config.io.output_dir}/stages/stage3_refine/alpha`,
+        matte_tuning: `${config.io.output_dir}/stages/stage5_tuned/alpha`,
+    }
+    const allWizardStagesApproved = wizardStageApproved.memory && wizardStageApproved.refine && wizardStageApproved.matte_tuning
 
     const handleSavePreset = () => {
         try {
@@ -1629,12 +1762,18 @@ export default function RunTab({
     const setWizardTightness = (sliderValue: number) => {
         const normalized = Math.max(0, Math.min(100, sliderValue))
         const mapped = Math.round((-2 * normalized) / 100)
+        if (mapped !== config.matte_tuning.shrink_grow_px) {
+            setWizardStageApproved(prev => ({ ...prev, matte_tuning: false }))
+        }
         updateConfig('matte_tuning', 'shrink_grow_px', mapped)
     }
 
     const setWizardSoftness = (sliderValue: number) => {
         const normalized = Math.max(0, Math.min(100, sliderValue))
         const mapped = Math.round((4 * normalized) / 100)
+        if (mapped !== config.matte_tuning.feather_px) {
+            setWizardStageApproved(prev => ({ ...prev, matte_tuning: false }))
+        }
         updateConfig('matte_tuning', 'feather_px', mapped)
     }
 
@@ -1711,10 +1850,14 @@ export default function RunTab({
                             frameStart={config.io.frame_start}
                             frameEnd={config.io.frame_end}
                             outputDirWarning={outputDirWarning}
+                            browseBusy={browseBusy}
                             onInputChange={(v) => updateConfig('io', 'input', v)}
                             onOutputDirChange={(v) => updateConfig('io', 'output_dir', v)}
                             onFrameStartChange={(v) => updateConfig('io', 'frame_start', v)}
                             onFrameEndChange={(v) => updateConfig('io', 'frame_end', v)}
+                            onBrowseInput={() => void handleBrowseInputPath()}
+                            onBrowseInputDir={() => void handleBrowseInputDir()}
+                            onBrowseOutputDir={() => void handleBrowseOutputDir()}
                             onNext={() => setWizardStep(2)}
                         />
                     )}
@@ -1765,27 +1908,39 @@ export default function RunTab({
                     )}
 
                     {wizardStep === 3 && (
-                        <StepRefine
-                            tightnessSliderValue={tightnessSliderValue}
-                            softnessSliderValue={softnessSliderValue}
-                            despillEnabled={Boolean(config.postprocess.despill.enabled)}
-                            rawPreviewUrl={builderFrameDataUrl}
-                            alphaPreviewUrl={builderMaskPreviewUrl}
-                            onTightnessChange={setWizardTightness}
-                            onSoftnessChange={setWizardSoftness}
-                            onDespillChange={(v) => updateNestedConfig('postprocess', 'despill', 'enabled', v)}
+                        <StepStageApproval
+                            title="Step 3: MatAnyone Coarse Pass"
+                            description="Run Stage 2 coarse alpha generation (MatAnyone), then review the written stage output before approval."
+                            reviewPath={stageReviewPaths.memory}
+                            runLabel="Run MatAnyone Stage"
+                            approveLabel="Approve Stage 3"
+                            approved={wizardStageApproved.memory}
+                            canApprove={wizardJobState === 'completed' && wizardActiveStage === 'memory'}
+                            loading={loading}
+                            jobId={wizardJobId}
+                            jobState={wizardJobState}
+                            progressPct={wizardProgressPct}
+                            progressLabel={wizardProgressLabel}
+                            timeRemaining={wizardTimeRemaining}
+                            jobError={wizardJobError}
                             onBack={() => setWizardStep(2)}
+                            onRun={() => void runWizardApprovalStage('memory')}
+                            onApprove={() => handleApproveWizardStage('memory')}
                             onNext={() => setWizardStep(4)}
+                            nextLabel="Next: MEMatte"
                         />
                     )}
 
                     {wizardStep === 4 && (
-                        <StepRender
-                            inputBasename={inputBasename}
-                            frameStart={config.io.frame_start}
-                            frameEnd={config.io.frame_end}
+                        <StepStageApproval
+                            title="Step 4: MEMatte Refinement"
+                            description="Run Stage 3 edge refinement (MEMatte), inspect the stage output on disk, then approve before continuing."
+                            reviewPath={stageReviewPaths.refine}
+                            runLabel="Run MEMatte Stage"
+                            approveLabel="Approve Stage 4"
+                            approved={wizardStageApproved.refine}
+                            canApprove={wizardJobState === 'completed' && wizardActiveStage === 'refine'}
                             loading={loading}
-                            canStart={Boolean(config.io.input) && (!config.assignment.require_assignment || hasAssignment)}
                             jobId={wizardJobId}
                             jobState={wizardJobState}
                             progressPct={wizardProgressPct}
@@ -1793,7 +1948,98 @@ export default function RunTab({
                             timeRemaining={wizardTimeRemaining}
                             jobError={wizardJobError}
                             onBack={() => setWizardStep(3)}
-                            onStart={() => void submitPipelineJob({ navigateOnSubmit: false })}
+                            onRun={() => void runWizardApprovalStage('refine')}
+                            onApprove={() => handleApproveWizardStage('refine')}
+                            onNext={() => setWizardStep(5)}
+                            nextLabel="Next: Edge Tuning"
+                        />
+                    )}
+
+                    {wizardStep === 5 && (
+                        <div className="space-y-3">
+                            <h3 className="text-lg font-semibold text-white">Step 5: Edge Tuning Approval</h3>
+                            <p className="text-xs text-gray-400">
+                                Adjust edge controls (expand/contract/blur), run Stage 5 tuned output, then approve before final render.
+                            </p>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <label className="rounded border border-gray-700 p-3 bg-gray-900 space-y-2">
+                                    <div className="text-sm text-gray-200 font-semibold">Edge Tightness</div>
+                                    <input
+                                        type="range"
+                                        min={0}
+                                        max={100}
+                                        step={1}
+                                        value={tightnessSliderValue}
+                                        onChange={e => setWizardTightness(parseInt(e.target.value || "0", 10))}
+                                        className="w-full"
+                                    />
+                                    <div className="text-xs text-gray-400">Loose &lt;-&gt; Tight</div>
+                                </label>
+                                <label className="rounded border border-gray-700 p-3 bg-gray-900 space-y-2">
+                                    <div className="text-sm text-gray-200 font-semibold">Edge Softness</div>
+                                    <input
+                                        type="range"
+                                        min={0}
+                                        max={100}
+                                        step={1}
+                                        value={softnessSliderValue}
+                                        onChange={e => setWizardSoftness(parseInt(e.target.value || "0", 10))}
+                                        className="w-full"
+                                    />
+                                    <div className="text-xs text-gray-400">Hard &lt;-&gt; Soft</div>
+                                </label>
+                            </div>
+
+                            <Switch
+                                label="Enable De-Spill"
+                                checked={Boolean(config.postprocess.despill.enabled)}
+                                onChange={(v) => {
+                                    setWizardStageApproved(prev => ({ ...prev, matte_tuning: false }))
+                                    updateNestedConfig('postprocess', 'despill', 'enabled', v)
+                                }}
+                                tooltip="Reduces background color contamination on subject edges."
+                            />
+
+                            <StepStageApproval
+                                title="Run Stage 5 Output"
+                                description="This stage writes tuned alpha output for review and approval before final render."
+                                reviewPath={stageReviewPaths.matte_tuning}
+                                runLabel="Run Edge Tuning Stage"
+                                approveLabel="Approve Stage 5"
+                                approved={wizardStageApproved.matte_tuning}
+                                canApprove={wizardJobState === 'completed' && wizardActiveStage === 'matte_tuning'}
+                                loading={loading}
+                                jobId={wizardJobId}
+                                jobState={wizardJobState}
+                                progressPct={wizardProgressPct}
+                                progressLabel={wizardProgressLabel}
+                                timeRemaining={wizardTimeRemaining}
+                                jobError={wizardJobError}
+                                onBack={() => setWizardStep(4)}
+                                onRun={() => void runWizardApprovalStage('matte_tuning')}
+                                onApprove={() => handleApproveWizardStage('matte_tuning')}
+                                onNext={() => setWizardStep(6)}
+                                nextLabel="Next: Render"
+                            />
+                        </div>
+                    )}
+
+                    {wizardStep === 6 && (
+                        <StepRender
+                            inputBasename={inputBasename}
+                            frameStart={config.io.frame_start}
+                            frameEnd={config.io.frame_end}
+                            loading={loading}
+                            canStart={Boolean(config.io.input) && (!config.assignment.require_assignment || hasAssignment) && allWizardStagesApproved}
+                            jobId={wizardJobId}
+                            jobState={wizardJobState}
+                            progressPct={wizardProgressPct}
+                            progressLabel={wizardProgressLabel}
+                            timeRemaining={wizardTimeRemaining}
+                            jobError={wizardJobError}
+                            onBack={() => setWizardStep(5)}
+                            onStart={() => void submitPipelineJob({ navigateOnSubmit: false, stopAfterStage: 'io', wizardStage: 'render' })}
                             onLaunchQC={() => {
                                 if (onLaunchQC) onLaunchQC()
                             }}
@@ -2726,7 +2972,7 @@ export default function RunTab({
                                                         <Input
                                                             label="Bounding box margin (px)"
                                                             type="number"
-                                                            value={config.memory.region_constraint_bbox_margin_px ?? 96}
+                                                            value={config.memory.region_constraint_bbox_margin_px ?? 192}
                                                             onChange={e => updateConfig('memory', 'region_constraint_bbox_margin_px', parseInt(e.target.value || "0"))}
                                                             tooltip="Extra margin around detected subject bbox."
                                                         />
@@ -2734,14 +2980,14 @@ export default function RunTab({
                                                             label="Bounding box expand ratio"
                                                             type="number"
                                                             step="0.01"
-                                                            value={config.memory.region_constraint_bbox_expand_ratio ?? 0.15}
+                                                            value={config.memory.region_constraint_bbox_expand_ratio ?? 0.30}
                                                             onChange={e => updateConfig('memory', 'region_constraint_bbox_expand_ratio', parseFloat(e.target.value))}
                                                             tooltip="Relative bbox expansion based on subject size."
                                                         />
                                                         <Input
                                                             label="Expand constrained region (px)"
                                                             type="number"
-                                                            value={config.memory.region_constraint_dilate_px ?? 24}
+                                                            value={config.memory.region_constraint_dilate_px ?? 48}
                                                             onChange={e => updateConfig('memory', 'region_constraint_dilate_px', parseInt(e.target.value || "0"))}
                                                             tooltip="Morphological expansion to avoid accidental limb cropping."
                                                         />

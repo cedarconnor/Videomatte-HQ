@@ -126,7 +126,7 @@ export default function StepSubject({
                 />
             </div>
 
-            <div className="grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)_260px] gap-3">
+            <div className="grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)_240px] gap-3">
                 <div className="rounded border border-gray-700 bg-gray-900 p-3 space-y-2">
                     <div className="text-xs uppercase tracking-wide text-gray-500">Tool Palette</div>
                     <div className="grid grid-cols-3 gap-1">
@@ -135,8 +135,8 @@ export default function StepSubject({
                             title="Draw a box around the subject (B)"
                             onClick={() => onBuilderToolChange('box')}
                             className={`px-2 py-1.5 rounded text-xs font-semibold border ${builderTool === 'box'
-                                    ? 'bg-brand-500/20 border-brand-400 text-brand-200'
-                                    : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                                ? 'bg-brand-500/20 border-brand-400 text-brand-200'
+                                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
                                 }`}
                         >
                             Box
@@ -146,8 +146,8 @@ export default function StepSubject({
                             title="Add Foreground (Positive) Points (F)"
                             onClick={() => onBuilderToolChange('fg')}
                             className={`px-2 py-1.5 rounded text-xs font-semibold border ${builderTool === 'fg'
-                                    ? 'bg-green-500/20 border-green-400 text-green-200'
-                                    : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                                ? 'bg-green-500/20 border-green-400 text-green-200'
+                                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
                                 }`}
                         >
                             FG Point
@@ -157,8 +157,8 @@ export default function StepSubject({
                             title="Add Background (Negative) Points (G)"
                             onClick={() => onBuilderToolChange('bg')}
                             className={`px-2 py-1.5 rounded text-xs font-semibold border ${builderTool === 'bg'
-                                    ? 'bg-red-500/20 border-red-400 text-red-200'
-                                    : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+                                ? 'bg-red-500/20 border-red-400 text-red-200'
+                                : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
                                 }`}
                         >
                             BG Point
@@ -201,7 +201,7 @@ export default function StepSubject({
                     </div>
                 </div>
 
-                <div className="rounded border border-gray-700 bg-gray-900/50 p-3">
+                <div className="rounded border border-gray-700 bg-gray-900/50 p-2 lg:p-3">
                     <MaskBuilder
                         frameDataUrl={builderFrameDataUrl}
                         frameSize={builderFrameSize}
@@ -256,7 +256,7 @@ export default function StepSubject({
                     onClick={onNext}
                     className="px-4 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                    Next: Refine Edges
+                    Next: Run MatAnyone
                 </button>
             </div>
         </div>

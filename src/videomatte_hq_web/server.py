@@ -1,5 +1,6 @@
 """FastAPI Server definition."""
 
+import asyncio
 import base64
 import logging
 import re
@@ -303,6 +304,58 @@ def _png_data_url_from_rgb_u8(rgb: np.ndarray) -> str:
     return f"data:image/png;base64,{payload}"
 
 
+def _pick_local_path_dialog(
+    *,
+    mode: str,
+    initial_path: str = "",
+) -> str:
+    """Open a native desktop picker and return selected absolute path, or empty string if cancelled."""
+
+    if mode not in {"input_file", "output_dir"}:
+        raise ValueError(f"Unsupported picker mode: {mode}")
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError("Local path picker requires tkinter support in this Python environment.") from exc
+
+    init = Path(initial_path).expanduser() if str(initial_path).strip() else Path.cwd()
+    init_dir = init if init.is_dir() else init.parent
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+    except Exception:
+        # Not supported on all Tk backends; ignore.
+        pass
+
+    try:
+        if mode == "input_file":
+            selected = filedialog.askopenfilename(
+                title="Select Input Video or Frame Sequence Source",
+                initialdir=str(init_dir),
+                filetypes=[
+                    ("Video Files", "*.mp4 *.mov *.mkv *.avi *.webm *.mxf"),
+                    ("Image Files", "*.png *.jpg *.jpeg *.tif *.tiff *.exr"),
+                    ("All Files", "*.*"),
+                ],
+            )
+        else:
+            selected = filedialog.askdirectory(
+                title="Select Output Folder",
+                initialdir=str(init_dir),
+                mustexist=False,
+            )
+    finally:
+        root.destroy()
+
+    if not selected:
+        return ""
+    return str(Path(selected).resolve())
+
+
 @app.get("/api/fs/input-suggestions")
 async def list_input_suggestions():
     """Suggest likely input files for quick-start UI defaults."""
@@ -323,6 +376,36 @@ async def list_input_suggestions():
         return {"status": "ok", "paths": paths}
     except Exception as e:
         logger.exception("Failed to list input suggestions")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/fs/pick-input")
+async def pick_input_path(initial: str = ""):
+    """Open native file picker for selecting an input video path."""
+    try:
+        picked = await asyncio.to_thread(
+            _pick_local_path_dialog,
+            mode="input_file",
+            initial_path=initial,
+        )
+        return {"status": "ok", "path": picked}
+    except Exception as e:
+        logger.exception("Failed to pick input path")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/fs/pick-output-dir")
+async def pick_output_dir(initial: str = ""):
+    """Open native directory picker for selecting output directory."""
+    try:
+        picked = await asyncio.to_thread(
+            _pick_local_path_dialog,
+            mode="output_dir",
+            initial_path=initial,
+        )
+        return {"status": "ok", "path": picked}
+    except Exception as e:
+        logger.exception("Failed to pick output directory")
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -982,6 +1065,8 @@ async def qc_info():
             "prefix": "frame_",
             "ext": "png",
             "dir": "input_frames",
+            "start_index": 0,
+            "end_index": 0,
         },
         "output": {
             "pattern": None,
@@ -990,6 +1075,8 @@ async def qc_info():
             "prefix": "",
             "ext": "png",
             "dir": "out/alpha",
+            "start_index": 0,
+            "end_index": 0,
         },
     }
 
@@ -1035,6 +1122,25 @@ async def qc_info():
                 resolved_padding = 0
                 resolved_ext = first.suffix.lstrip(".")
 
+        start_index = 0
+        end_index = max(len(files) - 1, 0)
+        if resolved_padding and resolved_padding > 0:
+            indices: list[int] = []
+            for f in files:
+                m_idx = re.match(
+                    rf"^{re.escape(resolved_prefix or '')}(\d{{{int(resolved_padding)}}})\.{re.escape(str(resolved_ext or ''))}$",
+                    f.name,
+                    flags=re.IGNORECASE,
+                )
+                if m_idx:
+                    try:
+                        indices.append(int(m_idx.group(1)))
+                    except ValueError:
+                        pass
+            if indices:
+                start_index = min(indices)
+                end_index = max(indices)
+
         try:
             rel_dir = target.resolve().relative_to(root).as_posix()
         except Exception:
@@ -1047,6 +1153,8 @@ async def qc_info():
             "ext": resolved_ext,
             "dir": rel_dir,
             "pattern": first.name,
+            "start_index": int(start_index),
+            "end_index": int(end_index),
         }
 
     input_patterns: list[str] = []

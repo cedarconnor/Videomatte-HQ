@@ -56,7 +56,7 @@ export default function MaskBuilder({
     }
 
     return (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <div className="space-y-3">
             <div>
                 <div className="text-xs text-gray-400 mb-1">
                     Step 1: Prompt auto-detect or draw a subject box. Step 2: Add FG/BG points if needed.
@@ -65,7 +65,7 @@ export default function MaskBuilder({
                     Shortcuts: <span className="font-mono">F</span> foreground point, <span className="font-mono">B</span> background point, <span className="font-mono">Enter</span> build mask.
                 </div>
                 <div
-                    className={`relative inline-block border border-gray-700 rounded overflow-hidden ${builderTool === 'box' ? 'cursor-crosshair' : 'cursor-cell'}`}
+                    className={`relative w-full border border-gray-700 rounded overflow-hidden bg-black/30 ${builderTool === 'box' ? 'cursor-crosshair' : 'cursor-cell'}`}
                     onMouseDown={onMouseDown}
                     onMouseMove={onMouseMove}
                     onMouseUp={onMouseUp}
@@ -76,7 +76,7 @@ export default function MaskBuilder({
                         ref={imageRef}
                         src={frameDataUrl}
                         alt="Assignment frame preview"
-                        className="block max-h-[420px] w-auto select-none"
+                        className="block w-full h-auto max-h-[78vh] select-none"
                         draggable={false}
                     />
                     <svg
@@ -120,21 +120,24 @@ export default function MaskBuilder({
                     </svg>
                 </div>
             </div>
-            <div>
-                <div className="text-xs text-gray-400 mb-1">
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                <div className="text-xs text-gray-400">
                     Prompt summary: box={builderBox ? "yes" : "no"}, FG points={fgPoints.length}, BG points={bgPoints.length}
                 </div>
-                {maskPreviewUrl ? (
-                    <img
-                        src={maskPreviewUrl}
-                        alt="Built mask preview"
-                        className="block max-h-[420px] w-auto border border-gray-700 rounded"
-                    />
-                ) : (
-                    <div className="h-[220px] border border-dashed border-gray-700 rounded flex items-center justify-center text-xs text-gray-500 px-3 text-center">
-                        Built mask preview appears here after you click "Build + Import Mask".
-                    </div>
-                )}
+                <div>
+                    {maskPreviewUrl ? (
+                        <img
+                            src={maskPreviewUrl}
+                            alt="Built mask preview"
+                            className="block w-full max-h-[40vh] object-contain border border-gray-700 rounded bg-black/20"
+                        />
+                    ) : (
+                        <div className="h-[220px] border border-dashed border-gray-700 rounded flex items-center justify-center text-xs text-gray-500 px-3 text-center">
+                            Built mask preview appears here after you click "Build + Import Mask".
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     )

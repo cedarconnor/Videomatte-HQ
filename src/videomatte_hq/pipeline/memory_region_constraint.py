@@ -257,9 +257,9 @@ def build_memory_region_priors(
         return None
 
     threshold = float(np.clip(getattr(cfg.memory, "region_constraint_threshold", 0.2), 0.0, 1.0))
-    margin_px = max(0, int(getattr(cfg.memory, "region_constraint_bbox_margin_px", 96)))
-    expand_ratio = float(max(getattr(cfg.memory, "region_constraint_bbox_expand_ratio", 0.15), 0.0))
-    dilate_px = max(0, int(getattr(cfg.memory, "region_constraint_dilate_px", 24)))
+    margin_px = max(0, int(getattr(cfg.memory, "region_constraint_bbox_margin_px", 192)))
+    expand_ratio = float(max(getattr(cfg.memory, "region_constraint_bbox_expand_ratio", 0.30), 0.0))
+    dilate_px = max(0, int(getattr(cfg.memory, "region_constraint_dilate_px", 48)))
     soften_px = max(0, int(getattr(cfg.memory, "region_constraint_soften_px", 0)))
     min_cov = float(np.clip(getattr(cfg.memory, "region_constraint_flow_min_coverage", 0.002), 0.0, 1.0))
     max_cov = float(np.clip(getattr(cfg.memory, "region_constraint_flow_max_coverage", 0.98), 0.0, 1.0))

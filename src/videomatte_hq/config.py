@@ -102,9 +102,9 @@ class MemoryConfig(VMBaseModel):
     region_constraint_samurai_offload_video_to_cpu: bool = False
     region_constraint_samurai_offload_state_to_cpu: bool = False
     region_constraint_threshold: float = 0.2
-    region_constraint_bbox_margin_px: int = 96
-    region_constraint_bbox_expand_ratio: float = 0.15
-    region_constraint_dilate_px: int = 24
+    region_constraint_bbox_margin_px: int = 192
+    region_constraint_bbox_expand_ratio: float = 0.30
+    region_constraint_dilate_px: int = 48
     region_constraint_soften_px: int = 0
     region_constraint_outside_confidence_cap: float = 0.05
 
@@ -204,6 +204,14 @@ class RuntimeConfig(VMBaseModel):
     workers_io: int = 4
     cache_dir: str = ".cache"
     resume: bool = True
+    stop_after_stage: Literal[
+        "assignment",
+        "memory",
+        "refine",
+        "temporal_cleanup",
+        "matte_tuning",
+        "io",
+    ] = "io"
     verbose: bool = False
 
 

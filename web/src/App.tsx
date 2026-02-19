@@ -194,7 +194,7 @@ function AppInner() {
                 {/* Tab Content */}
                 <main className="flex-1 overflow-auto bg-gray-900 p-6 relative">
                     <div className={clsx(activeTab === 'run' && runViewMode === 'pro' ? 'max-w-none' : 'max-w-5xl mx-auto')}>
-                        {activeTab === 'run' && (
+                        <div className={clsx(activeTab === 'run' ? 'block' : 'hidden')}>
                             <RunTab
                                 onSuccess={() => setActiveTab('jobs')}
                                 onLaunchQC={() => setActiveTab('qc')}
@@ -203,7 +203,7 @@ function AppInner() {
                                 requestedProStage={requestedRunStage}
                                 requestedProStageNonce={runStageRequestNonce}
                             />
-                        )}
+                        </div>
                         {activeTab === 'jobs' && <JobsTab />}
                         {activeTab === 'settings' && <SettingsTab />}
                         {activeTab === 'qc' && <QCTab />}

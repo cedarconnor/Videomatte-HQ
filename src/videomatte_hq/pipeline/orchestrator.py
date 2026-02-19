@@ -42,6 +42,7 @@ from videomatte_hq.qc.optionb import (
 logger = logging.getLogger(__name__)
 
 PER_FRAME_CACHE_STAGES = {"memory_alpha", "memory_conf", "refined_alpha", "final_alpha", "tuned_alpha"}
+STOPPABLE_STAGES = {"assignment", "memory", "refine", "temporal_cleanup", "matte_tuning", "io"}
 
 
 class StageCache:
@@ -126,6 +127,32 @@ def _load_cache(cache_dir: Path, name: str, num_frames: int) -> Optional[Any]:
     return data
 
 
+def _write_stage_alpha_preview(
+    output_dir: Path,
+    stage_name: str,
+    alphas: list[np.ndarray],
+    *,
+    frame_start: int,
+    workers_io: int,
+) -> Path:
+    """Write full per-frame stage preview alphas for manual review/approval."""
+
+    from videomatte_hq.io.writer import AlphaWriter
+
+    stage_output_pattern = f"stages/{stage_name}/alpha/frame_%05d.png"
+    writer = AlphaWriter(
+        output_pattern=stage_output_pattern,
+        alpha_format="png16",
+        workers=max(1, int(workers_io)),
+        base_dir=output_dir,
+    )
+    for idx, alpha in enumerate(alphas):
+        writer.write(frame_start + idx, alpha)
+    writer.flush()
+    writer.close()
+    return output_dir / "stages" / stage_name / "alpha"
+
+
 def run_pipeline(cfg: VideoMatteConfig) -> None:
     """Execute the Option B runtime pipeline."""
 
@@ -137,6 +164,14 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
     stage_cache = StageCache(cache_dir, cfg)
 
     total_start = time.time()
+    stop_after_stage = str(getattr(cfg.runtime, "stop_after_stage", "io") or "io").strip().lower()
+    if stop_after_stage not in STOPPABLE_STAGES:
+        raise ValueError(
+            f"runtime.stop_after_stage must be one of {sorted(STOPPABLE_STAGES)}, got '{stop_after_stage}'."
+        )
+
+    def _stop_requested(stage_name: str) -> bool:
+        return stop_after_stage == str(stage_name).strip().lower()
 
     # ------------------------------------------------------------------
     # Stage 0: Load frames
@@ -203,6 +238,15 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
     logger.info(f"Loaded {len(keyframe_masks)} keyframe assignment(s) from {project_path}")
     stage_cache.mark_stage_complete("project")
     stage_cache.mark_stage_complete("assignment")
+    if _stop_requested("assignment"):
+        if cfg.project.autosave:
+            save_project(project_path, project)
+        elapsed = time.time() - total_start
+        logger.info(
+            "Stopping after Stage 1 (assignment) by request in %.1fs.",
+            elapsed,
+        )
+        return
 
     memory_region_priors = None
     refine_region_guidance_masks = None
@@ -286,6 +330,23 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
         )
 
     stage_cache.mark_stage_complete("memory")
+    if _stop_requested("memory"):
+        stage_dir = _write_stage_alpha_preview(
+            output_dir,
+            stage_name="stage2_memory",
+            alphas=coarse_alphas,
+            frame_start=write_index_start,
+            workers_io=cfg.runtime.workers_io,
+        )
+        if cfg.project.autosave:
+            save_project(project_path, project)
+        elapsed = time.time() - total_start
+        logger.info(
+            "Stopping after Stage 2 (memory) by request. Wrote review alphas to %s in %.1fs.",
+            stage_dir,
+            elapsed,
+        )
+        return
 
     # ------------------------------------------------------------------
     # Stage 3: Edge refinement
@@ -325,6 +386,23 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
         )
 
     stage_cache.mark_stage_complete("refine")
+    if _stop_requested("refine"):
+        stage_dir = _write_stage_alpha_preview(
+            output_dir,
+            stage_name="stage3_refine",
+            alphas=refined_alphas,
+            frame_start=write_index_start,
+            workers_io=cfg.runtime.workers_io,
+        )
+        if cfg.project.autosave:
+            save_project(project_path, project)
+        elapsed = time.time() - total_start
+        logger.info(
+            "Stopping after Stage 3 (refine) by request. Wrote review alphas to %s in %.1fs.",
+            stage_dir,
+            elapsed,
+        )
+        return
 
     # ------------------------------------------------------------------
     # Stage 4: Temporal cleanup
@@ -364,6 +442,23 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
         )
 
     stage_cache.mark_stage_complete("temporal_cleanup")
+    if _stop_requested("temporal_cleanup"):
+        stage_dir = _write_stage_alpha_preview(
+            output_dir,
+            stage_name="stage4_temporal",
+            alphas=final_alphas,
+            frame_start=write_index_start,
+            workers_io=cfg.runtime.workers_io,
+        )
+        if cfg.project.autosave:
+            save_project(project_path, project)
+        elapsed = time.time() - total_start
+        logger.info(
+            "Stopping after Stage 4 (temporal cleanup) by request. Wrote review alphas to %s in %.1fs.",
+            stage_dir,
+            elapsed,
+        )
+        return
 
     # ------------------------------------------------------------------
     # Stage 5: Matte tuning
@@ -408,6 +503,23 @@ def run_pipeline(cfg: VideoMatteConfig) -> None:
         diagnosis_written = True
 
     stage_cache.mark_stage_complete("matte_tuning")
+    if _stop_requested("matte_tuning"):
+        stage_dir = _write_stage_alpha_preview(
+            output_dir,
+            stage_name="stage5_tuned",
+            alphas=tuned_alphas,
+            frame_start=write_index_start,
+            workers_io=cfg.runtime.workers_io,
+        )
+        if cfg.project.autosave:
+            save_project(project_path, project)
+        elapsed = time.time() - total_start
+        logger.info(
+            "Stopping after Stage 5 (matte tuning) by request. Wrote review alphas to %s in %.1fs.",
+            stage_dir,
+            elapsed,
+        )
+        return
 
     # ------------------------------------------------------------------
     # Stage 6: Write outputs

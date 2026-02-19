@@ -27,7 +27,8 @@ export default function StepRefine({
 }: StepRefineProps) {
     return (
         <div className="space-y-3">
-            <h3 className="text-lg font-semibold text-white">How does it look?</h3>
+            <h3 className="text-lg font-semibold text-white">Configure Global Edge Refinement</h3>
+            <p className="text-xs text-gray-400">These settings apply to the final render. The preview below shows the anchor frame.</p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="rounded border border-gray-700 p-2 bg-gray-900">

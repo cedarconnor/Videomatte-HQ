@@ -110,3 +110,69 @@ Stabilize subject selection quality in Stage 1 for CLI-driven runs and eliminate
   - Regression checks passed: `44 passed, 1 skipped`; frontend production build passed.
 - Residual risk:
   - QC `edge_flicker` gate still fails on this clip (best observed around `~0.47` vs gate `0.12`); this appears dominated by high-motion edge behavior rather than Stage 1 subject acquisition/runtime failures.
+
+---
+
+# Wizard Reliability + Stage Approval Track (2026-02-19)
+
+## Scope
+Address current usability and quality blockers reported for Wizard mode:
+- path paste/browse friction for input video selection
+- tiny subject-selection canvas in Step 2
+- state loss when switching tabs and returning to Run Job
+- lack of explicit stage-by-stage approvals before full render
+- weak Stage 1 selection defaults in wizard flow
+
+## Plan
+- [x] Baseline + status gate
+  - [x] Run Conductor status review and verify active track context.
+  - [x] Capture current wizard/RunTab behavior assumptions in code references.
+- [x] Fix setup input UX
+  - [x] Add backend local file/folder picker APIs for desktop runs.
+  - [x] Add Wizard Step 1 browse controls for video file and output folder.
+  - [x] Keep direct path text inputs for manual copy/paste frame/video paths.
+- [x] Fix subject selection UX + Stage 1 defaults
+  - [x] Increase Step 2 builder viewport footprint for precise FG/BG marking.
+  - [x] Remove wizard-only forced single mask mode so Step 2 uses Samurai range backend defaults.
+  - [x] Preserve mask preview/keyframe context while iterating in Step 2.
+- [x] Fix state persistence
+  - [x] Keep `RunTab` mounted while switching sidebar tabs to prevent wizard reset.
+  - [x] Ensure wizard step and in-progress settings remain intact when navigating away and back.
+- [x] Implement staged approvals workflow
+  - [x] Add runtime stage-stop support in pipeline config + orchestrator.
+  - [x] Add wizard stage-run actions with explicit approvals:
+    - Step 3 MatAnyone coarse pass approval
+    - Step 4 MEMatte refine approval
+    - Step 5 Edge tuning approval
+    - Step 6 final render
+  - [x] Ensure each stage writes inspectable disk artifacts before next-step approval.
+- [ ] Verification
+  - [x] Run `python -m pytest -q`.
+  - [x] Run `cd web && npm run build`.
+  - [x] Validate no regressions in `/api/qc/info` and wizard render flow.
+
+## In Progress
+- Verification complete.
+
+## Review Notes
+- Implemented:
+  - New stage-stop runtime control (`runtime.stop_after_stage`) with orchestrator early-stop points and per-stage disk preview writes:
+    - `output/stages/stage2_memory/alpha/`
+    - `output/stages/stage3_refine/alpha/`
+    - `output/stages/stage5_tuned/alpha/`
+  - Wizard redesigned to six approval-gated steps:
+    - Setup/Import
+    - Select Subject
+    - Run MatAnyone (approve)
+    - Run MEMatte (approve)
+    - Tune Edges (approve)
+    - Render
+  - Setup step now supports native browse actions (video file + frame folder + output folder) while preserving manual path inputs.
+  - Subject selection preview area enlarged and mask preview retained for clearer prompt placement.
+  - Wizard Stage 2 no longer forces single-frame builder mode; it now uses configured multi-frame Samurai-backed flow by default.
+  - Run tab is now kept mounted in app layout, preventing wizard reset when switching to QC/Jobs/Settings and back.
+- Verification:
+  - `cd web && npm run build` passed.
+  - `.venv\Scripts\python -m pytest -q` passed (`45 passed, 1 skipped`).
+  - `python -m py_compile src/videomatte_hq/config.py src/videomatte_hq/pipeline/orchestrator.py src/videomatte_hq_web/server.py` passed.
+  - Note: global `python -m pytest -q` (outside `.venv`) still fails on this machine due environment-level Torch DLL issue (`c10_cuda.dll`, WinError 127).

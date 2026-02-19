@@ -70,3 +70,4 @@ UPGRADE_TASKS_PHASES_1_2_3.md
 Agents.md
 UI_REDESIGN_SPEC.md
 setup_test.py
+conductor/

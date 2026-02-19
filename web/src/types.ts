@@ -239,6 +239,7 @@ export interface RuntimeConfig {
     workers_io: number;
     cache_dir: string;
     resume: boolean;
+    stop_after_stage?: 'assignment' | 'memory' | 'refine' | 'temporal_cleanup' | 'matte_tuning' | 'io';
     verbose: boolean;
 }
 

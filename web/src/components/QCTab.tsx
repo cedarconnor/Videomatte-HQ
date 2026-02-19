@@ -3,8 +3,8 @@ import WipeComparison from './WipeComparison'
 import { FaRegImage, FaChevronLeft, FaChevronRight, FaStepBackward, FaStepForward } from 'react-icons/fa'
 
 interface QCInfo {
-    input: { prefix: string; padding: number; ext: string; count: number; dir?: string }
-    output: { prefix: string; padding: number; ext: string; count: number; dir?: string }
+    input: { prefix: string; padding: number; ext: string; count: number; dir?: string; start_index?: number; end_index?: number }
+    output: { prefix: string; padding: number; ext: string; count: number; dir?: string; start_index?: number; end_index?: number }
 }
 
 type CompositeMode = 'alpha' | 'checker' | 'white' | 'black' | 'overlay'
@@ -33,25 +33,47 @@ export default function QCTab() {
             .catch(() => {})
     }, [])
 
-    const maxFrame = qcInfo ? Math.max(qcInfo.input.count, qcInfo.output.count) - 1 : 162
-    const inputInfo = qcInfo?.input ?? { prefix: 'frame_', padding: 5, ext: 'png', dir: 'input_frames' }
-    const outputInfo = qcInfo?.output ?? { prefix: '', padding: 6, ext: 'png', dir: 'out/alpha' }
+    const inputInfo = qcInfo?.input ?? { prefix: 'frame_', padding: 5, ext: 'png', dir: 'input_frames', count: 0, start_index: 0, end_index: 162 }
+    const outputInfo = qcInfo?.output ?? { prefix: '', padding: 6, ext: 'png', dir: 'out/alpha', count: 0, start_index: 0, end_index: 162 }
 
-    const inputFrameStr = frame.toString().padStart(inputInfo.padding, '0')
-    const outputFrameStr = frame.toString().padStart(outputInfo.padding, '0')
+    const inputStart = Number.isFinite(inputInfo.start_index) ? Number(inputInfo.start_index) : 0
+    const inputEnd = Number.isFinite(inputInfo.end_index)
+        ? Number(inputInfo.end_index)
+        : Math.max(inputStart, inputStart + Math.max(inputInfo.count - 1, 0))
+    const outputStart = Number.isFinite(outputInfo.start_index) ? Number(outputInfo.start_index) : 0
+    const outputEnd = Number.isFinite(outputInfo.end_index)
+        ? Number(outputInfo.end_index)
+        : Math.max(outputStart, outputStart + Math.max(outputInfo.count - 1, 0))
+
+    const overlapStart = Math.max(inputStart, outputStart)
+    const overlapEnd = Math.min(inputEnd, outputEnd)
+    const hasOverlap = overlapEnd >= overlapStart
+    const sliderMin = hasOverlap ? overlapStart : (outputInfo.count > 0 ? outputStart : inputStart)
+    const sliderMax = hasOverlap
+        ? overlapEnd
+        : (outputInfo.count > 0 ? outputEnd : inputEnd)
+
+    const inputFrame = Math.max(inputStart, Math.min(frame, inputEnd))
+    const outputFrame = Math.max(outputStart, Math.min(frame, outputEnd))
+    const inputFrameStr = inputFrame.toString().padStart(inputInfo.padding, '0')
+    const outputFrameStr = outputFrame.toString().padStart(outputInfo.padding, '0')
 
     const inputBaseDir = (inputInfo.dir || 'input_frames').replace(/\\/g, '/').replace(/^\/+/, '')
     const outputBaseDir = (outputInfo.dir || 'out/alpha').replace(/\\/g, '/').replace(/^\/+/, '')
     const inputUrl = `/files/${inputBaseDir}/${inputInfo.prefix}${inputFrameStr}.${inputInfo.ext}`
     const outputUrl = `/files/${outputBaseDir}/${outputInfo.prefix}${outputFrameStr}.${outputInfo.ext}`
 
-    const clampFrame = useCallback((n: number) => Math.max(0, Math.min(n, maxFrame)), [maxFrame])
+    const clampFrame = useCallback((n: number) => Math.max(sliderMin, Math.min(n, sliderMax)), [sliderMin, sliderMax])
 
     const goTo = useCallback((n: number) => setFrame(clampFrame(n)), [clampFrame])
     const prev = useCallback(() => goTo(frame - 1), [frame, goTo])
     const next = useCallback(() => goTo(frame + 1), [frame, goTo])
     const prevJump = useCallback(() => goTo(frame - 10), [frame, goTo])
     const nextJump = useCallback(() => goTo(frame + 10), [frame, goTo])
+
+    useEffect(() => {
+        setFrame(prev => clampFrame(prev))
+    }, [clampFrame])
 
     // Keyboard shortcuts: arrows for prev/next, shift+arrows for jump
     useEffect(() => {
@@ -67,15 +89,15 @@ export default function QCTab() {
                 e.shiftKey ? nextJump() : next()
             } else if (e.key === 'Home') {
                 e.preventDefault()
-                goTo(0)
+                goTo(sliderMin)
             } else if (e.key === 'End') {
                 e.preventDefault()
-                goTo(maxFrame)
+                goTo(sliderMax)
             }
         }
         window.addEventListener('keydown', handler)
         return () => window.removeEventListener('keydown', handler)
-    }, [prev, next, prevJump, nextJump, goTo, maxFrame])
+    }, [prev, next, prevJump, nextJump, goTo, sliderMin, sliderMax])
 
     return (
         <div className="space-y-4" ref={containerRef}>
@@ -141,7 +163,7 @@ export default function QCTab() {
                 <div className="flex items-center gap-3">
                     {/* Navigation buttons */}
                     <div className="flex items-center gap-1">
-                        <button onClick={() => goTo(0)} className="p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-gray-700" title="First frame">
+                        <button onClick={() => goTo(sliderMin)} className="p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-gray-700" title="First frame">
                             <FaStepBackward className="text-xs" />
                         </button>
                         <button onClick={prevJump} className="p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-gray-700" title="Back 10 (Shift+Left)">
@@ -156,8 +178,8 @@ export default function QCTab() {
                     {/* Slider */}
                     <input
                         type="range"
-                        min={0}
-                        max={maxFrame}
+                        min={sliderMin}
+                        max={sliderMax}
                         value={frame}
                         onChange={e => setFrame(parseInt(e.target.value))}
                         className="flex-1 h-1.5 accent-brand-500 bg-gray-700 rounded-full cursor-pointer"
@@ -172,7 +194,7 @@ export default function QCTab() {
                             <FaChevronRight className="text-xs" />
                             <FaChevronRight className="text-xs -ml-1.5" />
                         </button>
-                        <button onClick={() => goTo(maxFrame)} className="p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-gray-700" title="Last frame">
+                        <button onClick={() => goTo(sliderMax)} className="p-1.5 text-gray-400 hover:text-white transition-colors rounded hover:bg-gray-700" title="Last frame">
                             <FaStepForward className="text-xs" />
                         </button>
                     </div>
@@ -184,10 +206,10 @@ export default function QCTab() {
                             value={frame}
                             onChange={e => goTo(parseInt(e.target.value) || 0)}
                             className="w-14 bg-transparent text-right font-mono text-white text-sm focus:outline-none"
-                            min={0}
-                            max={maxFrame}
+                            min={sliderMin}
+                            max={sliderMax}
                         />
-                        <span className="text-gray-500 text-xs font-mono">/ {maxFrame}</span>
+                        <span className="text-gray-500 text-xs font-mono">/ {sliderMax}</span>
                     </div>
                 </div>
                 <div className="text-center mt-1">
