@@ -51,11 +51,10 @@ export default function DashboardLayout({
                                 key={stage.id}
                                 type="button"
                                 onClick={() => onStageClick?.(stage.id)}
-                                className={`w-full text-left text-sm rounded px-2 py-2 border transition-colors ${
-                                    activeStage === stage.id
+                                className={`w-full text-left text-sm rounded px-2 py-2 border transition-colors ${activeStage === stage.id
                                         ? 'border-brand-500/40 bg-brand-500/10 text-brand-300'
                                         : 'border-gray-700 bg-gray-900 text-gray-300 hover:bg-gray-800'
-                                }`}
+                                    }`}
                             >
                                 {stage.label}
                             </button>
@@ -110,11 +109,19 @@ export default function DashboardLayout({
                     </div>
                 )}
                 {!rightPanelCollapsed && (rightPanel || (
-                    <div className="space-y-2">
-                        <div className="text-xs uppercase tracking-wide text-gray-500">Context Help</div>
-                        <p className="text-xs text-gray-400">
-                            Hover-focused help panel will be added in later phases.
-                        </p>
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <div className="text-xs uppercase tracking-wide text-gray-500">Context Help</div>
+                            <p className="text-xs text-gray-400">
+                                Hover over options to see details here.
+                            </p>
+                        </div>
+                        <div className="space-y-2 border-t border-gray-800 pt-4">
+                            <div className="text-xs uppercase tracking-wide text-gray-500">Recent Jobs</div>
+                            <div className="text-xs text-gray-500 italic">
+                                No active jobs. Start a pipeline run to see progress.
+                            </div>
+                        </div>
                     </div>
                 ))}
             </aside>

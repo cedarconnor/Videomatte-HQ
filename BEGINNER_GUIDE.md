@@ -5,7 +5,7 @@ This guide is for first-time users who want the easiest path.
 This build is locked to the production workflow:
 `SAM2/Samurai tracking -> MatAnyone coarse alpha -> MEMatte refinement -> optional matte cleanup`.
 
-![Mask Builder — load a frame, auto-detect the subject, and build a mask](docs/images/mask_builder_result.png)
+![Wizard Step 1 - Setup](docs/images/ui_wizard_step1.png)
 
 ## 1) Before You Start
 
@@ -38,40 +38,55 @@ run_web.bat
 
 `http://localhost:5173`
 
-## 4) Run Your First Matte
+## 4) Run Your First Matte (Wizard Mode)
 
-In the **Run Job** tab:
+The interface defaults to **Wizard Mode**, which guides you through the process in 4 simple steps.
 
-1. In **Wizard Step 1 (Setup)**, set:
-   - **Input Video or Frame Sequence**
-   - **Output Folder**
-   - Optional frame range (`Start Frame`, `End Frame`)
-2. Go to **Wizard Step 2 (Select Subject)**:
-   - Click **Load Frame**
-   - Optional: type prompt `person` and click **Auto-Detect**
-   - Draw one subject box
-   - Add FG/BG points if needed
-   - Click **Build Anchor Mask**
-3. Go to **Wizard Step 3 (Refine Edges)**:
-   - Adjust **Edge Tightness**
-   - Adjust **Edge Softness**
-   - Toggle **Enable De-Spill** as needed
-4. Go to **Wizard Step 4 (Render)** and click **Start Render**
+### Step 1: Setup
+- **Input**: Drag and drop your video file or browse to select it.
+- **Output**: Choose where to save the matte files.
+- Click **Next**.
 
-If you need full controls, switch to **Pro Mode** and use the left sidebar run stages:
-- **Video & Output**
-- **Subject Masks**
-- **Motion Tracking**
-- **Edge Detail Refinement**
-- **Final Edge Tuning**
-- **Hardware & Preview**
+![Wizard Step 1](docs/images/ui_wizard_step1.png)
+
+### Step 2: Select Subject
+This is where you define who to mat.
+1. Click **Load Frame** to see your video.
+2. **Auto-Detect**: Type a prompt like "person" and click Auto-Detect, OR
+3. **Manual**: Use the **Box** tool to draw around your subject.
+4. Click **Build Anchor Mask**.
+5. Once the mask appears and looks good, click **Next**.
+
+![Wizard Step 2](docs/images/ui_wizard_step2.png)
+
+### Step 3: Refine Edges
+Adjust the edge quality of your matte.
+- **Tightness**: Pulls the edge in (negative) or pushes it out (positive).
+- **Softness**: Feathers the edge transparency.
+- **De-Spill**: Removes green/blue color cast from the subject.
+- Click **Next**.
+
+![Wizard Step 3](docs/images/ui_wizard_step3.png)
+
+### Step 4: Render
+Review your settings and start the job.
+- Click **Start Pipeline**.
+- The progress bar will show the job status.
+- Once finished, you can view the results in the **Quality Control** tab.
+
+![Wizard Step 4](docs/images/ui_wizard_step4.png)
+
+### Pro Mode
+If you need more control, click **Switch to Pro Mode** in the top right. This reveals the full dashboard with advanced settings for Memory, Temporal Cleanup, and more.
+
+![Pro Mode Dashboard](docs/images/ui_pro_dashboard.png)
 
 Quick mask-builder shortcuts:
 - `F` = foreground points
 - `B` = background points
 - `Enter` = build mask
 
-If you switch to **Pro Mode**, keep these defaults unless you are troubleshooting:
+If you start with Pro Mode directly:
 
 1. In **Subject Masks**, build at least one keyframe mask.
 2. In **Motion Tracking**, keep region constraint enabled.

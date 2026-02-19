@@ -1013,7 +1013,10 @@ export default function RunTab({
 
         setBuilderBuildingMask(true)
         try {
-            if (builderWorkflowMode === 'multiple') {
+            // Force single mode if we are in Wizard, or if explicit single mode
+            const effectiveMode = runViewMode === 'wizard' ? 'single' : builderWorkflowMode
+
+            if (effectiveMode === 'multiple') {
                 const res = await fetch('/api/assignments/build-mask-range', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1917,1689 +1920,1703 @@ export default function RunTab({
 
                 <form id="run-job-form" onSubmit={handleSubmit} className="space-y-3">
                     <div className="space-y-2">
-                {/* 1. IO Section */}
-                <IOSection>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                        {/* Drop zone for input file */}
-                        <div
-                            className="col-span-2"
-                            onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-                            onDragLeave={() => setDragOver(false)}
-                            onDrop={handleDrop}
-                        >
-                            {!config.io.input ? (
-                                <div className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors cursor-pointer ${dragOver ? 'border-brand-500 bg-brand-500/5' : 'border-gray-700 hover:border-gray-500'}`}
-                                     onClick={() => {
-                                         const el = document.getElementById('input-path-field')
-                                         if (el) el.focus()
-                                     }}
+                        {/* 1. IO Section */}
+                        <IOSection>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                {/* Drop zone for input file */}
+                                <div
+                                    className="col-span-2"
+                                    onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+                                    onDragLeave={() => setDragOver(false)}
+                                    onDrop={handleDrop}
                                 >
-                                    <FaFileVideo className={`mx-auto text-2xl mb-2 ${dragOver ? 'text-brand-400' : 'text-gray-500'}`} />
-                                    <p className="text-sm text-gray-400">Drop a video file here or type the path below</p>
-                                    <input
-                                        id="input-path-field"
-                                        value={config.io.input}
-                                        onChange={e => updateConfig('io', 'input', e.target.value)}
-                                        placeholder="videos/my_video.mp4"
-                                        className="mt-2 w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500"
-                                    />
-                                </div>
-                            ) : (
-                                <Input
-                                    label="Input Video or Frame Path"
-                                    name="input"
-                                    value={config.io.input}
-                                    onChange={e => updateConfig('io', 'input', e.target.value)}
-                                    placeholder="videos/my_video.mp4"
-                                    tooltip="Path to the video file or image sequence (e.g., 'frame_%05d.png')."
-                                />
-                            )}
-                        </div>
-                        <Input
-                            label="Output Directory"
-                            value={config.io.output_dir}
-                            onChange={e => updateConfig('io', 'output_dir', e.target.value)}
-                            tooltip="Directory where results will be saved."
-                        />
-                        <Input
-                            label="Output File Naming (Alpha Frames)"
-                            value={config.io.output_alpha}
-                            onChange={e => updateConfig('io', 'output_alpha', e.target.value)}
-                            tooltip="Naming pattern for output alpha frames (printf format)."
-                        />
-                        <div className="grid grid-cols-2 gap-2">
-                            <Input
-                                label="Start Frame"
-                                type="number"
-                                value={config.io.frame_start}
-                                onChange={e => updateConfig('io', 'frame_start', parseInt(e.target.value))}
-                                tooltip="Frame index to start processing from (0-based)."
-                            />
-                            <Input
-                                label="End Frame"
-                                type="number"
-                                value={config.io.frame_end}
-                                onChange={e => updateConfig('io', 'frame_end', parseInt(e.target.value))}
-                                tooltip="Frame index to end at. Use -1 to process until end of video."
-                            />
-                        </div>
-                        <Select
-                            label="Shot Type"
-                            value={config.io.shot_type}
-                            onChange={e => updateConfig('io', 'shot_type', e.target.value)}
-                            options={[
-                                { value: 'locked_off', label: 'Locked Off' },
-                                { value: 'moving', label: 'Moving' },
-                                { value: 'unknown', label: 'Unknown' }
-                            ]}
-                            tooltip="Camera motion type. 'Locked Off' assumes a static camera."
-                        />
-                        {showAdvanced ? (
-                            <>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <Select
-                                        label="Alpha Format"
-                                        value={config.io.alpha_format}
-                                        onChange={e => updateConfig('io', 'alpha_format', e.target.value)}
-                                        options={[
-                                            { value: 'png16', label: 'PNG 16-bit' },
-                                            { value: 'png8', label: 'PNG 8-bit' },
-                                            { value: 'dwaa', label: 'EXR DWAA' }
-                                        ]}
-                                        tooltip="File format for the alpha matte."
-                                    />
-                                    <Input
-                                        label="EXR Compression Quality"
-                                        type="number"
-                                        step="0.1"
-                                        value={config.io.alpha_dwaa_quality}
-                                        onChange={e => updateConfig('io', 'alpha_dwaa_quality', parseFloat(e.target.value))}
-                                        tooltip="Compression quality for EXR DWAA. Higher is better."
-                                    />
-                                </div>
-                                <Switch
-                                    label="Force Overwrite"
-                                    checked={config.io.force_overwrite}
-                                    onChange={v => updateConfig('io', 'force_overwrite', v)}
-                                    tooltip="Overwrite existing files in the output directory."
-                                />
-                            </>
-                        ) : (
-                            <div className="md:col-span-2 text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
-                                Basic mode uses PNG 16-bit alpha format and keeps overwrite protection on.
-                            </div>
-                        )}
-                        {outputDirWarning && (
-                            <div className="md:col-span-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
-                                {outputDirWarning}
-                            </div>
-                        )}
-                    </div>
-                </IOSection>
-
-                {/* 2. Subject Assignment */}
-                <MaskSection>
-                    <div className="space-y-3">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Input
-                                label="Project File (.vmhqproj)"
-                                value={config.project.path}
-                                onChange={e => updateConfig('project', 'path', e.target.value)}
-                                placeholder="output/project.vmhqproj"
-                                tooltip="Optional explicit project path. Leave blank to auto-use output directory."
-                            />
-                            <Switch
-                                label="Require at least one subject mask"
-                                checked={config.assignment.require_assignment}
-                                onChange={v => updateConfig('assignment', 'require_assignment', v)}
-                                tooltip="Blocks the run until you import or generate at least one keyframe mask."
-                            />
-                            <Input
-                                label="Keyframe Index"
-                                type="number"
-                                value={assignmentFrame}
-                                onChange={e => setAssignmentFrame(parseInt(e.target.value || "0"))}
-                                tooltip="Frame index this mask corresponds to."
-                            />
-                            {showAdvanced ? (
-                                <Select
-                                    label="Assignment Source"
-                                    value={assignmentSourceMode}
-                                    onChange={e => setAssignmentSourceMode(e.target.value as AssignmentSourceMode)}
-                                    options={[
-                                        { value: 'generate', label: 'Generate From Video (Default)' },
-                                        { value: 'import', label: 'Import Existing Mask File' },
-                                    ]}
-                                    tooltip="Use Generate From Video for the normal workflow. Switch to Import only when you already have a mask image."
-                                />
-                            ) : (
-                                <div className="rounded border border-gray-700 px-3 py-2 text-xs text-gray-300 flex items-center">
-                                    Source is locked to Generate From Video. Enable Advanced to import external masks.
-                                </div>
-                            )}
-                            <Select
-                                label="Anchor type"
-                                value={assignmentKind}
-                                onChange={e => setAssignmentKind(e.target.value as 'initial' | 'correction')}
-                                options={[
-                                    { value: 'initial', label: 'Initial Anchor' },
-                                    { value: 'correction', label: 'Correction Anchor' },
-                                ]}
-                                tooltip="Use an initial anchor to start tracking, or a correction anchor to fix drift later in the shot."
-                            />
-                            {assignmentSourceMode === 'generate' && (
-                                <Select
-                                    label="Mask Creation Mode"
-                                    value={builderWorkflowMode}
-                                    onChange={e => setBuilderWorkflowMode(e.target.value as BuilderWorkflowMode)}
-                                    options={[
-                                        { value: 'single', label: 'Single Mask Frame' },
-                                        { value: 'multiple', label: 'Multiple Mask Frames (Range)' },
-                                    ]}
-                                    tooltip="Single creates one keyframe mask. Multiple builds masks across a frame range."
-                                />
-                            )}
-                            {showAdvanced && assignmentSourceMode === 'import' && (
-                                <Input
-                                    label="Mask Path"
-                                    value={assignmentMaskPath}
-                                    onChange={e => setAssignmentMaskPath(e.target.value)}
-                                    placeholder="D:\\path\\to\\mask.png"
-                                    tooltip="Filesystem path to keyframe mask image."
-                                />
-                            )}
-                            {showAdvanced && (
-                                <Switch
-                                    label="Auto-apply suggested reprocess range"
-                                    checked={autoApplySuggestedRange}
-                                    onChange={setAutoApplySuggestedRange}
-                                    tooltip="When you import a correction mask, automatically set the frame range that should be reprocessed."
-                                />
-                            )}
-                        </div>
-                        <div className="flex gap-2">
-                            {showAdvanced && assignmentSourceMode === 'import' && (
-                                <button
-                                    type="button"
-                                    onClick={handleImportAssignment}
-                                    disabled={assignmentBusy}
-                                    className="px-3 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                                >
-                                    {assignmentLoading ? <FaSpinner className="animate-spin" /> : <FaUpload />}
-                                    Import Mask
-                                </button>
-                            )}
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setAssignmentLoading(true)
-                                    refreshProjectSummary().finally(() => setAssignmentLoading(false))
-                                }}
-                                disabled={assignmentBusy}
-                                className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                            >
-                                <FaSync />
-                                Refresh
-                            </button>
-                        </div>
-                        {assignmentSourceMode === 'generate' && (
-                            <div className="text-xs text-gray-400">
-                                Workflow: load a frame from the input video/frames, draw prompts, then build one mask or a range of masks.
-                            </div>
-                        )}
-                        {assignmentSourceMode === 'generate' && (
-                        <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
-                            <div className="flex flex-wrap gap-2 items-center justify-between">
-                                <div className="text-sm font-semibold text-gray-200">Initial Mask Builder (Phase 3)</div>
-                                <div className="flex gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={handleLoadBuilderFrame}
-                                        disabled={assignmentBusy}
-                                        className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-100 text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {builderLoadingFrame ? "Loading..." : "Load Frame"}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={handleBuildMaskFromPrompts}
-                                        disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
-                                        className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {builderBuildingMask ? "Building..." : (builderWorkflowMode === 'multiple' ? "Build Anchor Mask" : "Build + Import Mask")}
-                                    </button>
-                                    {builderWorkflowMode === 'multiple' && (
-                                        <button
-                                            type="button"
-                                            onClick={handleBuildMaskRangeFromPrompts}
-                                            disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
-                                            className="px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                                            title="Build masks across a frame range using the selected range backend."
+                                    {!config.io.input ? (
+                                        <div className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors cursor-pointer ${dragOver ? 'border-brand-500 bg-brand-500/5' : 'border-gray-700 hover:border-gray-500'}`}
+                                            onClick={() => {
+                                                const el = document.getElementById('input-path-field')
+                                                if (el) el.focus()
+                                            }}
                                         >
-                                            {builderBuildingRange ? "Building Range..." : "Build + Import Range"}
-                                        </button>
+                                            <FaFileVideo className={`mx-auto text-2xl mb-2 ${dragOver ? 'text-brand-400' : 'text-gray-500'}`} />
+                                            <p className="text-sm text-gray-400">Drop a video file here or type the path below</p>
+                                            <input
+                                                id="input-path-field"
+                                                value={config.io.input}
+                                                onChange={e => updateConfig('io', 'input', e.target.value)}
+                                                placeholder="videos/my_video.mp4"
+                                                className="mt-2 w-full bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500"
+                                            />
+                                        </div>
+                                    ) : (
+                                        <Input
+                                            label="Input Video or Frame Path"
+                                            name="input"
+                                            value={config.io.input}
+                                            onChange={e => updateConfig('io', 'input', e.target.value)}
+                                            placeholder="videos/my_video.mp4"
+                                            tooltip="Path to the video file or image sequence (e.g., 'frame_%05d.png')."
+                                        />
                                     )}
                                 </div>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                                <div className="md:col-span-4">
+                                <Input
+                                    label="Output Directory"
+                                    value={config.io.output_dir}
+                                    onChange={e => updateConfig('io', 'output_dir', e.target.value)}
+                                    tooltip="Directory where results will be saved."
+                                />
+                                <Input
+                                    label="Output File Naming (Alpha Frames)"
+                                    value={config.io.output_alpha}
+                                    onChange={e => updateConfig('io', 'output_alpha', e.target.value)}
+                                    tooltip="Naming pattern for output alpha frames (printf format)."
+                                />
+                                <div className="grid grid-cols-2 gap-2">
                                     <Input
-                                        label="Prompt Auto-Detect"
-                                        value={builderPrompt}
-                                        onChange={e => setBuilderPrompt(e.target.value)}
-                                        placeholder="person, person left, person center"
-                                        tooltip="Suggest subject boxes from text prompt. Works best with people prompts."
+                                        label="Start Frame"
+                                        type="number"
+                                        value={config.io.frame_start}
+                                        onChange={e => updateConfig('io', 'frame_start', parseInt(e.target.value))}
+                                        tooltip="Frame index to start processing from (0-based)."
+                                    />
+                                    <Input
+                                        label="End Frame"
+                                        type="number"
+                                        value={config.io.frame_end}
+                                        onChange={e => updateConfig('io', 'frame_end', parseInt(e.target.value))}
+                                        tooltip="Frame index to end at. Use -1 to process until end of video."
                                     />
                                 </div>
-                                <div className="flex items-end">
-                                    <button
-                                        type="button"
-                                        onClick={handleSuggestBuilderBoxes}
-                                        disabled={assignmentBusy || !builderFrameDataUrl}
-                                        className="w-full px-3 py-2 rounded bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {builderSuggestingBoxes ? "Detecting..." : "Suggest Boxes"}
-                                    </button>
-                                </div>
-                            </div>
-                            {builderCandidates.length > 0 && (
-                                <div className="rounded border border-gray-700/80 bg-gray-900/70 p-2">
-                                    <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mb-2">
-                                        Prompt Candidates
-                                    </div>
-                                    <div className="flex flex-wrap gap-2">
-                                        {builderCandidates.map((cand, idx) => (
-                                            <button
-                                                key={`cand-${idx}`}
-                                                type="button"
-                                                onClick={() => applyBuilderCandidate(cand, idx)}
-                                                className="px-2.5 py-1.5 rounded border border-gray-600 bg-gray-800 hover:bg-gray-700 text-xs text-gray-100"
-                                                title={`${cand.source} (${cand.label}) score=${cand.score.toFixed(3)}`}
-                                            >
-                                                #{idx + 1} {cand.label} ({Math.round(cand.score * 100)}%)
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-                            <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                                {builderWorkflowMode === 'single' ? (
-                                    <Select
-                                        label="Mask Builder Backend"
-                                        value={builderBackend}
-                                        onChange={e => setBuilderBackend(e.target.value as BuilderBackend)}
-                                        options={[
-                                            { value: 'grabcut', label: 'GrabCut (Fast)' },
-                                            { value: 'sam', label: 'SAM (Phase 3)' },
-                                        ]}
-                                        tooltip="Single-frame mode only. Multiple-frame mode is locked to SAM2/Samurai."
-                                    />
+                                <Select
+                                    label="Shot Type"
+                                    value={config.io.shot_type}
+                                    onChange={e => updateConfig('io', 'shot_type', e.target.value)}
+                                    options={[
+                                        { value: 'locked_off', label: 'Locked Off' },
+                                        { value: 'moving', label: 'Moving' },
+                                        { value: 'unknown', label: 'Unknown' }
+                                    ]}
+                                    tooltip="Camera motion type. 'Locked Off' assumes a static camera."
+                                />
+                                {showAdvanced ? (
+                                    <>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <Select
+                                                label="Alpha Format"
+                                                value={config.io.alpha_format}
+                                                onChange={e => updateConfig('io', 'alpha_format', e.target.value)}
+                                                options={[
+                                                    { value: 'png16', label: 'PNG 16-bit' },
+                                                    { value: 'png8', label: 'PNG 8-bit' },
+                                                    { value: 'dwaa', label: 'EXR DWAA' }
+                                                ]}
+                                                tooltip="File format for the alpha matte."
+                                            />
+                                            <Input
+                                                label="EXR Compression Quality"
+                                                type="number"
+                                                step="0.1"
+                                                value={config.io.alpha_dwaa_quality}
+                                                onChange={e => updateConfig('io', 'alpha_dwaa_quality', parseFloat(e.target.value))}
+                                                tooltip="Compression quality for EXR DWAA. Higher is better."
+                                            />
+                                        </div>
+                                        <Switch
+                                            label="Force Overwrite"
+                                            checked={config.io.force_overwrite}
+                                            onChange={v => updateConfig('io', 'force_overwrite', v)}
+                                            tooltip="Overwrite existing files in the output directory."
+                                        />
+                                    </>
                                 ) : (
-                                    <div className="rounded border border-gray-700 px-3 py-2 text-xs text-gray-300 flex items-center">
-                                        Anchor backend is locked to SAM2/Samurai video predictor in Multiple Mask Frames mode.
+                                    <div className="md:col-span-2 text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                        Basic mode uses PNG 16-bit alpha format and keeps overwrite protection on.
                                     </div>
                                 )}
-                                <Select
-                                    label="Builder Tool"
-                                    value={builderTool}
-                                    onChange={e => setBuilderTool(e.target.value as BuilderTool)}
-                                    options={[
-                                        { value: 'box', label: 'Draw Box' },
-                                        { value: 'fg', label: 'Add FG Points' },
-                                        { value: 'bg', label: 'Add BG Points' },
-                                    ]}
-                                    tooltip="Draw one rough subject box first, then add positive/negative points."
-                                />
-                                <Input
-                                    label="Point Radius (px)"
-                                    type="number"
-                                    value={builderPointRadius}
-                                    onChange={e => setBuilderPointRadius(parseInt(e.target.value || "8"))}
-                                    tooltip="Brush size for FG/BG point prompts."
-                                />
-                                <Input
-                                    label="Iterations"
-                                    type="number"
-                                    value={builderIterCount}
-                                    onChange={e => setBuilderIterCount(parseInt(e.target.value || "5"))}
-                                    tooltip="Higher can improve difficult edges (slower)."
-                                />
-                                <div className="flex items-end">
+                                {outputDirWarning && (
+                                    <div className="md:col-span-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
+                                        {outputDirWarning}
+                                    </div>
+                                )}
+                            </div>
+                        </IOSection>
+
+                        {/* 2. Subject Assignment */}
+                        <MaskSection>
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                    <Input
+                                        label="Project File (.vmhqproj)"
+                                        value={config.project.path}
+                                        onChange={e => updateConfig('project', 'path', e.target.value)}
+                                        placeholder="output/project.vmhqproj"
+                                        tooltip="Optional explicit project path. Leave blank to auto-use output directory."
+                                    />
+                                    <Switch
+                                        label="Require at least one subject mask"
+                                        checked={config.assignment.require_assignment}
+                                        onChange={v => updateConfig('assignment', 'require_assignment', v)}
+                                        tooltip="Blocks the run until you import or generate at least one keyframe mask."
+                                    />
+                                    <Input
+                                        label="Keyframe Index"
+                                        type="number"
+                                        value={assignmentFrame}
+                                        onChange={e => setAssignmentFrame(parseInt(e.target.value || "0"))}
+                                        tooltip="Frame index this mask corresponds to."
+                                    />
+                                    {showAdvanced ? (
+                                        <Select
+                                            label="Assignment Source"
+                                            value={assignmentSourceMode}
+                                            onChange={e => setAssignmentSourceMode(e.target.value as AssignmentSourceMode)}
+                                            options={[
+                                                { value: 'generate', label: 'Generate From Video (Default)' },
+                                                { value: 'import', label: 'Import Existing Mask File' },
+                                            ]}
+                                            tooltip="Use Generate From Video for the normal workflow. Switch to Import only when you already have a mask image."
+                                        />
+                                    ) : (
+                                        <div className="rounded border border-gray-700 px-3 py-2 text-xs text-gray-300 flex items-center">
+                                            Source is locked to Generate From Video. Enable Advanced to import external masks.
+                                        </div>
+                                    )}
+                                    <Select
+                                        label="Anchor type"
+                                        value={assignmentKind}
+                                        onChange={e => setAssignmentKind(e.target.value as 'initial' | 'correction')}
+                                        options={[
+                                            { value: 'initial', label: 'Initial Anchor' },
+                                            { value: 'correction', label: 'Correction Anchor' },
+                                        ]}
+                                        tooltip="Use an initial anchor to start tracking, or a correction anchor to fix drift later in the shot."
+                                    />
+                                    {assignmentSourceMode === 'generate' && (
+                                        <Select
+                                            label="Mask Creation Mode"
+                                            value={builderWorkflowMode}
+                                            onChange={e => setBuilderWorkflowMode(e.target.value as BuilderWorkflowMode)}
+                                            options={[
+                                                { value: 'single', label: 'Single Mask Frame' },
+                                                { value: 'multiple', label: 'Multiple Mask Frames (Range)' },
+                                            ]}
+                                            tooltip="Single creates one keyframe mask. Multiple builds masks across a frame range."
+                                        />
+                                    )}
+                                    {showAdvanced && assignmentSourceMode === 'import' && (
+                                        <Input
+                                            label="Mask Path"
+                                            value={assignmentMaskPath}
+                                            onChange={e => setAssignmentMaskPath(e.target.value)}
+                                            placeholder="D:\\path\\to\\mask.png"
+                                            tooltip="Filesystem path to keyframe mask image."
+                                        />
+                                    )}
+                                    {showAdvanced && (
+                                        <Switch
+                                            label="Auto-apply suggested reprocess range"
+                                            checked={autoApplySuggestedRange}
+                                            onChange={setAutoApplySuggestedRange}
+                                            tooltip="When you import a correction mask, automatically set the frame range that should be reprocessed."
+                                        />
+                                    )}
+                                </div>
+                                <div className="flex gap-2">
+                                    {showAdvanced && assignmentSourceMode === 'import' && (
+                                        <button
+                                            type="button"
+                                            onClick={handleImportAssignment}
+                                            disabled={assignmentBusy}
+                                            className="px-3 py-2 rounded bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                                        >
+                                            {assignmentLoading ? <FaSpinner className="animate-spin" /> : <FaUpload />}
+                                            Import Mask
+                                        </button>
+                                    )}
                                     <button
                                         type="button"
-                                        onClick={clearBuilderPrompts}
+                                        onClick={() => {
+                                            setAssignmentLoading(true)
+                                            refreshProjectSummary().finally(() => setAssignmentLoading(false))
+                                        }}
                                         disabled={assignmentBusy}
-                                        className="w-full px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-100 text-xs font-semibold border border-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                                     >
-                                        Clear Prompts
+                                        <FaSync />
+                                        Refresh
                                     </button>
                                 </div>
-                            </div>
-                            {builderWorkflowMode === 'multiple' && (
-                            <div className="space-y-2 rounded border border-gray-700/70 bg-gray-900/70 p-2">
-                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                {assignmentSourceMode === 'generate' && (
+                                    <div className="text-xs text-gray-400">
+                                        Workflow: load a frame from the input video/frames, draw prompts, then build one mask or a range of masks.
+                                    </div>
+                                )}
+                                {assignmentSourceMode === 'generate' && (
+                                    <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
+                                        <div className="flex flex-wrap gap-2 items-center justify-between">
+                                            <div className="text-sm font-semibold text-gray-200">Initial Mask Builder (Phase 3)</div>
+                                            <div className="flex gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={handleLoadBuilderFrame}
+                                                    disabled={assignmentBusy}
+                                                    className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 text-gray-100 text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    {builderLoadingFrame ? "Loading..." : "Load Frame"}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleBuildMaskFromPrompts}
+                                                    disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
+                                                    className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    {builderBuildingMask ? "Building..." : (builderWorkflowMode === 'multiple' ? "Build Anchor Mask" : "Build + Import Mask")}
+                                                </button>
+                                                {builderWorkflowMode === 'multiple' && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleBuildMaskRangeFromPrompts}
+                                                        disabled={assignmentBusy || !builderFrameDataUrl || !builderBox}
+                                                        className="px-3 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        title="Build masks across a frame range using the selected range backend."
+                                                    >
+                                                        {builderBuildingRange ? "Building Range..." : "Build + Import Range"}
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                                            <div className="md:col-span-4">
+                                                <Input
+                                                    label="Prompt Auto-Detect"
+                                                    value={builderPrompt}
+                                                    onChange={e => setBuilderPrompt(e.target.value)}
+                                                    placeholder="person, person left, person center"
+                                                    tooltip="Suggest subject boxes from text prompt. Works best with people prompts."
+                                                />
+                                            </div>
+                                            <div className="flex items-end">
+                                                <button
+                                                    type="button"
+                                                    onClick={handleSuggestBuilderBoxes}
+                                                    disabled={assignmentBusy || !builderFrameDataUrl}
+                                                    className="w-full px-3 py-2 rounded bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    {builderSuggestingBoxes ? "Detecting..." : "Suggest Boxes"}
+                                                </button>
+                                            </div>
+                                        </div>
+                                        {builderCandidates.length > 0 && (
+                                            <div className="rounded border border-gray-700/80 bg-gray-900/70 p-2">
+                                                <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mb-2">
+                                                    Prompt Candidates
+                                                </div>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {builderCandidates.map((cand, idx) => (
+                                                        <button
+                                                            key={`cand-${idx}`}
+                                                            type="button"
+                                                            onClick={() => applyBuilderCandidate(cand, idx)}
+                                                            className="px-2.5 py-1.5 rounded border border-gray-600 bg-gray-800 hover:bg-gray-700 text-xs text-gray-100"
+                                                            title={`${cand.source} (${cand.label}) score=${cand.score.toFixed(3)}`}
+                                                        >
+                                                            #{idx + 1} {cand.label} ({Math.round(cand.score * 100)}%)
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                                            {builderWorkflowMode === 'single' ? (
+                                                <Select
+                                                    label="Mask Builder Backend"
+                                                    value={builderBackend}
+                                                    onChange={e => setBuilderBackend(e.target.value as BuilderBackend)}
+                                                    options={[
+                                                        { value: 'grabcut', label: 'GrabCut (Fast)' },
+                                                        { value: 'sam', label: 'SAM (Phase 3)' },
+                                                    ]}
+                                                    tooltip="Single-frame mode only. Multiple-frame mode is locked to SAM2/Samurai."
+                                                />
+                                            ) : (
+                                                <div className="rounded border border-gray-700 px-3 py-2 text-xs text-gray-300 flex items-center">
+                                                    Anchor backend is locked to SAM2/Samurai video predictor in Multiple Mask Frames mode.
+                                                </div>
+                                            )}
+                                            <Select
+                                                label="Builder Tool"
+                                                value={builderTool}
+                                                onChange={e => setBuilderTool(e.target.value as BuilderTool)}
+                                                options={[
+                                                    { value: 'box', label: 'Draw Box' },
+                                                    { value: 'fg', label: 'Add FG Points' },
+                                                    { value: 'bg', label: 'Add BG Points' },
+                                                ]}
+                                                tooltip="Draw one rough subject box first, then add positive/negative points."
+                                            />
+                                            <Input
+                                                label="Point Radius (px)"
+                                                type="number"
+                                                value={builderPointRadius}
+                                                onChange={e => setBuilderPointRadius(parseInt(e.target.value || "8"))}
+                                                tooltip="Brush size for FG/BG point prompts."
+                                            />
+                                            <Input
+                                                label="Iterations"
+                                                type="number"
+                                                value={builderIterCount}
+                                                onChange={e => setBuilderIterCount(parseInt(e.target.value || "5"))}
+                                                tooltip="Higher can improve difficult edges (slower)."
+                                            />
+                                            <div className="flex items-end">
+                                                <button
+                                                    type="button"
+                                                    onClick={clearBuilderPrompts}
+                                                    disabled={assignmentBusy}
+                                                    className="w-full px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-100 text-xs font-semibold border border-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    Clear Prompts
+                                                </button>
+                                            </div>
+                                        </div>
+                                        {builderWorkflowMode === 'multiple' && (
+                                            <div className="space-y-2 rounded border border-gray-700/70 bg-gray-900/70 p-2">
+                                                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                                    <Select
+                                                        label="Range Backend"
+                                                        value={builderRangeBackend}
+                                                        onChange={e => setBuilderRangeBackend(e.target.value as RangeBuilderBackend)}
+                                                        options={[
+                                                            { value: 'samurai_video_predictor', label: 'SAM2/Samurai Video Predictor (Locked)' },
+                                                        ]}
+                                                        tooltip="Stage 1 is locked to SAM2/Samurai video tracking for full-range mask generation."
+                                                        disabled
+                                                    />
+                                                    {builderRangeBackend === 'sam' ? (
+                                                        <>
+                                                            <Input
+                                                                label="SAM Model ID / Path"
+                                                                value={builderSamModelId}
+                                                                onChange={e => setBuilderSamModelId(e.target.value)}
+                                                                placeholder="facebook/sam-vit-base"
+                                                                tooltip="Use a local path or HuggingFace model id for SAM."
+                                                            />
+                                                            <Switch
+                                                                label="Local Files Only"
+                                                                checked={builderSamLocalOnly}
+                                                                onChange={setBuilderSamLocalOnly}
+                                                                tooltip="Recommended: ON. Avoids downloads and uses only local model files."
+                                                            />
+                                                            <Switch
+                                                                label="Allow GrabCut Fallback"
+                                                                checked={builderSamFallbackToGrabcut}
+                                                                onChange={setBuilderSamFallbackToGrabcut}
+                                                                tooltip="If OFF, SAM failures return an error instead of silently switching to GrabCut."
+                                                            />
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Input
+                                                                label="Samurai Model Cfg Path"
+                                                                value={builderSamuraiModelCfg}
+                                                                onChange={e => setBuilderSamuraiModelCfg(e.target.value)}
+                                                                placeholder="sam2.1_hiera_l.yaml"
+                                                                tooltip="Path to Samurai/SAM2 model config."
+                                                            />
+                                                            <Input
+                                                                label="Samurai Checkpoint Path"
+                                                                value={builderSamuraiCheckpoint}
+                                                                onChange={e => setBuilderSamuraiCheckpoint(e.target.value)}
+                                                                placeholder="checkpoints/sam2.1_hiera_large.pt"
+                                                                tooltip="Path to Samurai/SAM2 checkpoint file."
+                                                            />
+                                                            <div className="grid grid-cols-1 gap-2">
+                                                                <Switch
+                                                                    label="Offload Video To CPU"
+                                                                    checked={builderSamuraiOffloadVideoToCpu}
+                                                                    onChange={setBuilderSamuraiOffloadVideoToCpu}
+                                                                    tooltip="Reduce VRAM by keeping decoded video buffers on CPU."
+                                                                />
+                                                                <Switch
+                                                                    label="Offload State To CPU"
+                                                                    checked={builderSamuraiOffloadStateToCpu}
+                                                                    onChange={setBuilderSamuraiOffloadStateToCpu}
+                                                                    tooltip="Reduce VRAM by offloading predictor state to CPU."
+                                                                />
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </div>
+                                                <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold">
+                                                    Range Build (Stage 1 Subject Propagation Across Shot)
+                                                </div>
+                                                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                                    <Input
+                                                        label="Range Start"
+                                                        type="number"
+                                                        value={builderRangeStart}
+                                                        onChange={e => setBuilderRangeStart(parseInt(e.target.value || "0"))}
+                                                        tooltip="Absolute frame index to start range build."
+                                                    />
+                                                    <Input
+                                                        label="Range End"
+                                                        type="number"
+                                                        value={builderRangeEnd}
+                                                        onChange={e => setBuilderRangeEnd(parseInt(e.target.value || "-1"))}
+                                                        tooltip="Absolute frame index to end range build."
+                                                    />
+                                                    <Input
+                                                        label="Save Stride"
+                                                        type="number"
+                                                        value={builderRangeStride}
+                                                        onChange={e => setBuilderRangeStride(parseInt(e.target.value || "1"))}
+                                                        tooltip="Save every Nth built frame as keyframe assignment. 1 = every frame."
+                                                    />
+                                                    {builderRangeBackend === 'sam' ? (
+                                                        <Input
+                                                            label="Prompt Flow Downscale"
+                                                            type="number"
+                                                            step="0.05"
+                                                            value={builderRangeFlowDownscale}
+                                                            onChange={e => setBuilderRangeFlowDownscale(parseFloat(e.target.value || "0.5"))}
+                                                            tooltip="Downscale for optical-flow prompt tracking."
+                                                        />
+                                                    ) : (
+                                                        <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2 flex items-center">
+                                                            Samurai uses video memory tracking from anchor prompts; per-frame prompt flow is not needed.
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                {builderRangeBackend === 'sam' && (
+                                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                                                        <Switch
+                                                            label="Track Prompts With Flow"
+                                                            checked={builderRangeTrackPrompts}
+                                                            onChange={setBuilderRangeTrackPrompts}
+                                                            tooltip="Optional. ON moves box/FG/BG points frame-to-frame using optical flow; OFF matches anchor-only prompt behavior."
+                                                        />
+                                                        <Switch
+                                                            label="Track BG Points With Flow"
+                                                            checked={builderRangeTrackBgPoints}
+                                                            onChange={setBuilderRangeTrackBgPoints}
+                                                            tooltip="OFF recommended for locked-off shots to keep negative points pinned."
+                                                        />
+                                                        <Switch
+                                                            label="Overwrite Existing Frames"
+                                                            checked={builderRangeOverwriteExisting}
+                                                            onChange={setBuilderRangeOverwriteExisting}
+                                                            tooltip="Replace existing assignments if frame indices collide."
+                                                        />
+                                                    </div>
+                                                )}
+                                                {builderRangeBackend === 'samurai_video_predictor' && (
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                                        <Switch
+                                                            label="Overwrite Existing Frames"
+                                                            checked={builderRangeOverwriteExisting}
+                                                            onChange={setBuilderRangeOverwriteExisting}
+                                                            tooltip="Replace existing assignments if frame indices collide."
+                                                        />
+                                                        <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2 flex items-center">
+                                                            Tip: add strong FG/BG anchor points on frame 0 and optionally mid/end before rerunning range build.
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                        <MaskBuilder
+                                            frameDataUrl={builderFrameDataUrl}
+                                            frameSize={builderFrameSize}
+                                            maskPreviewUrl={builderMaskPreviewUrl}
+                                            builderBox={builderBox}
+                                            activeBuilderBox={activeBuilderBox}
+                                            fgPoints={builderFgPoints}
+                                            bgPoints={builderBgPoints}
+                                            pointRadius={builderPointRadius}
+                                            builderTool={builderTool}
+                                            imageRef={builderImgRef}
+                                            onMouseDown={handleBuilderMouseDown}
+                                            onMouseMove={handleBuilderMouseMove}
+                                            onMouseUp={handleBuilderMouseUp}
+                                            onMouseLeave={handleBuilderMouseLeave}
+                                            onClick={handleBuilderClick}
+                                        />
+                                    </div>
+                                )}
+                                <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="text-sm font-semibold text-gray-200">
+                                            Phase 4: Long-Range Propagation Assist
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handlePropagateAssignments}
+                                            disabled={assignmentBusy}
+                                            className="px-3 py-2 rounded bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {propagateRunning ? "Propagating..." : "Propagate Keyframes"}
+                                        </button>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
                                         <Select
-                                            label="Range Backend"
-                                            value={builderRangeBackend}
-                                            onChange={e => setBuilderRangeBackend(e.target.value as RangeBuilderBackend)}
+                                            label="Backend"
+                                            value={propagateBackend}
+                                            onChange={e => setPropagateBackend(e.target.value as PropagationBackend)}
                                             options={[
-                                                { value: 'samurai_video_predictor', label: 'SAM2/Samurai Video Predictor (Locked)' },
+                                                { value: 'sam2_video_predictor', label: 'SAM2/Samurai Video Predictor (Locked)' },
                                             ]}
-                                            tooltip="Stage 1 is locked to SAM2/Samurai video tracking for full-range mask generation."
+                                            tooltip="Phase 4 is locked to SAM2/Samurai predictor propagation."
                                             disabled
                                         />
-                                        {builderRangeBackend === 'sam' ? (
-                                            <>
-                                                <Input
-                                                    label="SAM Model ID / Path"
-                                                    value={builderSamModelId}
-                                                    onChange={e => setBuilderSamModelId(e.target.value)}
-                                                    placeholder="facebook/sam-vit-base"
-                                                    tooltip="Use a local path or HuggingFace model id for SAM."
-                                                />
-                                                <Switch
-                                                    label="Local Files Only"
-                                                    checked={builderSamLocalOnly}
-                                                    onChange={setBuilderSamLocalOnly}
-                                                    tooltip="Recommended: ON. Avoids downloads and uses only local model files."
-                                                />
-                                                <Switch
-                                                    label="Allow GrabCut Fallback"
-                                                    checked={builderSamFallbackToGrabcut}
-                                                    onChange={setBuilderSamFallbackToGrabcut}
-                                                    tooltip="If OFF, SAM failures return an error instead of silently switching to GrabCut."
-                                                />
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Input
-                                                    label="Samurai Model Cfg Path"
-                                                    value={builderSamuraiModelCfg}
-                                                    onChange={e => setBuilderSamuraiModelCfg(e.target.value)}
-                                                    placeholder="sam2.1_hiera_l.yaml"
-                                                    tooltip="Path to Samurai/SAM2 model config."
-                                                />
-                                                <Input
-                                                    label="Samurai Checkpoint Path"
-                                                    value={builderSamuraiCheckpoint}
-                                                    onChange={e => setBuilderSamuraiCheckpoint(e.target.value)}
-                                                    placeholder="checkpoints/sam2.1_hiera_large.pt"
-                                                    tooltip="Path to Samurai/SAM2 checkpoint file."
-                                                />
-                                                <div className="grid grid-cols-1 gap-2">
-                                                    <Switch
-                                                        label="Offload Video To CPU"
-                                                        checked={builderSamuraiOffloadVideoToCpu}
-                                                        onChange={setBuilderSamuraiOffloadVideoToCpu}
-                                                        tooltip="Reduce VRAM by keeping decoded video buffers on CPU."
-                                                    />
-                                                    <Switch
-                                                        label="Offload State To CPU"
-                                                        checked={builderSamuraiOffloadStateToCpu}
-                                                        onChange={setBuilderSamuraiOffloadStateToCpu}
-                                                        tooltip="Reduce VRAM by offloading predictor state to CPU."
-                                                    />
-                                                </div>
-                                            </>
-                                        )}
-                                    </div>
-                                    <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold">
-                                        Range Build (Stage 1 Subject Propagation Across Shot)
-                                    </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                                         <Input
                                             label="Range Start"
                                             type="number"
-                                            value={builderRangeStart}
-                                            onChange={e => setBuilderRangeStart(parseInt(e.target.value || "0"))}
-                                            tooltip="Absolute frame index to start range build."
+                                            value={propagateFrameStart}
+                                            onChange={e => setPropagateFrameStart(parseInt(e.target.value || "0"))}
+                                            tooltip="Absolute frame index to start propagation."
                                         />
                                         <Input
                                             label="Range End"
                                             type="number"
-                                            value={builderRangeEnd}
-                                            onChange={e => setBuilderRangeEnd(parseInt(e.target.value || "-1"))}
-                                            tooltip="Absolute frame index to end range build."
+                                            value={propagateFrameEnd}
+                                            onChange={e => setPropagateFrameEnd(parseInt(e.target.value || "-1"))}
+                                            tooltip="Absolute frame index to end propagation."
                                         />
                                         <Input
-                                            label="Save Stride"
+                                            label="Stride"
                                             type="number"
-                                            value={builderRangeStride}
-                                            onChange={e => setBuilderRangeStride(parseInt(e.target.value || "1"))}
-                                            tooltip="Save every Nth built frame as keyframe assignment. 1 = every frame."
+                                            value={propagateStride}
+                                            onChange={e => setPropagateStride(parseInt(e.target.value || "8"))}
+                                            tooltip="Insert one propagated keyframe every N frames."
                                         />
-                                        {builderRangeBackend === 'sam' ? (
-                                            <Input
-                                                label="Prompt Flow Downscale"
-                                                type="number"
-                                                step="0.05"
-                                                value={builderRangeFlowDownscale}
-                                                onChange={e => setBuilderRangeFlowDownscale(parseFloat(e.target.value || "0.5"))}
-                                                tooltip="Downscale for optical-flow prompt tracking."
-                                            />
-                                        ) : (
-                                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2 flex items-center">
-                                                Samurai uses video memory tracking from anchor prompts; per-frame prompt flow is not needed.
-                                            </div>
-                                        )}
+                                        <Input
+                                            label="Max New Keyframes"
+                                            type="number"
+                                            value={propagateMaxNewKeyframes}
+                                            onChange={e => setPropagateMaxNewKeyframes(parseInt(e.target.value || "24"))}
+                                            tooltip="Cap how many propagated correction anchors are added."
+                                        />
                                     </div>
-                                    {builderRangeBackend === 'sam' && (
-                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                                            <Switch
-                                                label="Track Prompts With Flow"
-                                                checked={builderRangeTrackPrompts}
-                                                onChange={setBuilderRangeTrackPrompts}
-                                                tooltip="Optional. ON moves box/FG/BG points frame-to-frame using optical flow; OFF matches anchor-only prompt behavior."
-                                            />
-                                            <Switch
-                                                label="Track BG Points With Flow"
-                                                checked={builderRangeTrackBgPoints}
-                                                onChange={setBuilderRangeTrackBgPoints}
-                                                tooltip="OFF recommended for locked-off shots to keep negative points pinned."
-                                            />
-                                            <Switch
-                                                label="Overwrite Existing Frames"
-                                                checked={builderRangeOverwriteExisting}
-                                                onChange={setBuilderRangeOverwriteExisting}
-                                                tooltip="Replace existing assignments if frame indices collide."
-                                            />
-                                        </div>
-                                    )}
-                                    {builderRangeBackend === 'samurai_video_predictor' && (
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                            <Switch
-                                                label="Overwrite Existing Frames"
-                                                checked={builderRangeOverwriteExisting}
-                                                onChange={setBuilderRangeOverwriteExisting}
-                                                tooltip="Replace existing assignments if frame indices collide."
-                                            />
-                                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2 flex items-center">
-                                                Tip: add strong FG/BG anchor points on frame 0 and optionally mid/end before rerunning range build.
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                            <MaskBuilder
-                                frameDataUrl={builderFrameDataUrl}
-                                frameSize={builderFrameSize}
-                                maskPreviewUrl={builderMaskPreviewUrl}
-                                builderBox={builderBox}
-                                activeBuilderBox={activeBuilderBox}
-                                fgPoints={builderFgPoints}
-                                bgPoints={builderBgPoints}
-                                pointRadius={builderPointRadius}
-                                builderTool={builderTool}
-                                imageRef={builderImgRef}
-                                onMouseDown={handleBuilderMouseDown}
-                                onMouseMove={handleBuilderMouseMove}
-                                onMouseUp={handleBuilderMouseUp}
-                                onMouseLeave={handleBuilderMouseLeave}
-                                onClick={handleBuilderClick}
-                            />
-                        </div>
-                        )}
-                        <div className="rounded border border-gray-700 bg-gray-900/50 p-3 space-y-3">
-                            <div className="flex items-center justify-between gap-2">
-                                <div className="text-sm font-semibold text-gray-200">
-                                    Phase 4: Long-Range Propagation Assist
-                                </div>
-                                <button
-                                    type="button"
-                                    onClick={handlePropagateAssignments}
-                                    disabled={assignmentBusy}
-                                    className="px-3 py-2 rounded bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    {propagateRunning ? "Propagating..." : "Propagate Keyframes"}
-                                </button>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                                <Select
-                                    label="Backend"
-                                    value={propagateBackend}
-                                    onChange={e => setPropagateBackend(e.target.value as PropagationBackend)}
-                                    options={[
-                                        { value: 'sam2_video_predictor', label: 'SAM2/Samurai Video Predictor (Locked)' },
-                                    ]}
-                                    tooltip="Phase 4 is locked to SAM2/Samurai predictor propagation."
-                                    disabled
-                                />
-                                <Input
-                                    label="Range Start"
-                                    type="number"
-                                    value={propagateFrameStart}
-                                    onChange={e => setPropagateFrameStart(parseInt(e.target.value || "0"))}
-                                    tooltip="Absolute frame index to start propagation."
-                                />
-                                <Input
-                                    label="Range End"
-                                    type="number"
-                                    value={propagateFrameEnd}
-                                    onChange={e => setPropagateFrameEnd(parseInt(e.target.value || "-1"))}
-                                    tooltip="Absolute frame index to end propagation."
-                                />
-                                <Input
-                                    label="Stride"
-                                    type="number"
-                                    value={propagateStride}
-                                    onChange={e => setPropagateStride(parseInt(e.target.value || "8"))}
-                                    tooltip="Insert one propagated keyframe every N frames."
-                                />
-                                <Input
-                                    label="Max New Keyframes"
-                                    type="number"
-                                    value={propagateMaxNewKeyframes}
-                                    onChange={e => setPropagateMaxNewKeyframes(parseInt(e.target.value || "24"))}
-                                    tooltip="Cap how many propagated correction anchors are added."
-                                />
-                            </div>
-                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
-                                Flow guard rails are fixed to production defaults (downscale 0.5, coverage 0.002..0.98, feather 1 px).
-                            </div>
-                            {propagateBackend === 'samurai_video_predictor' && (
-                                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                                    <Input
-                                        label="Samurai Model Cfg Path"
-                                        value={propagateSamuraiModelCfg}
-                                        onChange={e => setPropagateSamuraiModelCfg(e.target.value)}
-                                        placeholder="sam2.1_hiera_l.yaml"
-                                        tooltip="Path to Samurai/SAM2 model config file."
-                                    />
-                                    <Input
-                                        label="Samurai Checkpoint Path"
-                                        value={propagateSamuraiCheckpoint}
-                                        onChange={e => setPropagateSamuraiCheckpoint(e.target.value)}
-                                        placeholder="checkpoints/sam2.1_hiera_large.pt"
-                                        tooltip="Path to Samurai/SAM2 checkpoint file."
-                                    />
-                                    <Switch
-                                        label="Offload Video To CPU"
-                                        checked={propagateSamuraiOffloadVideoToCpu}
-                                        onChange={setPropagateSamuraiOffloadVideoToCpu}
-                                        tooltip="Reduce VRAM by storing decoded frames on CPU."
-                                    />
-                                    <Switch
-                                        label="Offload State To CPU"
-                                        checked={propagateSamuraiOffloadStateToCpu}
-                                        onChange={setPropagateSamuraiOffloadStateToCpu}
-                                        tooltip="Reduce VRAM by offloading predictor state."
-                                    />
-                                </div>
-                            )}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                <div className="text-xs text-amber-300/90 border border-amber-500/40 rounded px-3 py-2 bg-amber-500/10">
-                                    Flow fallback is disabled for propagation. SAM2/Samurai must succeed.
-                                </div>
-                                <Switch
-                                    label="Overwrite Existing Frames"
-                                    checked={propagateOverwriteExisting}
-                                    onChange={setPropagateOverwriteExisting}
-                                    tooltip="Replace existing assignments if propagated frame indices collide."
-                                />
-                            </div>
-                            <div className="text-xs text-gray-400">
-                                Uses current <span className="font-mono">Keyframe Index</span> as the anchor frame.
-                            </div>
-                        </div>
-                        <div className="text-xs text-gray-400">
-                            Project: <span className="font-mono text-gray-300">{projectSummary?.project_path || "(not resolved yet)"}</span>
-                        </div>
-                        <div className="text-xs text-gray-400">
-                            Imported keyframes: <span className="font-semibold text-gray-200">{projectSummary?.keyframe_count ?? 0}</span>
-                        </div>
-                        {suggestedRange && (
-                            <div className="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/30 rounded p-2 flex items-center justify-between gap-2">
-                                <span>
-                                    Suggested reprocess range: <span className="font-mono">{suggestedRange.frame_start}..{suggestedRange.frame_end}</span>
-                                </span>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        applySuggestedRange(suggestedRange)
-                                        setStatus(`Applied suggested reprocess range ${suggestedRange.frame_start}..${suggestedRange.frame_end}.`)
-                                    }}
-                                    className="px-2 py-1 rounded bg-blue-500 hover:bg-blue-600 text-white text-xs font-medium"
-                                >
-                                    Apply Range
-                                </button>
-                            </div>
-                        )}
-                        {(projectSummary?.keyframes?.length ?? 0) > 0 && (
-                            <div className="max-h-32 overflow-auto border border-gray-700 rounded p-2 text-xs">
-                                {projectSummary!.keyframes.map(kf => (
-                                    <div key={`${kf.frame}:${kf.mask_asset}`} className="text-gray-300 font-mono">
-                                        frame={kf.frame} kind={kf.kind} mask={kf.mask_asset}
+                                    <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                        Flow guard rails are fixed to production defaults (downscale 0.5, coverage 0.002..0.98, feather 1 px).
                                     </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                </MaskSection>
-
-                {/* 3. Memory Propagation */}
-                <div id="run-step-memory" className="scroll-mt-28">
-                <Section
-                    title="Subject Tracking Memory"
-                    defaultOpen={true}
-                    tooltip="Tracks the selected subject across the clip before edge refinement."
-                >
-                    <div className="space-y-3">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Select
-                                label="Memory algorithm"
-                                value={config.memory.backend}
-                                onChange={e => updateConfig('memory', 'backend', e.target.value)}
-                                options={[
-                                    { value: 'matanyone', label: 'MatAnyone Temporal Memory (Locked)' },
-                                ]}
-                                tooltip="Stage 2 is locked to MatAnyone for low-resolution temporal alpha propagation."
-                                disabled
-                            />
-                            {showAdvanced ? (
-                                <>
-                                    <Input
-                                        label="Memory anchor count"
-                                        type="number"
-                                        value={config.memory.memory_frames}
-                                        onChange={e => updateConfig('memory', 'memory_frames', parseInt(e.target.value || "1"))}
-                                        tooltip="Target number of anchors kept in memory."
-                                    />
-                                    <Input
-                                        label="Anchor time window"
-                                        type="number"
-                                        value={config.memory.window}
-                                        onChange={e => updateConfig('memory', 'window', parseInt(e.target.value || "1"))}
-                                        tooltip="Frame distance weight for anchor influence."
-                                    />
-                                    <Input
-                                        label="Max Anchors"
-                                        type="number"
-                                        value={config.memory.max_anchors}
-                                        onChange={e => updateConfig('memory', 'max_anchors', parseInt(e.target.value || "1"))}
-                                        tooltip="Hard cap on total memory anchors."
-                                    />
-                                    <Input
-                                        label="Reanchor Threshold"
-                                        type="number"
-                                        step="0.01"
-                                        value={config.memory.confidence_reanchor_threshold}
-                                        onChange={e => updateConfig('memory', 'confidence_reanchor_threshold', parseFloat(e.target.value))}
-                                        tooltip="If mean confidence drops below this, memory pass can auto-add anchor candidates."
-                                    />
-                                    <Input
-                                        label="Auto Anchor Min Gap"
-                                        type="number"
-                                        value={config.memory.auto_anchor_min_gap || 0}
-                                        onChange={e => updateConfig('memory', 'auto_anchor_min_gap', parseInt(e.target.value || "0"))}
-                                        tooltip="Minimum frame gap between automatically-added anchors."
-                                    />
-                                </>
-                            ) : (
-                                <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2 md:col-span-1">
-                                    Using production defaults for memory anchors and reanchor behavior. Switch on Advanced to tune.
-                                </div>
-                            )}
-                        </div>
-
-                        <div className="border-t border-gray-700/50 pt-3 space-y-2">
-                            {showAdvanced ? (
-                                <>
-                                    <Switch
-                                        label="Constrain tracking to subject region"
-                                        checked={Boolean(config.memory.region_constraint_enabled)}
-                                        onChange={v => updateConfig('memory', 'region_constraint_enabled', v)}
-                                        tooltip="Build a full-range subject region prior and clamp Stage-2 alpha outside it."
-                                    />
-                                    {config.memory.region_constraint_enabled && (
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                                            <Select
-                                                label="Region source"
-                                                value={config.memory.region_constraint_source || 'none'}
-                                                onChange={e => updateConfig('memory', 'region_constraint_source', e.target.value)}
-                                                options={[
-                                                    { value: 'propagated_mask', label: 'Tracked Subject Mask (Locked)' },
-                                                ]}
-                                                tooltip="Stage 1 tracked subject mask is used directly as the region prior."
-                                                disabled
-                                            />
+                                    {propagateBackend === 'samurai_video_predictor' && (
+                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                                             <Input
-                                                label="Region anchor frame"
-                                                type="number"
-                                                value={config.memory.region_constraint_anchor_frame ?? -1}
-                                                onChange={e => updateConfig('memory', 'region_constraint_anchor_frame', parseInt(e.target.value || "-1"))}
-                                                tooltip="-1 means first available keyframe anchor."
-                                            />
-                                            <div className="text-xs text-amber-300/90 border border-amber-500/40 rounded px-3 py-2 bg-amber-500/10 md:col-span-2">
-                                                Region propagation backend is fixed to SAM2/Samurai. Optical-flow fallback is disabled.
-                                            </div>
-                                            <Input
-                                                label="Samurai model config path"
-                                                value={config.memory.region_constraint_samurai_model_cfg || ""}
-                                                onChange={e => updateConfig('memory', 'region_constraint_samurai_model_cfg', e.target.value)}
+                                                label="Samurai Model Cfg Path"
+                                                value={propagateSamuraiModelCfg}
+                                                onChange={e => setPropagateSamuraiModelCfg(e.target.value)}
+                                                placeholder="sam2.1_hiera_l.yaml"
                                                 tooltip="Path to Samurai/SAM2 model config file."
                                             />
                                             <Input
-                                                label="Samurai checkpoint path"
-                                                value={config.memory.region_constraint_samurai_checkpoint || ""}
-                                                onChange={e => updateConfig('memory', 'region_constraint_samurai_checkpoint', e.target.value)}
+                                                label="Samurai Checkpoint Path"
+                                                value={propagateSamuraiCheckpoint}
+                                                onChange={e => setPropagateSamuraiCheckpoint(e.target.value)}
+                                                placeholder="checkpoints/sam2.1_hiera_large.pt"
                                                 tooltip="Path to Samurai/SAM2 checkpoint file."
                                             />
                                             <Switch
-                                                label="Offload video buffers to CPU"
-                                                checked={Boolean(config.memory.region_constraint_samurai_offload_video_to_cpu)}
-                                                onChange={v => updateConfig('memory', 'region_constraint_samurai_offload_video_to_cpu', v)}
-                                                tooltip="Reduce VRAM by keeping video buffers on CPU."
+                                                label="Offload Video To CPU"
+                                                checked={propagateSamuraiOffloadVideoToCpu}
+                                                onChange={setPropagateSamuraiOffloadVideoToCpu}
+                                                tooltip="Reduce VRAM by storing decoded frames on CPU."
                                             />
                                             <Switch
-                                                label="Offload predictor state to CPU"
-                                                checked={Boolean(config.memory.region_constraint_samurai_offload_state_to_cpu)}
-                                                onChange={v => updateConfig('memory', 'region_constraint_samurai_offload_state_to_cpu', v)}
-                                                tooltip="Reduce VRAM by offloading predictor state to CPU."
-                                            />
-                                            <Input
-                                                label="Minimum allowed region size"
-                                                type="number"
-                                                step="0.0001"
-                                                value={config.memory.region_constraint_flow_min_coverage ?? 0.002}
-                                                onChange={e => updateConfig('memory', 'region_constraint_flow_min_coverage', parseFloat(e.target.value))}
-                                                tooltip="Reject unstable prior frames that become too small."
-                                            />
-                                            <Input
-                                                label="Maximum allowed region size"
-                                                type="number"
-                                                step="0.0001"
-                                                value={config.memory.region_constraint_flow_max_coverage ?? 0.98}
-                                                onChange={e => updateConfig('memory', 'region_constraint_flow_max_coverage', parseFloat(e.target.value))}
-                                                tooltip="Reject unstable prior frames that become unrealistically large."
-                                            />
-                                            <Input
-                                                label="Foreground mask threshold"
-                                                type="number"
-                                                step="0.01"
-                                                value={config.memory.region_constraint_threshold ?? 0.2}
-                                                onChange={e => updateConfig('memory', 'region_constraint_threshold', parseFloat(e.target.value))}
-                                                tooltip="Foreground threshold used when converting propagated masks to prior regions."
-                                            />
-                                            <Input
-                                                label="Bounding box margin (px)"
-                                                type="number"
-                                                value={config.memory.region_constraint_bbox_margin_px ?? 96}
-                                                onChange={e => updateConfig('memory', 'region_constraint_bbox_margin_px', parseInt(e.target.value || "0"))}
-                                                tooltip="Extra margin around detected subject bbox."
-                                            />
-                                            <Input
-                                                label="Bounding box expand ratio"
-                                                type="number"
-                                                step="0.01"
-                                                value={config.memory.region_constraint_bbox_expand_ratio ?? 0.15}
-                                                onChange={e => updateConfig('memory', 'region_constraint_bbox_expand_ratio', parseFloat(e.target.value))}
-                                                tooltip="Relative bbox expansion based on subject size."
-                                            />
-                                            <Input
-                                                label="Expand constrained region (px)"
-                                                type="number"
-                                                value={config.memory.region_constraint_dilate_px ?? 24}
-                                                onChange={e => updateConfig('memory', 'region_constraint_dilate_px', parseInt(e.target.value || "0"))}
-                                                tooltip="Morphological expansion to avoid accidental limb cropping."
-                                            />
-                                            <Input
-                                                label="Soften constrained region (px)"
-                                                type="number"
-                                                value={config.memory.region_constraint_soften_px ?? 0}
-                                                onChange={e => updateConfig('memory', 'region_constraint_soften_px', parseInt(e.target.value || "0"))}
-                                                tooltip="Gaussian soft edge on the region prior."
-                                            />
-                                            <Input
-                                                label="Outside-region confidence cap"
-                                                type="number"
-                                                step="0.01"
-                                                value={config.memory.region_constraint_outside_confidence_cap ?? 0.05}
-                                                onChange={e => updateConfig('memory', 'region_constraint_outside_confidence_cap', parseFloat(e.target.value))}
-                                                tooltip="Maximum confidence outside constrained region."
+                                                label="Offload State To CPU"
+                                                checked={propagateSamuraiOffloadStateToCpu}
+                                                onChange={setPropagateSamuraiOffloadStateToCpu}
+                                                tooltip="Reduce VRAM by offloading predictor state."
                                             />
                                         </div>
                                     )}
-                                </>
-                            ) : (
-                                <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
-                                    Subject-region constraint is enabled by default using SAM2/Samurai tracked masks. Advanced controls are hidden.
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                        <div className="text-xs text-amber-300/90 border border-amber-500/40 rounded px-3 py-2 bg-amber-500/10">
+                                            Flow fallback is disabled for propagation. SAM2/Samurai must succeed.
+                                        </div>
+                                        <Switch
+                                            label="Overwrite Existing Frames"
+                                            checked={propagateOverwriteExisting}
+                                            onChange={setPropagateOverwriteExisting}
+                                            tooltip="Replace existing assignments if propagated frame indices collide."
+                                        />
+                                    </div>
+                                    <div className="text-xs text-gray-400">
+                                        Uses current <span className="font-mono">Keyframe Index</span> as the anchor frame.
+                                    </div>
                                 </div>
-                            )}
-                        </div>
-                    </div>
-                </Section>
-                </div>
-
-                {!showAdvanced && (
-                    <div className="rounded border border-gray-700 bg-gray-900/50 px-3 py-2 text-xs text-gray-400">
-                        Advanced stage internals are hidden. Enable <span className="font-semibold text-gray-300">Show Advanced</span> to tune background cleanup, subject framing, and global-pass behavior.
-                    </div>
-                )}
-
-                {showAdvanced && (
-                <>
-                {/* 4. Background */}
-                <div id="run-step-background" className="scroll-mt-28">
-                <Section title="Background Cleanup (Advanced)" tooltip="Settings for clean plate estimation and inpainting fallback.">
-                    <div className="space-y-2">
-                        <Switch
-                            label="Enable Plate Estimation"
-                            checked={config.background.enabled}
-                            onChange={v => updateConfig('background', 'enabled', v)}
-                            tooltip="Estimate a clean background plate from the video footage."
-                        />
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Input
-                                label="Sample Count" type="number"
-                                value={config.background.sample_count}
-                                onChange={e => updateConfig('background', 'sample_count', parseInt(e.target.value))}
-                                tooltip="Number of frames to sample for plate estimation."
-                            />
-                            <Select
-                                label="Occlusion Fallback"
-                                value={config.background.occlusion_fallback}
-                                onChange={e => updateConfig('background', 'occlusion_fallback', e.target.value)}
-                                options={[
-                                    { value: 'auto', label: 'Auto' },
-                                    { value: 'temporal_extremes', label: 'Temporal Extremes' },
-                                    { value: 'patch_inpaint', label: 'Patch Inpaint' },
-                                    { value: 'ai_inpaint', label: 'AI Inpaint' }
-                                ]}
-                                tooltip="Method to fill in background areas that are always occluded."
-                            />
-                            <Input
-                                label="Manual Plate Path"
-                                value={config.background.manual_plate_path}
-                                onChange={e => updateConfig('background', 'manual_plate_path', e.target.value)}
-                                className="col-span-2"
-                                tooltip="Optional: Path to a pre-generated clean plate image."
-                            />
-                        </div>
-                    </div>
-                </Section>
-                </div>
-
-                {/* 5. ROI */}
-                <div id="run-step-roi" className="scroll-mt-28">
-                <Section title="Subject Framing (Advanced)" tooltip="Controls for subject detection and region-of-interest tracking.">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                        <Input
-                            label="Detect Every (frames)" type="number"
-                            value={config.roi.detect_every}
-                            onChange={e => updateConfig('roi', 'detect_every', parseInt(e.target.value))}
-                            tooltip="Run object detection every N frames. Interpolates in between."
-                        />
-                        <Input
-                            label="Pad Ratio" type="number" step="0.05"
-                            value={config.roi.pad_ratio}
-                            onChange={e => updateConfig('roi', 'pad_ratio', parseFloat(e.target.value))}
-                            tooltip="Padding added around the detected subject."
-                        />
-                        <Select
-                            label="Multi-Person Mode"
-                            value={config.roi.multi_person}
-                            onChange={e => updateConfig('roi', 'multi_person', e.target.value)}
-                            options={[
-                                { value: 'union_k', label: 'Union of Top K' },
-                                { value: 'single', label: 'Single Largest' }
-                            ]}
-                            tooltip="How to handle multiple people. 'Union of Top K' merges masks."
-                        />
-                        <Input
-                            label="Max Subjects (K)" type="number"
-                            value={config.roi.k}
-                            onChange={e => updateConfig('roi', 'k', parseInt(e.target.value))}
-                            tooltip="Maximum number of subjects to track."
-                        />
-                    </div>
-                </Section>
-                </div>
-
-                {/* 6. Global Pass */}
-                <div id="run-step-global" className="scroll-mt-28">
-                <Section title="Global Matte Pass (Advanced)" tooltip="Low-resolution temporal matte generation before final refinement." defaultOpen={true}>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                        <Select
-                            label="Global Model"
-                            value={config.global.model}
-                            onChange={e => updateConfig('global', 'model', e.target.value)}
-                            options={[
-                                { value: 'rvm', label: 'RVM (Robust Video Matting)' },
-                                { value: 'modnet', label: 'MODNet (Fast)' }
-                            ]}
-                            tooltip="The AI model used for the initial coarse matte."
-                        />
-                        <Input
-                            label="Long Side (px)" type="number"
-                            value={config.global.long_side}
-                            onChange={e => updateConfig('global', 'long_side', parseInt(e.target.value))}
-                            tooltip="Processing resolution for the global pass. Lower is faster."
-                        />
-                        <div className="grid grid-cols-2 gap-2">
-                            <Input
-                                label="Chunk Length" type="number"
-                                value={config.global.chunk_len}
-                                onChange={e => updateConfig('global', 'chunk_len', parseInt(e.target.value))}
-                                tooltip="Frames to process in one batch for temporal consistency."
-                            />
-                            <Input
-                                label="Chunk Overlap" type="number"
-                                value={config.global.chunk_overlap}
-                                onChange={e => updateConfig('global', 'chunk_overlap', parseInt(e.target.value))}
-                                tooltip="Overlap between chunks to blend transitions."
-                            />
-                        </div>
-                    </div>
-                </Section>
-                </div>
-                </>
-                )}
-
-                {/* 5. Intermediate Pass */}
-                {showAdvanced && (
-                    <div id="run-step-intermediate" className="scroll-mt-28">
-                    <Section title="Intermediate (Pass A')" tooltip="Refines the coarse matte and applies temporal smoothing.">
-                        <div className="space-y-2">
-                            <Switch
-                                label="Enable Intermediate Pass"
-                                checked={config.intermediate.enabled}
-                                onChange={v => updateConfig('intermediate', 'enabled', v)}
-                                tooltip="Turn on/off the intermediate stabilization step."
-                            />
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                                <Select
-                                    label="Temporal Smooth"
-                                    value={config.intermediate.temporal_smooth}
-                                    onChange={e => updateConfig('intermediate', 'temporal_smooth', e.target.value)}
-                                    options={[
-                                        { value: 'flow', label: 'Optical Flow' },
-                                        { value: 'ema', label: 'EMA' },
-                                        { value: 'none', label: 'None' }
-                                    ]}
-                                    tooltip="Method used to smooth the matte over time."
-                                />
-                                <Input
-                                    label="Smooth Strength" type="number" step="0.1"
-                                    value={config.intermediate.smooth_strength}
-                                    onChange={e => updateConfig('intermediate', 'smooth_strength', parseFloat(e.target.value))}
-                                    tooltip="Identify how strongly to smooth. 0 is none."
-                                />
-                                <Input
-                                    label="Processing Resolution" type="number"
-                                    value={config.intermediate.long_side}
-                                    onChange={e => updateConfig('intermediate', 'long_side', parseInt(e.target.value))}
-                                    tooltip="Resolution for this intermediate step."
-                                />
+                                <div className="text-xs text-gray-400">
+                                    Project: <span className="font-mono text-gray-300">{projectSummary?.project_path || "(not resolved yet)"}</span>
+                                </div>
+                                <div className="text-xs text-gray-400">
+                                    Imported keyframes: <span className="font-semibold text-gray-200">{projectSummary?.keyframe_count ?? 0}</span>
+                                </div>
+                                {suggestedRange && (
+                                    <div className="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/30 rounded p-2 flex items-center justify-between gap-2">
+                                        <span>
+                                            Suggested reprocess range: <span className="font-mono">{suggestedRange.frame_start}..{suggestedRange.frame_end}</span>
+                                        </span>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                applySuggestedRange(suggestedRange)
+                                                setStatus(`Applied suggested reprocess range ${suggestedRange.frame_start}..${suggestedRange.frame_end}.`)
+                                            }}
+                                            className="px-2 py-1 rounded bg-blue-500 hover:bg-blue-600 text-white text-xs font-medium"
+                                        >
+                                            Apply Range
+                                        </button>
+                                    </div>
+                                )}
+                                {(projectSummary?.keyframes?.length ?? 0) > 0 && (
+                                    <div className="max-h-32 overflow-auto border border-gray-700 rounded p-2 text-xs">
+                                        {projectSummary!.keyframes.map(kf => (
+                                            <div key={`${kf.frame}:${kf.mask_asset}`} className="text-gray-300 font-mono">
+                                                frame={kf.frame} kind={kf.kind} mask={kf.mask_asset}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
-                        </div>
-                    </Section>
-                    </div>
-                )}
+                        </MaskSection>
 
-                {/* 6. Band & Trimap */}
-                {showAdvanced && (
-                    <div id="run-step-band" className="scroll-mt-28">
-                    <Section title="Band & Trimap" tooltip="Generates the trimap (unknown region) for detail refinement.">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Select
-                                label="Band Mode"
-                                value={config.band.mode}
-                                onChange={e => updateConfig('band', 'mode', e.target.value)}
-                                options={[
-                                    { value: 'adaptive', label: 'Adaptive' },
-                                    { value: 'fixed', label: 'Fixed' }
-                                ]}
-                                tooltip="'Adaptive' calculates band width based on image content."
-                            />
-                            <Input
-                                label="Feather (px)" type="number"
-                                value={config.band.feather_px}
-                                onChange={e => updateConfig('band', 'feather_px', parseInt(e.target.value))}
-                                tooltip="Pixel width to feather the edges of the band."
-                            />
-                            <Select
-                                label="Trimap Method"
-                                value={config.trimap.method}
-                                onChange={e => updateConfig('trimap', 'method', e.target.value)}
-                                options={[
-                                    { value: 'distance_transform', label: 'Distance Transform' },
-                                    { value: 'erosion', label: 'Erosion' }
-                                ]}
-                                tooltip="Algorithm to generate the trimap from the coarse matte."
-                            />
-                            <Input
-                                label="Unknown Width (px)" type="number"
-                                value={config.trimap.unknown_width}
-                                onChange={e => updateConfig('trimap', 'unknown_width', parseInt(e.target.value))}
-                                tooltip="Width of the 'unknown' gray region in the trimap."
-                            />
-                        </div>
-                    </Section>
-                    </div>
-                )}
+                        {/* 3. Memory Propagation */}
+                        <div id="run-step-memory" className="scroll-mt-28">
+                            <Section
+                                title="Subject Tracking Memory"
+                                defaultOpen={true}
+                                tooltip="Tracks the selected subject across the clip before edge refinement."
+                            >
+                                <div className="space-y-3">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                        <Select
+                                            label="Memory algorithm"
+                                            value={config.memory.backend}
+                                            onChange={e => updateConfig('memory', 'backend', e.target.value)}
+                                            options={[
+                                                { value: 'matanyone', label: 'MatAnyone Temporal Memory (Locked)' },
+                                            ]}
+                                            tooltip="Stage 2 is locked to MatAnyone for low-resolution temporal alpha propagation."
+                                            disabled
+                                        />
+                                        {showAdvanced ? (
+                                            <>
+                                                <Input
+                                                    label="Memory anchor count"
+                                                    type="number"
+                                                    value={config.memory.memory_frames}
+                                                    onChange={e => updateConfig('memory', 'memory_frames', parseInt(e.target.value || "1"))}
+                                                    tooltip="Target number of anchors kept in memory."
+                                                />
+                                                <Input
+                                                    label="Anchor time window"
+                                                    type="number"
+                                                    value={config.memory.window}
+                                                    onChange={e => updateConfig('memory', 'window', parseInt(e.target.value || "1"))}
+                                                    tooltip="Frame distance weight for anchor influence."
+                                                />
+                                                <Input
+                                                    label="Max Anchors"
+                                                    type="number"
+                                                    value={config.memory.max_anchors}
+                                                    onChange={e => updateConfig('memory', 'max_anchors', parseInt(e.target.value || "1"))}
+                                                    tooltip="Hard cap on total memory anchors."
+                                                />
+                                                <Input
+                                                    label="Reanchor Threshold"
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={config.memory.confidence_reanchor_threshold}
+                                                    onChange={e => updateConfig('memory', 'confidence_reanchor_threshold', parseFloat(e.target.value))}
+                                                    tooltip="If mean confidence drops below this, memory pass can auto-add anchor candidates."
+                                                />
+                                                <Input
+                                                    label="Auto Anchor Min Gap"
+                                                    type="number"
+                                                    value={config.memory.auto_anchor_min_gap || 0}
+                                                    onChange={e => updateConfig('memory', 'auto_anchor_min_gap', parseInt(e.target.value || "0"))}
+                                                    tooltip="Minimum frame gap between automatically-added anchors."
+                                                />
+                                            </>
+                                        ) : (
+                                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2 md:col-span-1">
+                                                Using production defaults for memory anchors and reanchor behavior. Switch on Advanced to tune.
+                                            </div>
+                                        )}
+                                    </div>
 
-                {/* 7. Refine */}
-                <RefineSection>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                        {showAdvanced ? (
-                            <Select
-                                label="Edge Refinement Engine"
-                                value={config.refine.backend || 'mematte'}
-                                onChange={e => updateConfig('refine', 'backend', e.target.value)}
-                                options={[
-                                    { value: 'mematte', label: 'MEMatte Tile Refiner (Locked)' },
-                                ]}
-                                tooltip="Stage 3 is locked to MEMatte for high-resolution edge recovery."
-                                disabled
-                            />
-                        ) : (
-                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
-                                Refinement backend is locked to MEMatte.
+                                    <div className="border-t border-gray-700/50 pt-3 space-y-2">
+                                        {showAdvanced ? (
+                                            <>
+                                                <Switch
+                                                    label="Constrain tracking to subject region"
+                                                    checked={Boolean(config.memory.region_constraint_enabled)}
+                                                    onChange={v => updateConfig('memory', 'region_constraint_enabled', v)}
+                                                    tooltip="Build a full-range subject region prior and clamp Stage-2 alpha outside it."
+                                                />
+                                                {config.memory.region_constraint_enabled && (
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                                        <Select
+                                                            label="Region source"
+                                                            value={config.memory.region_constraint_source || 'none'}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_source', e.target.value)}
+                                                            options={[
+                                                                { value: 'propagated_mask', label: 'Tracked Subject Mask (Locked)' },
+                                                            ]}
+                                                            tooltip="Stage 1 tracked subject mask is used directly as the region prior."
+                                                            disabled
+                                                        />
+                                                        <Input
+                                                            label="Region anchor frame"
+                                                            type="number"
+                                                            value={config.memory.region_constraint_anchor_frame ?? -1}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_anchor_frame', parseInt(e.target.value || "-1"))}
+                                                            tooltip="-1 means first available keyframe anchor."
+                                                        />
+                                                        <div className="text-xs text-amber-300/90 border border-amber-500/40 rounded px-3 py-2 bg-amber-500/10 md:col-span-2">
+                                                            Region propagation backend is fixed to SAM2/Samurai. Optical-flow fallback is disabled.
+                                                        </div>
+                                                        <Input
+                                                            label="Samurai model config path"
+                                                            value={config.memory.region_constraint_samurai_model_cfg || ""}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_samurai_model_cfg', e.target.value)}
+                                                            tooltip="Path to Samurai/SAM2 model config file."
+                                                        />
+                                                        <Input
+                                                            label="Samurai checkpoint path"
+                                                            value={config.memory.region_constraint_samurai_checkpoint || ""}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_samurai_checkpoint', e.target.value)}
+                                                            tooltip="Path to Samurai/SAM2 checkpoint file."
+                                                        />
+                                                        <Switch
+                                                            label="Offload video buffers to CPU"
+                                                            checked={Boolean(config.memory.region_constraint_samurai_offload_video_to_cpu)}
+                                                            onChange={v => updateConfig('memory', 'region_constraint_samurai_offload_video_to_cpu', v)}
+                                                            tooltip="Reduce VRAM by keeping video buffers on CPU."
+                                                        />
+                                                        <Switch
+                                                            label="Offload predictor state to CPU"
+                                                            checked={Boolean(config.memory.region_constraint_samurai_offload_state_to_cpu)}
+                                                            onChange={v => updateConfig('memory', 'region_constraint_samurai_offload_state_to_cpu', v)}
+                                                            tooltip="Reduce VRAM by offloading predictor state to CPU."
+                                                        />
+                                                        <Input
+                                                            label="Minimum allowed region size"
+                                                            type="number"
+                                                            step="0.0001"
+                                                            value={config.memory.region_constraint_flow_min_coverage ?? 0.002}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_flow_min_coverage', parseFloat(e.target.value))}
+                                                            tooltip="Reject unstable prior frames that become too small."
+                                                        />
+                                                        <Input
+                                                            label="Maximum allowed region size"
+                                                            type="number"
+                                                            step="0.0001"
+                                                            value={config.memory.region_constraint_flow_max_coverage ?? 0.98}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_flow_max_coverage', parseFloat(e.target.value))}
+                                                            tooltip="Reject unstable prior frames that become unrealistically large."
+                                                        />
+                                                        <Input
+                                                            label="Foreground mask threshold"
+                                                            type="number"
+                                                            step="0.01"
+                                                            value={config.memory.region_constraint_threshold ?? 0.2}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_threshold', parseFloat(e.target.value))}
+                                                            tooltip="Foreground threshold used when converting propagated masks to prior regions."
+                                                        />
+                                                        <Input
+                                                            label="Bounding box margin (px)"
+                                                            type="number"
+                                                            value={config.memory.region_constraint_bbox_margin_px ?? 96}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_bbox_margin_px', parseInt(e.target.value || "0"))}
+                                                            tooltip="Extra margin around detected subject bbox."
+                                                        />
+                                                        <Input
+                                                            label="Bounding box expand ratio"
+                                                            type="number"
+                                                            step="0.01"
+                                                            value={config.memory.region_constraint_bbox_expand_ratio ?? 0.15}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_bbox_expand_ratio', parseFloat(e.target.value))}
+                                                            tooltip="Relative bbox expansion based on subject size."
+                                                        />
+                                                        <Input
+                                                            label="Expand constrained region (px)"
+                                                            type="number"
+                                                            value={config.memory.region_constraint_dilate_px ?? 24}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_dilate_px', parseInt(e.target.value || "0"))}
+                                                            tooltip="Morphological expansion to avoid accidental limb cropping."
+                                                        />
+                                                        <Input
+                                                            label="Soften constrained region (px)"
+                                                            type="number"
+                                                            value={config.memory.region_constraint_soften_px ?? 0}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_soften_px', parseInt(e.target.value || "0"))}
+                                                            tooltip="Gaussian soft edge on the region prior."
+                                                        />
+                                                        <Input
+                                                            label="Outside-region confidence cap"
+                                                            type="number"
+                                                            step="0.01"
+                                                            value={config.memory.region_constraint_outside_confidence_cap ?? 0.05}
+                                                            onChange={e => updateConfig('memory', 'region_constraint_outside_confidence_cap', parseFloat(e.target.value))}
+                                                            tooltip="Maximum confidence outside constrained region."
+                                                        />
+                                                    </div>
+                                                )}
+                                            </>
+                                        ) : (
+                                            <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                                Subject-region constraint is enabled by default using SAM2/Samurai tracked masks. Advanced controls are hidden.
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </Section>
+                        </div>
+
+                        {!showAdvanced && (
+                            <div className="rounded border border-gray-700 bg-gray-900/50 px-3 py-2 text-xs text-gray-400">
+                                Advanced stage internals are hidden. Enable <span className="font-semibold text-gray-300">Show Advanced</span> to tune background cleanup, subject framing, and global-pass behavior.
                             </div>
                         )}
-                        <Input
-                            label="Unknown Band (px)" type="number"
-                            value={config.refine.unknown_band_px}
-                            onChange={e => updateConfig('refine', 'unknown_band_px', parseInt(e.target.value))}
-                            tooltip="Width of the unknown band to refine."
-                        />
+
                         {showAdvanced && (
                             <>
-                                <Input
-                                    label="Tile Size" type="number"
-                                    value={config.refine.tile_size}
-                                    onChange={e => updateConfig('refine', 'tile_size', parseInt(e.target.value))}
-                                    tooltip="Refinement tile size in pixels."
-                                />
-                                <Input
-                                    label="Tile Overlap" type="number"
-                                    value={config.refine.overlap}
-                                    onChange={e => updateConfig('refine', 'overlap', parseInt(e.target.value))}
-                                    tooltip="Tile overlap in pixels for seam blending."
-                                />
+                                {/* 4. Background */}
+                                <div id="run-step-background" className="scroll-mt-28">
+                                    <Section title="Background Cleanup (Advanced)" tooltip="Settings for clean plate estimation and inpainting fallback.">
+                                        <div className="space-y-2">
+                                            <Switch
+                                                label="Enable Plate Estimation"
+                                                checked={config.background.enabled}
+                                                onChange={v => updateConfig('background', 'enabled', v)}
+                                                tooltip="Estimate a clean background plate from the video footage."
+                                            />
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                                <Input
+                                                    label="Sample Count" type="number"
+                                                    value={config.background.sample_count}
+                                                    onChange={e => updateConfig('background', 'sample_count', parseInt(e.target.value))}
+                                                    tooltip="Number of frames to sample for plate estimation."
+                                                />
+                                                <Select
+                                                    label="Occlusion Fallback"
+                                                    value={config.background.occlusion_fallback}
+                                                    onChange={e => updateConfig('background', 'occlusion_fallback', e.target.value)}
+                                                    options={[
+                                                        { value: 'auto', label: 'Auto' },
+                                                        { value: 'temporal_extremes', label: 'Temporal Extremes' },
+                                                        { value: 'patch_inpaint', label: 'Patch Inpaint' },
+                                                        { value: 'ai_inpaint', label: 'AI Inpaint' }
+                                                    ]}
+                                                    tooltip="Method to fill in background areas that are always occluded."
+                                                />
+                                                <Input
+                                                    label="Manual Plate Path"
+                                                    value={config.background.manual_plate_path}
+                                                    onChange={e => updateConfig('background', 'manual_plate_path', e.target.value)}
+                                                    className="col-span-2"
+                                                    tooltip="Optional: Path to a pre-generated clean plate image."
+                                                />
+                                            </div>
+                                        </div>
+                                    </Section>
+                                </div>
+
+                                {/* 5. ROI */}
+                                <div id="run-step-roi" className="scroll-mt-28">
+                                    <Section title="Subject Framing (Advanced)" tooltip="Controls for subject detection and region-of-interest tracking.">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                            <Input
+                                                label="Detect Every (frames)" type="number"
+                                                value={config.roi.detect_every}
+                                                onChange={e => updateConfig('roi', 'detect_every', parseInt(e.target.value))}
+                                                tooltip="Run object detection every N frames. Interpolates in between."
+                                            />
+                                            <Input
+                                                label="Pad Ratio" type="number" step="0.05"
+                                                value={config.roi.pad_ratio}
+                                                onChange={e => updateConfig('roi', 'pad_ratio', parseFloat(e.target.value))}
+                                                tooltip="Padding added around the detected subject."
+                                            />
+                                            <Select
+                                                label="Multi-Person Mode"
+                                                value={config.roi.multi_person}
+                                                onChange={e => updateConfig('roi', 'multi_person', e.target.value)}
+                                                options={[
+                                                    { value: 'union_k', label: 'Union of Top K' },
+                                                    { value: 'single', label: 'Single Largest' }
+                                                ]}
+                                                tooltip="How to handle multiple people. 'Union of Top K' merges masks."
+                                            />
+                                            <Input
+                                                label="Max Subjects (K)" type="number"
+                                                value={config.roi.k}
+                                                onChange={e => updateConfig('roi', 'k', parseInt(e.target.value))}
+                                                tooltip="Maximum number of subjects to track."
+                                            />
+                                        </div>
+                                    </Section>
+                                </div>
+
+                                {/* 6. Global Pass */}
+                                <div id="run-step-global" className="scroll-mt-28">
+                                    <Section title="Global Matte Pass (Advanced)" tooltip="Low-resolution temporal matte generation before final refinement." defaultOpen={true}>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                            <Select
+                                                label="Global Model"
+                                                value={config.global.model}
+                                                onChange={e => updateConfig('global', 'model', e.target.value)}
+                                                options={[
+                                                    { value: 'rvm', label: 'RVM (Robust Video Matting)' },
+                                                    { value: 'modnet', label: 'MODNet (Fast)' }
+                                                ]}
+                                                tooltip="The AI model used for the initial coarse matte."
+                                            />
+                                            <Input
+                                                label="Long Side (px)" type="number"
+                                                value={config.global.long_side}
+                                                onChange={e => updateConfig('global', 'long_side', parseInt(e.target.value))}
+                                                tooltip="Processing resolution for the global pass. Lower is faster."
+                                            />
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <Input
+                                                    label="Chunk Length" type="number"
+                                                    value={config.global.chunk_len}
+                                                    onChange={e => updateConfig('global', 'chunk_len', parseInt(e.target.value))}
+                                                    tooltip="Frames to process in one batch for temporal consistency."
+                                                />
+                                                <Input
+                                                    label="Chunk Overlap" type="number"
+                                                    value={config.global.chunk_overlap}
+                                                    onChange={e => updateConfig('global', 'chunk_overlap', parseInt(e.target.value))}
+                                                    tooltip="Overlap between chunks to blend transitions."
+                                                />
+                                            </div>
+                                        </div>
+                                    </Section>
+                                </div>
                             </>
                         )}
-                    </div>
-                    {config.refine.backend === 'mematte' && showAdvanced && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 mt-3">
-                            <Input
-                                label="MEMatte Max Tokens"
-                                type="number"
-                                value={config.refine.mematte_max_number_token ?? 18500}
-                                onChange={e => updateConfig('refine', 'mematte_max_number_token', parseInt(e.target.value))}
-                                tooltip="Max global-attention tokens in MEMatte."
-                            />
-                            <Select
-                                label="Patch Decoder"
-                                value={(config.refine.mematte_patch_decoder ?? true) ? 'true' : 'false'}
-                                onChange={e => updateConfig('refine', 'mematte_patch_decoder', e.target.value === 'true')}
-                                options={[
-                                    { value: 'true', label: 'On' },
-                                    { value: 'false', label: 'Off' },
-                                ]}
-                                tooltip="Enable MEMatte patch decoder mode."
-                            />
-                            <div className="md:col-span-2 text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
-                                MEMatte model files are auto-discovered from defaults; model path fields are intentionally hidden.
-                            </div>
-                        </div>
-                    )}
-                    {config.refine.backend === 'mematte' && !showAdvanced && (
-                        <div className="mt-3 text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
-                            MEMatte model paths and token settings are hidden in basic view and auto-resolved from defaults.
-                        </div>
-                    )}
-                </RefineSection>
 
-                <div id="run-step-tuning" className="scroll-mt-28">
-                <Section
-                    title="Final Edge Tuning"
-                    tooltip="Artist-facing matte tuning: trimap width, choke/expand, feather, and XY offsets."
-                    defaultOpen={showAdvanced}
-                >
-                    <div className="space-y-2">
-                        <div className="rounded border border-gray-700/60 bg-gray-900/60 p-3">
-                            <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mb-2">
-                                Presets
-                            </div>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                                {MATTE_TUNING_PRESETS.map(preset => {
-                                    const active = isMattePresetActive(preset)
-                                    return (
-                                        <button
-                                            key={preset.id}
-                                            type="button"
-                                            onClick={() => applyMattePreset(preset)}
-                                            title={preset.description}
-                                            className={`px-3 py-2 rounded text-xs font-semibold border transition-colors ${active
-                                                ? 'bg-brand-500/20 border-brand-400 text-brand-200'
-                                                : 'bg-gray-800 border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-700'
-                                                }`}
-                                        >
-                                            {preset.label}
-                                        </button>
-                                    )
-                                })}
-                                <button
-                                    type="button"
-                                    onClick={resetMattePreset}
-                                    className="px-3 py-2 rounded text-xs font-semibold border border-gray-700 text-gray-200 bg-gray-800 hover:border-gray-500 transition-colors"
-                                >
-                                    Reset
-                                </button>
-                            </div>
-                            <div className="mt-2 text-xs text-gray-500">
-                                Presets set trimap width + matte tuning values together. You can edit any field afterward.
-                            </div>
-                        </div>
-                        <Switch
-                            label="Enable final matte tuning"
-                            checked={config.matte_tuning.enabled}
-                            onChange={v => updateConfig('matte_tuning', 'enabled', v)}
-                            tooltip="Apply final edge cleanup controls before writing output."
-                        />
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Input
-                                label="Refinement edge band width (px)"
-                                type="number"
-                                value={config.refine.unknown_band_px}
-                                onChange={e => updateConfig('refine', 'unknown_band_px', parseInt(e.target.value || "0"))}
-                                tooltip="Controls boundary band width for high-res refinement (maps to refine.unknown_band_px)."
-                            />
-                            <Switch
-                                label="Use guided trimap from tracked region"
-                                checked={Boolean(config.refine.region_trimap_enabled)}
-                                onChange={v => updateConfig('refine', 'region_trimap_enabled', v)}
-                                tooltip="Uses propagated Samurai/Stage-1 mask to build sure-FG/unknown/loose-FG constraints in refinement."
-                            />
-                            {showAdvanced && (
-                                <>
-                                    <Input
-                                        label="Guided trimap threshold"
-                                        type="number"
-                                        step="0.01"
-                                        value={config.refine.region_trimap_threshold ?? 0.5}
-                                        onChange={e => updateConfig('refine', 'region_trimap_threshold', parseFloat(e.target.value))}
-                                        tooltip="Binarization threshold applied to propagated guidance masks."
-                                    />
-                                    <Input
-                                        label="Sure foreground shrink (px)"
-                                        type="number"
-                                        value={config.refine.region_trimap_fg_erode_px ?? 3}
-                                        onChange={e => updateConfig('refine', 'region_trimap_fg_erode_px', parseInt(e.target.value || "0"))}
-                                        tooltip="Pixels to erode guidance for sure-foreground lock."
-                                    />
-                                    <Input
-                                        label="Loose foreground expand (px)"
-                                        type="number"
-                                        value={config.refine.region_trimap_bg_dilate_px ?? 16}
-                                        onChange={e => updateConfig('refine', 'region_trimap_bg_dilate_px', parseInt(e.target.value || "0"))}
-                                        tooltip="Pixels to dilate guidance so refinement has room for soft edges."
-                                    />
-                                    <Input
-                                        label="Guided mask cleanup (px)"
-                                        type="number"
-                                        value={config.refine.region_trimap_cleanup_px ?? 1}
-                                        onChange={e => updateConfig('refine', 'region_trimap_cleanup_px', parseInt(e.target.value || "0"))}
-                                        tooltip="Morphological cleanup radius for guidance masks."
-                                    />
-                                    <Switch
-                                        label="Keep only largest subject region"
-                                        checked={Boolean(config.refine.region_trimap_keep_largest)}
-                                        onChange={v => updateConfig('refine', 'region_trimap_keep_largest', v)}
-                                        tooltip="Helps reject background clusters and keep the dominant tracked subject."
-                                    />
-                                    <Input
-                                        label="Minimum guided coverage"
-                                        type="number"
-                                        step="0.0001"
-                                        value={config.refine.region_trimap_min_coverage ?? 0.002}
-                                        onChange={e => updateConfig('refine', 'region_trimap_min_coverage', parseFloat(e.target.value))}
-                                        tooltip="Reject guided trimap frame if coverage drops below this value."
-                                    />
-                                    <Input
-                                        label="Maximum guided coverage"
-                                        type="number"
-                                        step="0.0001"
-                                        value={config.refine.region_trimap_max_coverage ?? 0.98}
-                                        onChange={e => updateConfig('refine', 'region_trimap_max_coverage', parseFloat(e.target.value))}
-                                        tooltip="Reject guided trimap frame if coverage rises above this value."
-                                    />
-                                </>
-                            )}
-                            <Input
-                                label="Final mask shrink/grow (px)"
-                                type="number"
-                                value={config.matte_tuning.shrink_grow_px}
-                                onChange={e => updateConfig('matte_tuning', 'shrink_grow_px', parseInt(e.target.value || "0"))}
-                                tooltip="Positive grows matte, negative shrinks matte."
-                            />
-                            <Input
-                                label="Final edge feather (px)"
-                                type="number"
-                                value={config.matte_tuning.feather_px}
-                                onChange={e => updateConfig('matte_tuning', 'feather_px', parseInt(e.target.value || "0"))}
-                                tooltip="Applies final Gaussian feather to matte edges."
-                            />
-                            <Input
-                                label="Horizontal matte offset (px)"
-                                type="number"
-                                value={config.matte_tuning.offset_x_px}
-                                onChange={e => updateConfig('matte_tuning', 'offset_x_px', parseInt(e.target.value || "0"))}
-                                tooltip="Shifts matte in X pixels."
-                            />
-                            <Input
-                                label="Vertical matte offset (px)"
-                                type="number"
-                                value={config.matte_tuning.offset_y_px}
-                                onChange={e => updateConfig('matte_tuning', 'offset_y_px', parseInt(e.target.value || "0"))}
-                                tooltip="Shifts matte in Y pixels."
-                            />
-                        </div>
-                    </div>
-                </Section>
-                </div>
-
-
-                {/* 8. Temporal Cleanup */}
-                {showAdvanced && (
-                    <div id="run-step-temporal" className="scroll-mt-28">
-                    <Section title="Temporal Cleanup (Stage 4)" tooltip="Reduce flicker after refinement while protecting true edges.">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Switch
-                                label="Enable temporal cleanup"
-                                checked={config.temporal_cleanup.enabled}
-                                onChange={v => updateConfig('temporal_cleanup', 'enabled', v)}
-                                tooltip="Run Stage 4 temporal stabilization."
-                            />
-                            <Switch
-                                label="Smooth stable non-edge regions"
-                                checked={!!config.temporal_cleanup.outside_band_ema_enabled}
-                                onChange={v => updateConfig('temporal_cleanup', 'outside_band_ema_enabled', v)}
-                                tooltip="EMA smoothing outside the edge band."
-                            />
-                            <Input
-                                label="Non-edge smoothing strength"
-                                type="number"
-                                step="0.01"
-                                value={config.temporal_cleanup.outside_band_ema}
-                                onChange={e => updateConfig('temporal_cleanup', 'outside_band_ema', parseFloat(e.target.value))}
-                                tooltip="Higher values reduce shimmer but can add lag."
-                            />
-                            <Input
-                                label="Minimum confidence for smoothing"
-                                type="number"
-                                step="0.01"
-                                value={config.temporal_cleanup.min_confidence}
-                                onChange={e => updateConfig('temporal_cleanup', 'min_confidence', parseFloat(e.target.value))}
-                                tooltip="Only confident pixels are temporally blended."
-                            />
-                            <Switch
-                                label="Use confidence-gated clamp"
-                                checked={!!config.temporal_cleanup.confidence_clamp_enabled}
-                                onChange={v => updateConfig('temporal_cleanup', 'confidence_clamp_enabled', v)}
-                                tooltip="Limits frame-to-frame jumps on high-confidence pixels."
-                            />
-                            <Input
-                                label="Max per-frame alpha change"
-                                type="number"
-                                step="0.01"
-                                value={config.temporal_cleanup.clamp_delta}
-                                onChange={e => updateConfig('temporal_cleanup', 'clamp_delta', parseFloat(e.target.value))}
-                                tooltip="Smaller values are steadier but can lag fast motion."
-                            />
-                            <Switch
-                                label="Smooth inside edge band (micro-EMA)"
-                                checked={!!config.temporal_cleanup.edge_band_ema_enabled}
-                                onChange={v => updateConfig('temporal_cleanup', 'edge_band_ema_enabled', v)}
-                                tooltip="Low-strength edge-band smoothing to reduce edge flicker."
-                            />
-                            <Input
-                                label="Edge-band smoothing strength"
-                                type="number"
-                                step="0.01"
-                                value={config.temporal_cleanup.edge_band_ema || 0}
-                                onChange={e => updateConfig('temporal_cleanup', 'edge_band_ema', parseFloat(e.target.value))}
-                                tooltip="Recommended range: 0.03 to 0.12."
-                            />
-                            <Input
-                                label="Edge-band min confidence"
-                                type="number"
-                                step="0.01"
-                                value={config.temporal_cleanup.edge_band_min_confidence || 0}
-                                onChange={e => updateConfig('temporal_cleanup', 'edge_band_min_confidence', parseFloat(e.target.value))}
-                                tooltip="Edge-band EMA is applied only above this confidence."
-                            />
-                            <Switch
-                                label="Edge snap guidance filter"
-                                checked={!!config.temporal_cleanup.edge_snap_enabled}
-                                onChange={v => updateConfig('temporal_cleanup', 'edge_snap_enabled', v)}
-                                tooltip="Guided snap can sharpen wobbling edge pixels."
-                            />
-                            <Input
-                                label="Edge snap min confidence"
-                                type="number"
-                                step="0.01"
-                                value={config.temporal_cleanup.edge_snap_min_confidence || 0}
-                                onChange={e => updateConfig('temporal_cleanup', 'edge_snap_min_confidence', parseFloat(e.target.value))}
-                                tooltip="Only high-confidence edge pixels are replaced by snap output."
-                            />
-                            <Input
-                                label="Edge snap radius"
-                                type="number"
-                                value={config.temporal_cleanup.edge_snap_radius || 1}
-                                onChange={e => updateConfig('temporal_cleanup', 'edge_snap_radius', parseInt(e.target.value || "1"))}
-                                tooltip="Guided filter radius used for edge snap."
-                            />
-                            <Input
-                                label="Edge snap epsilon"
-                                type="number"
-                                step="0.0001"
-                                value={config.temporal_cleanup.edge_snap_eps || 0.01}
-                                onChange={e => updateConfig('temporal_cleanup', 'edge_snap_eps', parseFloat(e.target.value))}
-                                tooltip="Guided filter regularization; lower values preserve more detail."
-                            />
-                        </div>
-                    </Section>
-                    </div>
-                )}
-
-                {/* 9. Despill & Output */}
-                <div id="run-step-post" className="scroll-mt-28">
-                <Section title="Color Cleanup and Foreground" tooltip="Final despill cleanup and optional foreground output.">
-                    <div className="space-y-2">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Switch
-                                label="Enable Despill"
-                                checked={config.postprocess.despill.enabled}
-                                onChange={v => updateNestedConfig('postprocess', 'despill', 'enabled', v)}
-                                tooltip="Remove green/blue spill from the foreground subject."
-                            />
-                            {showAdvanced && (
-                                <>
-                                    <Select
-                                        label="Despill Method"
-                                        value={config.postprocess.despill.method}
-                                        onChange={e => updateNestedConfig('postprocess', 'despill', 'method', e.target.value)}
-                                        options={[
-                                            { value: 'advanced', label: 'Advanced' },
-                                            { value: 'simple', label: 'Simple' },
-                                            { value: 'none', label: 'None' }
-                                        ]}
-                                        tooltip="Algorithm used for despill operation."
-                                    />
-                                    <Input
-                                        label="Luma Bias" type="number" step="0.05"
-                                        value={config.postprocess.despill.luma_bias}
-                                        onChange={e => updateNestedConfig('postprocess', 'despill', 'luma_bias', parseFloat(e.target.value))}
-                                        tooltip="Bias to adjust brightness of despilled areas."
-                                    />
-                                </>
-                            )}
-                            <div className="col-span-2 border-t border-gray-700/50 pt-2">
-                                <Switch
-                                    label="Generate FG Output"
-                                    checked={config.postprocess.fg_output.enabled}
-                                    onChange={v => updateNestedConfig('postprocess', 'fg_output', 'enabled', v)}
-                                    tooltip="Save the despilled foreground as a separate image sequence."
-                                />
-                            </div>
-                        </div>
-                    </div>
-                </Section>
-                </div>
-
-                {/* 10. Preview & Runtime */}
-                <div id="run-step-runtime" className="scroll-mt-28">
-                <Section title="Hardware and Live Preview" tooltip="Device, precision, and live preview controls." defaultOpen={true}>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                        <Select
-                            label="Device"
-                            value={config.runtime.device}
-                            onChange={e => updateConfig('runtime', 'device', e.target.value)}
-                            options={[
-                                { value: 'cuda', label: 'CUDA (NVIDIA)' },
-                                { value: 'cpu', label: 'CPU' }
-                            ]}
-                            tooltip="Hardware to run the inference on."
-                        />
-                        <Select
-                            label="Precision"
-                            value={config.runtime.precision}
-                            onChange={e => updateConfig('runtime', 'precision', e.target.value)}
-                            options={[
-                                { value: 'fp16', label: 'FP16 (Half)' },
-                                { value: 'fp32', label: 'FP32 (Full)' }
-                            ]}
-                            tooltip="FP16 is faster and uses less VRAM; FP32 is more precise."
-                        />
+                        {/* 5. Intermediate Pass */}
                         {showAdvanced && (
-                            <Input
-                                label="IO Workers" type="number"
-                                value={config.runtime.workers_io}
-                                onChange={e => updateConfig('runtime', 'workers_io', parseInt(e.target.value))}
-                                tooltip="Number of threads for image loading/saving."
-                            />
+                            <div id="run-step-intermediate" className="scroll-mt-28">
+                                <Section title="Intermediate (Pass A')" tooltip="Refines the coarse matte and applies temporal smoothing.">
+                                    <div className="space-y-2">
+                                        <Switch
+                                            label="Enable Intermediate Pass"
+                                            checked={config.intermediate.enabled}
+                                            onChange={v => updateConfig('intermediate', 'enabled', v)}
+                                            tooltip="Turn on/off the intermediate stabilization step."
+                                        />
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                            <Select
+                                                label="Temporal Smooth"
+                                                value={config.intermediate.temporal_smooth}
+                                                onChange={e => updateConfig('intermediate', 'temporal_smooth', e.target.value)}
+                                                options={[
+                                                    { value: 'flow', label: 'Optical Flow' },
+                                                    { value: 'ema', label: 'EMA' },
+                                                    { value: 'none', label: 'None' }
+                                                ]}
+                                                tooltip="Method used to smooth the matte over time."
+                                            />
+                                            <Input
+                                                label="Smooth Strength" type="number" step="0.1"
+                                                value={config.intermediate.smooth_strength}
+                                                onChange={e => updateConfig('intermediate', 'smooth_strength', parseFloat(e.target.value))}
+                                                tooltip="Identify how strongly to smooth. 0 is none."
+                                            />
+                                            <Input
+                                                label="Processing Resolution" type="number"
+                                                value={config.intermediate.long_side}
+                                                onChange={e => updateConfig('intermediate', 'long_side', parseInt(e.target.value))}
+                                                tooltip="Resolution for this intermediate step."
+                                            />
+                                        </div>
+                                    </div>
+                                </Section>
+                            </div>
                         )}
-                        <div className="col-span-2 space-y-2 border-t border-gray-700/50 pt-2 mt-1">
-                            <Switch
-                                label="Enable Live Preview"
-                                checked={config.preview.enabled}
-                                onChange={v => updateConfig('preview', 'enabled', v)}
-                                tooltip="Show processing progress window."
-                            />
-                            <div className="grid grid-cols-2 gap-2">
+
+                        {/* 6. Band & Trimap */}
+                        {showAdvanced && (
+                            <div id="run-step-band" className="scroll-mt-28">
+                                <Section title="Band & Trimap" tooltip="Generates the trimap (unknown region) for detail refinement.">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                        <Select
+                                            label="Band Mode"
+                                            value={config.band.mode}
+                                            onChange={e => updateConfig('band', 'mode', e.target.value)}
+                                            options={[
+                                                { value: 'adaptive', label: 'Adaptive' },
+                                                { value: 'fixed', label: 'Fixed' }
+                                            ]}
+                                            tooltip="'Adaptive' calculates band width based on image content."
+                                        />
+                                        <Input
+                                            label="Feather (px)" type="number"
+                                            value={config.band.feather_px}
+                                            onChange={e => updateConfig('band', 'feather_px', parseInt(e.target.value))}
+                                            tooltip="Pixel width to feather the edges of the band."
+                                        />
+                                        <Select
+                                            label="Trimap Method"
+                                            value={config.trimap.method}
+                                            onChange={e => updateConfig('trimap', 'method', e.target.value)}
+                                            options={[
+                                                { value: 'distance_transform', label: 'Distance Transform' },
+                                                { value: 'erosion', label: 'Erosion' }
+                                            ]}
+                                            tooltip="Algorithm to generate the trimap from the coarse matte."
+                                        />
+                                        <Input
+                                            label="Unknown Width (px)" type="number"
+                                            value={config.trimap.unknown_width}
+                                            onChange={e => updateConfig('trimap', 'unknown_width', parseInt(e.target.value))}
+                                            tooltip="Width of the 'unknown' gray region in the trimap."
+                                        />
+                                    </div>
+                                </Section>
+                            </div>
+                        )}
+
+                        {/* 7. Refine */}
+                        <RefineSection>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                {showAdvanced ? (
+                                    <Select
+                                        label="Edge Refinement Engine"
+                                        value={config.refine.backend || 'mematte'}
+                                        onChange={e => updateConfig('refine', 'backend', e.target.value)}
+                                        options={[
+                                            { value: 'mematte', label: 'MEMatte Tile Refiner (Locked)' },
+                                        ]}
+                                        tooltip="Stage 3 is locked to MEMatte for high-resolution edge recovery."
+                                        disabled
+                                    />
+                                ) : (
+                                    <div className="text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                        Refinement backend is locked to MEMatte.
+                                    </div>
+                                )}
+                                <Input
+                                    label="Unknown Band (px)" type="number"
+                                    value={config.refine.unknown_band_px}
+                                    onChange={e => updateConfig('refine', 'unknown_band_px', parseInt(e.target.value))}
+                                    tooltip="Width of the unknown band to refine."
+                                />
                                 {showAdvanced && (
                                     <>
                                         <Input
-                                            label="Preview Scale" type="number" step="1"
-                                            value={config.preview.scale}
-                                            onChange={e => updateConfig('preview', 'scale', parseInt(e.target.value) || 1080)}
-                                            tooltip="Target long-side resolution in pixels for preview frames (e.g. 1080)."
+                                            label="Tile Size" type="number"
+                                            value={config.refine.tile_size}
+                                            onChange={e => updateConfig('refine', 'tile_size', parseInt(e.target.value))}
+                                            tooltip="Refinement tile size in pixels."
                                         />
                                         <Input
-                                            label="Update Every (frames)" type="number"
-                                            value={config.preview.every || 1}
-                                            onChange={e => updateConfig('preview', 'every', parseInt(e.target.value))}
-                                            tooltip="Update preview window every N frames."
-                                        />
-                                        <Input
-                                            label="Preview Modes"
-                                            value={config.preview.modes?.join(", ") || ""}
-                                            onChange={e => updateConfig('preview', 'modes', e.target.value.split(",").map(s => s.trim()))}
-                                            placeholder="checker, alpha, white"
-                                            className="col-span-2"
-                                            tooltip="Visualization modes (comma separated): checker, alpha, white, etc."
+                                            label="Tile Overlap" type="number"
+                                            value={config.refine.overlap}
+                                            onChange={e => updateConfig('refine', 'overlap', parseInt(e.target.value))}
+                                            tooltip="Tile overlap in pixels for seam blending."
                                         />
                                     </>
                                 )}
                             </div>
-                        </div>
-                    </div>
-                </Section>
-                </div>
+                            {config.refine.backend === 'mematte' && showAdvanced && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 mt-3">
+                                    <Input
+                                        label="MEMatte Max Tokens"
+                                        type="number"
+                                        value={config.refine.mematte_max_number_token ?? 18500}
+                                        onChange={e => updateConfig('refine', 'mematte_max_number_token', parseInt(e.target.value))}
+                                        tooltip="Max global-attention tokens in MEMatte."
+                                    />
+                                    <Select
+                                        label="Patch Decoder"
+                                        value={(config.refine.mematte_patch_decoder ?? true) ? 'true' : 'false'}
+                                        onChange={e => updateConfig('refine', 'mematte_patch_decoder', e.target.value === 'true')}
+                                        options={[
+                                            { value: 'true', label: 'On' },
+                                            { value: 'false', label: 'Off' },
+                                        ]}
+                                        tooltip="Enable MEMatte patch decoder mode."
+                                    />
+                                    <div className="md:col-span-2 text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                        MEMatte model files are auto-discovered from defaults; model path fields are intentionally hidden.
+                                    </div>
+                                </div>
+                            )}
+                            {config.refine.backend === 'mematte' && !showAdvanced && (
+                                <div className="mt-3 text-xs text-gray-400 border border-gray-700 rounded px-3 py-2">
+                                    MEMatte model paths and token settings are hidden in basic view and auto-resolved from defaults.
+                                </div>
+                            )}
+                        </RefineSection>
 
-                <div id="run-step-debug" className="scroll-mt-28">
-                <Section
-                    title="Debug Sample Exports"
-                    tooltip="Export per-stage sample frames and diagnosis artifacts to isolate where matte quality breaks."
-                    defaultOpen={showAdvanced}
-                >
-                    <div className="space-y-2">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Switch
-                                label="Export stage sample images"
-                                checked={config.debug.export_stage_samples}
-                                onChange={v => updateConfig('debug', 'export_stage_samples', v)}
-                                tooltip="Writes sampled alpha/rgb/overlay images for each stage."
-                            />
-                            <Switch
-                                label="Auto-export stage diagnostics when QC fails"
-                                checked={config.debug.auto_stage_samples_on_qc_fail}
-                                onChange={v => updateConfig('debug', 'auto_stage_samples_on_qc_fail', v)}
-                                tooltip="If QC flags a regression, save stage samples automatically to find the first bad stage."
-                            />
-                            <Input
-                                label="Number of sampled frames"
-                                type="number"
-                                value={config.debug.sample_count}
-                                onChange={e => updateConfig('debug', 'sample_count', parseInt(e.target.value || "1"))}
-                                tooltip="How many sample frames to export when sample list is empty."
-                            />
-                            <Input
-                                label="Specific sample frame numbers"
-                                value={(config.debug.sample_frames || []).join(',')}
-                                onChange={e => updateConfig('debug', 'sample_frames', e.target.value.split(',').map(s => s.trim()).filter(Boolean).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v)))}
-                                placeholder="0,40,81,122,162"
-                                tooltip="Comma-separated absolute frame indices."
-                            />
-                            <Input
-                                label="QC failure sample frame numbers"
-                                value={(config.debug.auto_sample_frames || []).join(',')}
-                                onChange={e => updateConfig('debug', 'auto_sample_frames', e.target.value.split(',').map(s => s.trim()).filter(Boolean).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v)))}
-                                placeholder="leave empty to use sampled frames"
-                                tooltip="Optional comma-separated frame numbers used only for auto diagnosis when QC fails."
-                            />
-                            <Input
-                                label="Debug output subfolder"
-                                value={config.debug.stage_dir}
-                                onChange={e => updateConfig('debug', 'stage_dir', e.target.value)}
-                                tooltip="Subdirectory under output_dir where debug artifacts are written."
-                            />
-                            <Switch
-                                label="Save RGB Samples"
-                                checked={config.debug.save_rgb}
-                                onChange={v => updateConfig('debug', 'save_rgb', v)}
-                                tooltip="Write sampled source RGB frames to debug folder."
-                            />
-                            <Switch
-                                label="Save Overlay Samples"
-                                checked={config.debug.save_overlay}
-                                onChange={v => updateConfig('debug', 'save_overlay', v)}
-                                tooltip="Write sampled alpha-over-RGB overlays."
-                            />
+                        <div id="run-step-tuning" className="scroll-mt-28">
+                            <Section
+                                title="Final Edge Tuning"
+                                tooltip="Artist-facing matte tuning: trimap width, choke/expand, feather, and XY offsets."
+                                defaultOpen={showAdvanced}
+                            >
+                                <div className="space-y-2">
+                                    <div className="rounded border border-gray-700/60 bg-gray-900/60 p-3">
+                                        <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mb-2">
+                                            Presets
+                                        </div>
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                                            {MATTE_TUNING_PRESETS.map(preset => {
+                                                const active = isMattePresetActive(preset)
+                                                return (
+                                                    <button
+                                                        key={preset.id}
+                                                        type="button"
+                                                        onClick={() => applyMattePreset(preset)}
+                                                        title={preset.description}
+                                                        className={`px-3 py-2 rounded text-xs font-semibold border transition-colors ${active
+                                                            ? 'bg-brand-500/20 border-brand-400 text-brand-200'
+                                                            : 'bg-gray-800 border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-700'
+                                                            }`}
+                                                    >
+                                                        {preset.label}
+                                                    </button>
+                                                )
+                                            })}
+                                            <button
+                                                type="button"
+                                                onClick={resetMattePreset}
+                                                className="px-3 py-2 rounded text-xs font-semibold border border-gray-700 text-gray-200 bg-gray-800 hover:border-gray-500 transition-colors"
+                                            >
+                                                Reset
+                                            </button>
+                                        </div>
+                                        <div className="mt-2 text-xs text-gray-500">
+                                            Presets set trimap width + matte tuning values together. You can edit any field afterward.
+                                        </div>
+                                    </div>
+                                    <Switch
+                                        label="Enable final matte tuning"
+                                        checked={config.matte_tuning.enabled}
+                                        onChange={v => updateConfig('matte_tuning', 'enabled', v)}
+                                        tooltip="Apply final edge cleanup controls before writing output."
+                                    />
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                        <Input
+                                            label="Refinement edge band width (px)"
+                                            type="number"
+                                            value={config.refine.unknown_band_px}
+                                            onChange={e => updateConfig('refine', 'unknown_band_px', parseInt(e.target.value || "0"))}
+                                            tooltip="Controls boundary band width for high-res refinement (maps to refine.unknown_band_px)."
+                                        />
+                                        <Switch
+                                            label="Use guided trimap from tracked region"
+                                            checked={Boolean(config.refine.region_trimap_enabled)}
+                                            onChange={v => updateConfig('refine', 'region_trimap_enabled', v)}
+                                            tooltip="Uses propagated Samurai/Stage-1 mask to build sure-FG/unknown/loose-FG constraints in refinement."
+                                        />
+                                        {showAdvanced && (
+                                            <>
+                                                <Input
+                                                    label="Guided trimap threshold"
+                                                    type="number"
+                                                    step="0.01"
+                                                    value={config.refine.region_trimap_threshold ?? 0.5}
+                                                    onChange={e => updateConfig('refine', 'region_trimap_threshold', parseFloat(e.target.value))}
+                                                    tooltip="Binarization threshold applied to propagated guidance masks."
+                                                />
+                                                <Input
+                                                    label="Sure foreground shrink (px)"
+                                                    type="number"
+                                                    value={config.refine.region_trimap_fg_erode_px ?? 3}
+                                                    onChange={e => updateConfig('refine', 'region_trimap_fg_erode_px', parseInt(e.target.value || "0"))}
+                                                    tooltip="Pixels to erode guidance for sure-foreground lock."
+                                                />
+                                                <Input
+                                                    label="Loose foreground expand (px)"
+                                                    type="number"
+                                                    value={config.refine.region_trimap_bg_dilate_px ?? 16}
+                                                    onChange={e => updateConfig('refine', 'region_trimap_bg_dilate_px', parseInt(e.target.value || "0"))}
+                                                    tooltip="Pixels to dilate guidance so refinement has room for soft edges."
+                                                />
+                                                <Input
+                                                    label="Guided mask cleanup (px)"
+                                                    type="number"
+                                                    value={config.refine.region_trimap_cleanup_px ?? 1}
+                                                    onChange={e => updateConfig('refine', 'region_trimap_cleanup_px', parseInt(e.target.value || "0"))}
+                                                    tooltip="Morphological cleanup radius for guidance masks."
+                                                />
+                                                <Switch
+                                                    label="Keep only largest subject region"
+                                                    checked={Boolean(config.refine.region_trimap_keep_largest)}
+                                                    onChange={v => updateConfig('refine', 'region_trimap_keep_largest', v)}
+                                                    tooltip="Helps reject background clusters and keep the dominant tracked subject."
+                                                />
+                                                <Input
+                                                    label="Minimum guided coverage"
+                                                    type="number"
+                                                    step="0.0001"
+                                                    value={config.refine.region_trimap_min_coverage ?? 0.002}
+                                                    onChange={e => updateConfig('refine', 'region_trimap_min_coverage', parseFloat(e.target.value))}
+                                                    tooltip="Reject guided trimap frame if coverage drops below this value."
+                                                />
+                                                <Input
+                                                    label="Maximum guided coverage"
+                                                    type="number"
+                                                    step="0.0001"
+                                                    value={config.refine.region_trimap_max_coverage ?? 0.98}
+                                                    onChange={e => updateConfig('refine', 'region_trimap_max_coverage', parseFloat(e.target.value))}
+                                                    tooltip="Reject guided trimap frame if coverage rises above this value."
+                                                />
+                                            </>
+                                        )}
+                                        <Input
+                                            label="Final mask shrink/grow (px)"
+                                            type="number"
+                                            value={config.matte_tuning.shrink_grow_px}
+                                            onChange={e => updateConfig('matte_tuning', 'shrink_grow_px', parseInt(e.target.value || "0"))}
+                                            tooltip="Positive grows matte, negative shrinks matte."
+                                        />
+                                        <Input
+                                            label="Final edge feather (px)"
+                                            type="number"
+                                            value={config.matte_tuning.feather_px}
+                                            onChange={e => updateConfig('matte_tuning', 'feather_px', parseInt(e.target.value || "0"))}
+                                            tooltip="Applies final Gaussian feather to matte edges."
+                                        />
+                                        <Input
+                                            label="Horizontal matte offset (px)"
+                                            type="number"
+                                            value={config.matte_tuning.offset_x_px}
+                                            onChange={e => updateConfig('matte_tuning', 'offset_x_px', parseInt(e.target.value || "0"))}
+                                            tooltip="Shifts matte in X pixels."
+                                        />
+                                        <Input
+                                            label="Vertical matte offset (px)"
+                                            type="number"
+                                            value={config.matte_tuning.offset_y_px}
+                                            onChange={e => updateConfig('matte_tuning', 'offset_y_px', parseInt(e.target.value || "0"))}
+                                            tooltip="Shifts matte in Y pixels."
+                                        />
+                                    </div>
+                                </div>
+                            </Section>
                         </div>
-                    </div>
-                </Section>
-                </div>
 
-                <div id="run-step-qc" className="scroll-mt-28">
-                <Section
-                    title="Quality Control Gates"
-                    tooltip="Option B QC metrics and regression thresholds. Enable hard-fail to stop runs that exceed limits."
-                    defaultOpen={showAdvanced}
-                >
-                    <div className="space-y-2">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                            <Switch
-                                label="Compute quality control metrics"
-                                checked={config.qc.enabled}
-                                onChange={v => updateConfig('qc', 'enabled', v)}
-                                tooltip="Measure stability and quality and write QC artifacts with the render."
-                            />
-                            <Switch
-                                label="Fail job when QC gates fail"
-                                checked={config.qc.fail_on_regression}
-                                onChange={v => updateConfig('qc', 'fail_on_regression', v)}
-                                tooltip="Stop the run as failed if any QC threshold is exceeded."
-                            />
-                            <Switch
-                                label="Run auto stage diagnosis on QC failure"
-                                checked={config.qc.auto_stage_diagnosis_on_fail}
-                                onChange={v => updateConfig('qc', 'auto_stage_diagnosis_on_fail', v)}
-                                tooltip="When a QC gate fails, generate stage-by-stage diagnosis artifacts automatically."
-                            />
-                        </div>
+
+                        {/* 8. Temporal Cleanup */}
                         {showAdvanced && (
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                                <Input
-                                    label="QC output subfolder"
-                                    value={config.qc.output_subdir}
-                                    onChange={e => updateConfig('qc', 'output_subdir', e.target.value)}
-                                    tooltip="Folder inside the output directory where QC files are saved."
-                                />
-                                <Input
-                                    label="QC metrics filename"
-                                    value={config.qc.metrics_filename}
-                                    onChange={e => updateConfig('qc', 'metrics_filename', e.target.value)}
-                                    tooltip="JSON filename for detailed QC metrics."
-                                />
-                                <Input
-                                    label="QC report filename"
-                                    value={config.qc.report_filename}
-                                    onChange={e => updateConfig('qc', 'report_filename', e.target.value)}
-                                    tooltip="Markdown filename for the QC summary report."
-                                />
-                                <Input
-                                    label="Output roundtrip sample count"
-                                    type="number"
-                                    value={config.qc.sample_output_frames}
-                                    onChange={e => updateConfig('qc', 'sample_output_frames', parseInt(e.target.value || "0"))}
-                                    tooltip="How many saved output frames to re-read for roundtrip accuracy checks."
-                                />
-                                <Input
-                                    label="Max output roundtrip error"
-                                    type="number"
-                                    step="0.0001"
-                                    value={config.qc.max_output_roundtrip_mae}
-                                    onChange={e => updateConfig('qc', 'max_output_roundtrip_mae', parseFloat(e.target.value))}
-                                    tooltip="Maximum allowed MAE between in-memory alpha and written output."
-                                />
-                                <Input
-                                    label="Alpha range tolerance"
-                                    type="number"
-                                    step="0.0001"
-                                    value={config.qc.alpha_range_eps}
-                                    onChange={e => updateConfig('qc', 'alpha_range_eps', parseFloat(e.target.value))}
-                                    tooltip="Allowed alpha range slack outside [0,1]."
-                                />
-                                <Input
-                                    label="Max 95th percentile flicker"
-                                    type="number"
-                                    step="0.0001"
-                                    value={config.qc.max_p95_flicker}
-                                    onChange={e => updateConfig('qc', 'max_p95_flicker', parseFloat(e.target.value))}
-                                    tooltip="Maximum allowed 95th percentile frame-to-frame flicker."
-                                />
-                                <Input
-                                    label="Max 95th percentile edge flicker"
-                                    type="number"
-                                    step="0.0001"
-                                    value={config.qc.max_p95_edge_flicker}
-                                    onChange={e => updateConfig('qc', 'max_p95_edge_flicker', parseFloat(e.target.value))}
-                                    tooltip="Maximum allowed 95th percentile edge-band flicker."
-                                />
-                                <Input
-                                    label="Minimum mean edge confidence"
-                                    type="number"
-                                    step="0.0001"
-                                    value={config.qc.min_mean_edge_confidence}
-                                    onChange={e => updateConfig('qc', 'min_mean_edge_confidence', parseFloat(e.target.value))}
-                                    tooltip="Minimum allowed mean edge confidence."
-                                />
-                                <Input
-                                    label="Band spike ratio limit"
-                                    type="number"
-                                    step="0.1"
-                                    value={config.qc.band_spike_ratio}
-                                    onChange={e => updateConfig('qc', 'band_spike_ratio', parseFloat(e.target.value))}
-                                    tooltip="Coverage ratio above running mean that counts as a spike."
-                                />
-                                <Input
-                                    label="Max allowed band spike frames"
-                                    type="number"
-                                    value={config.qc.max_band_spike_frames}
-                                    onChange={e => updateConfig('qc', 'max_band_spike_frames', parseInt(e.target.value || "0"))}
-                                    tooltip="Maximum number of spike frames allowed before QC fails."
-                                />
+                            <div id="run-step-temporal" className="scroll-mt-28">
+                                <Section title="Temporal Cleanup (Stage 4)" tooltip="Reduce flicker after refinement while protecting true edges.">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                        <Switch
+                                            label="Enable temporal cleanup"
+                                            checked={config.temporal_cleanup.enabled}
+                                            onChange={v => updateConfig('temporal_cleanup', 'enabled', v)}
+                                            tooltip="Run Stage 4 temporal stabilization."
+                                        />
+                                        <Switch
+                                            label="Smooth stable non-edge regions"
+                                            checked={!!config.temporal_cleanup.outside_band_ema_enabled}
+                                            onChange={v => updateConfig('temporal_cleanup', 'outside_band_ema_enabled', v)}
+                                            tooltip="EMA smoothing outside the edge band."
+                                        />
+                                        <Input
+                                            label="Non-edge smoothing strength"
+                                            type="number"
+                                            step="0.01"
+                                            value={config.temporal_cleanup.outside_band_ema}
+                                            onChange={e => updateConfig('temporal_cleanup', 'outside_band_ema', parseFloat(e.target.value))}
+                                            tooltip="Higher values reduce shimmer but can add lag."
+                                        />
+                                        <Input
+                                            label="Minimum confidence for smoothing"
+                                            type="number"
+                                            step="0.01"
+                                            value={config.temporal_cleanup.min_confidence}
+                                            onChange={e => updateConfig('temporal_cleanup', 'min_confidence', parseFloat(e.target.value))}
+                                            tooltip="Only confident pixels are temporally blended."
+                                        />
+                                        <Switch
+                                            label="Use confidence-gated clamp"
+                                            checked={!!config.temporal_cleanup.confidence_clamp_enabled}
+                                            onChange={v => updateConfig('temporal_cleanup', 'confidence_clamp_enabled', v)}
+                                            tooltip="Limits frame-to-frame jumps on high-confidence pixels."
+                                        />
+                                        <Input
+                                            label="Max per-frame alpha change"
+                                            type="number"
+                                            step="0.01"
+                                            value={config.temporal_cleanup.clamp_delta}
+                                            onChange={e => updateConfig('temporal_cleanup', 'clamp_delta', parseFloat(e.target.value))}
+                                            tooltip="Smaller values are steadier but can lag fast motion."
+                                        />
+                                        <Switch
+                                            label="Smooth inside edge band (micro-EMA)"
+                                            checked={!!config.temporal_cleanup.edge_band_ema_enabled}
+                                            onChange={v => updateConfig('temporal_cleanup', 'edge_band_ema_enabled', v)}
+                                            tooltip="Low-strength edge-band smoothing to reduce edge flicker."
+                                        />
+                                        <Input
+                                            label="Edge-band smoothing strength"
+                                            type="number"
+                                            step="0.01"
+                                            value={config.temporal_cleanup.edge_band_ema || 0}
+                                            onChange={e => updateConfig('temporal_cleanup', 'edge_band_ema', parseFloat(e.target.value))}
+                                            tooltip="Recommended range: 0.03 to 0.12."
+                                        />
+                                        <Input
+                                            label="Edge-band min confidence"
+                                            type="number"
+                                            step="0.01"
+                                            value={config.temporal_cleanup.edge_band_min_confidence || 0}
+                                            onChange={e => updateConfig('temporal_cleanup', 'edge_band_min_confidence', parseFloat(e.target.value))}
+                                            tooltip="Edge-band EMA is applied only above this confidence."
+                                        />
+                                        <Switch
+                                            label="Edge snap guidance filter"
+                                            checked={!!config.temporal_cleanup.edge_snap_enabled}
+                                            onChange={v => updateConfig('temporal_cleanup', 'edge_snap_enabled', v)}
+                                            tooltip="Guided snap can sharpen wobbling edge pixels."
+                                        />
+                                        <Input
+                                            label="Edge snap min confidence"
+                                            type="number"
+                                            step="0.01"
+                                            value={config.temporal_cleanup.edge_snap_min_confidence || 0}
+                                            onChange={e => updateConfig('temporal_cleanup', 'edge_snap_min_confidence', parseFloat(e.target.value))}
+                                            tooltip="Only high-confidence edge pixels are replaced by snap output."
+                                        />
+                                        <Input
+                                            label="Edge snap radius"
+                                            type="number"
+                                            value={config.temporal_cleanup.edge_snap_radius || 1}
+                                            onChange={e => updateConfig('temporal_cleanup', 'edge_snap_radius', parseInt(e.target.value || "1"))}
+                                            tooltip="Guided filter radius used for edge snap."
+                                        />
+                                        <Input
+                                            label="Edge snap epsilon"
+                                            type="number"
+                                            step="0.0001"
+                                            value={config.temporal_cleanup.edge_snap_eps || 0.01}
+                                            onChange={e => updateConfig('temporal_cleanup', 'edge_snap_eps', parseFloat(e.target.value))}
+                                            tooltip="Guided filter regularization; lower values preserve more detail."
+                                        />
+                                    </div>
+                                </Section>
                             </div>
                         )}
-                    </div>
-                </Section>
-                </div>
+
+                        {/* 9. Despill & Output */}
+                        <div id="run-step-post" className="scroll-mt-28">
+                            <Section title="Color Cleanup and Foreground" tooltip="Final despill cleanup and optional foreground output.">
+                                <div className="space-y-2">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                        <Switch
+                                            label="Enable Despill"
+                                            checked={config.postprocess.despill.enabled}
+                                            onChange={v => updateNestedConfig('postprocess', 'despill', 'enabled', v)}
+                                            tooltip="Remove green/blue spill from the foreground subject."
+                                        />
+                                        {showAdvanced && (
+                                            <>
+                                                <Select
+                                                    label="Despill Method"
+                                                    value={config.postprocess.despill.method}
+                                                    onChange={e => updateNestedConfig('postprocess', 'despill', 'method', e.target.value)}
+                                                    options={[
+                                                        { value: 'advanced', label: 'Advanced' },
+                                                        { value: 'simple', label: 'Simple' },
+                                                        { value: 'none', label: 'None' }
+                                                    ]}
+                                                    tooltip="Algorithm used for despill operation."
+                                                />
+                                                <Input
+                                                    label="Luma Bias" type="number" step="0.05"
+                                                    value={config.postprocess.despill.luma_bias}
+                                                    onChange={e => updateNestedConfig('postprocess', 'despill', 'luma_bias', parseFloat(e.target.value))}
+                                                    tooltip="Bias to adjust brightness of despilled areas."
+                                                />
+                                            </>
+                                        )}
+                                        <div className="col-span-2 border-t border-gray-700/50 pt-2">
+                                            <Switch
+                                                label="Generate FG Output"
+                                                checked={config.postprocess.fg_output.enabled}
+                                                onChange={v => updateNestedConfig('postprocess', 'fg_output', 'enabled', v)}
+                                                tooltip="Save the despilled foreground as a separate image sequence."
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                            </Section>
+                        </div>
+
+                        {/* 10. Preview & Runtime */}
+                        <div id="run-step-runtime" className="scroll-mt-28">
+                            <Section title="Hardware and Live Preview" tooltip="Device, precision, and live preview controls." defaultOpen={true}>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                    <Select
+                                        label="Device"
+                                        value={config.runtime.device}
+                                        onChange={e => updateConfig('runtime', 'device', e.target.value)}
+                                        options={[
+                                            { value: 'cuda', label: 'CUDA (NVIDIA)' },
+                                            { value: 'cpu', label: 'CPU' }
+                                        ]}
+                                        tooltip="Hardware to run the inference on."
+                                    />
+                                    <Select
+                                        label="Precision"
+                                        value={config.runtime.precision}
+                                        onChange={e => updateConfig('runtime', 'precision', e.target.value)}
+                                        options={[
+                                            { value: 'fp16', label: 'FP16 (Half)' },
+                                            { value: 'fp32', label: 'FP32 (Full)' }
+                                        ]}
+                                        tooltip="FP16 is faster and uses less VRAM; FP32 is more precise."
+                                    />
+                                    {showAdvanced && (
+                                        <Input
+                                            label="IO Workers" type="number"
+                                            value={config.runtime.workers_io}
+                                            onChange={e => updateConfig('runtime', 'workers_io', parseInt(e.target.value))}
+                                            tooltip="Number of threads for image loading/saving."
+                                        />
+                                    )}
+                                    <div className="col-span-2 space-y-2 border-t border-gray-700/50 pt-2 mt-1">
+                                        <Switch
+                                            label="Enable Live Preview"
+                                            checked={config.preview.enabled}
+                                            onChange={v => updateConfig('preview', 'enabled', v)}
+                                            tooltip="Show processing progress window."
+                                        />
+                                        <div className="grid grid-cols-2 gap-2">
+                                            {showAdvanced && (
+                                                <>
+                                                    <Input
+                                                        label="Preview Scale" type="number" step="1"
+                                                        value={config.preview.scale}
+                                                        onChange={e => updateConfig('preview', 'scale', parseInt(e.target.value) || 1080)}
+                                                        tooltip="Target long-side resolution in pixels for preview frames (e.g. 1080)."
+                                                    />
+                                                    <Input
+                                                        label="Update Every (frames)" type="number"
+                                                        value={config.preview.every || 1}
+                                                        onChange={e => updateConfig('preview', 'every', parseInt(e.target.value))}
+                                                        tooltip="Update preview window every N frames."
+                                                    />
+                                                    <Input
+                                                        label="Preview Modes"
+                                                        value={config.preview.modes?.join(", ") || ""}
+                                                        onChange={e => updateConfig('preview', 'modes', e.target.value.split(",").map(s => s.trim()))}
+                                                        placeholder="checker, alpha, white"
+                                                        className="col-span-2"
+                                                        tooltip="Visualization modes (comma separated): checker, alpha, white, etc."
+                                                    />
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            </Section>
+                        </div>
+
+                        <div id="run-step-debug" className="scroll-mt-28">
+                            <Section
+                                title="Debug Sample Exports"
+                                tooltip="Export per-stage sample frames and diagnosis artifacts to isolate where matte quality breaks."
+                                defaultOpen={showAdvanced}
+                            >
+                                <div className="space-y-2">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                        <Switch
+                                            label="Export stage sample images"
+                                            checked={config.debug.export_stage_samples}
+                                            onChange={v => updateConfig('debug', 'export_stage_samples', v)}
+                                            tooltip="Writes sampled alpha/rgb/overlay images for each stage."
+                                        />
+                                        <Switch
+                                            label="Auto-export stage diagnostics when QC fails"
+                                            checked={config.debug.auto_stage_samples_on_qc_fail}
+                                            onChange={v => updateConfig('debug', 'auto_stage_samples_on_qc_fail', v)}
+                                            tooltip="If QC flags a regression, save stage samples automatically to find the first bad stage."
+                                        />
+                                        <Input
+                                            label="Number of sampled frames"
+                                            type="number"
+                                            value={config.debug.sample_count}
+                                            onChange={e => updateConfig('debug', 'sample_count', parseInt(e.target.value || "1"))}
+                                            tooltip="How many sample frames to export when sample list is empty."
+                                        />
+                                        <Input
+                                            label="Specific sample frame numbers"
+                                            value={(config.debug.sample_frames || []).join(',')}
+                                            onChange={e => updateConfig('debug', 'sample_frames', e.target.value.split(',').map(s => s.trim()).filter(Boolean).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v)))}
+                                            placeholder="0,40,81,122,162"
+                                            tooltip="Comma-separated absolute frame indices."
+                                        />
+                                        <Input
+                                            label="QC failure sample frame numbers"
+                                            value={(config.debug.auto_sample_frames || []).join(',')}
+                                            onChange={e => updateConfig('debug', 'auto_sample_frames', e.target.value.split(',').map(s => s.trim()).filter(Boolean).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v)))}
+                                            placeholder="leave empty to use sampled frames"
+                                            tooltip="Optional comma-separated frame numbers used only for auto diagnosis when QC fails."
+                                        />
+                                        <Input
+                                            label="Debug output subfolder"
+                                            value={config.debug.stage_dir}
+                                            onChange={e => updateConfig('debug', 'stage_dir', e.target.value)}
+                                            tooltip="Subdirectory under output_dir where debug artifacts are written."
+                                        />
+                                        <Switch
+                                            label="Save RGB Samples"
+                                            checked={config.debug.save_rgb}
+                                            onChange={v => updateConfig('debug', 'save_rgb', v)}
+                                            tooltip="Write sampled source RGB frames to debug folder."
+                                        />
+                                        <Switch
+                                            label="Save Overlay Samples"
+                                            checked={config.debug.save_overlay}
+                                            onChange={v => updateConfig('debug', 'save_overlay', v)}
+                                            tooltip="Write sampled alpha-over-RGB overlays."
+                                        />
+                                    </div>
+                                </div>
+                            </Section>
+                        </div>
+
+                        <div id="run-step-qc" className="scroll-mt-28">
+                            <Section
+                                title="Quality Control Gates"
+                                tooltip="Option B QC metrics and regression thresholds. Enable hard-fail to stop runs that exceed limits."
+                                defaultOpen={showAdvanced}
+                            >
+                                <div className="space-y-2">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                        <Switch
+                                            label="Compute quality control metrics"
+                                            checked={config.qc.enabled}
+                                            onChange={v => updateConfig('qc', 'enabled', v)}
+                                            tooltip="Measure stability and quality and write QC artifacts with the render."
+                                        />
+                                        <Switch
+                                            label="Fail job when QC gates fail"
+                                            checked={config.qc.fail_on_regression}
+                                            onChange={v => updateConfig('qc', 'fail_on_regression', v)}
+                                            tooltip="Stop the run as failed if any QC threshold is exceeded."
+                                        />
+                                        <Switch
+                                            label="Run auto stage diagnosis on QC failure"
+                                            checked={config.qc.auto_stage_diagnosis_on_fail}
+                                            onChange={v => updateConfig('qc', 'auto_stage_diagnosis_on_fail', v)}
+                                            tooltip="When a QC gate fails, generate stage-by-stage diagnosis artifacts automatically."
+                                        />
+                                    </div>
+                                    {showAdvanced && (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                                            <Input
+                                                label="QC output subfolder"
+                                                value={config.qc.output_subdir}
+                                                onChange={e => updateConfig('qc', 'output_subdir', e.target.value)}
+                                                tooltip="Folder inside the output directory where QC files are saved."
+                                            />
+                                            <Input
+                                                label="QC metrics filename"
+                                                value={config.qc.metrics_filename}
+                                                onChange={e => updateConfig('qc', 'metrics_filename', e.target.value)}
+                                                tooltip="JSON filename for detailed QC metrics."
+                                            />
+                                            <Input
+                                                label="QC report filename"
+                                                value={config.qc.report_filename}
+                                                onChange={e => updateConfig('qc', 'report_filename', e.target.value)}
+                                                tooltip="Markdown filename for the QC summary report."
+                                            />
+                                            <Input
+                                                label="Output roundtrip sample count"
+                                                type="number"
+                                                value={config.qc.sample_output_frames}
+                                                onChange={e => updateConfig('qc', 'sample_output_frames', parseInt(e.target.value || "0"))}
+                                                tooltip="How many saved output frames to re-read for roundtrip accuracy checks."
+                                            />
+                                            <Input
+                                                label="Max output roundtrip error"
+                                                type="number"
+                                                step="0.0001"
+                                                value={config.qc.max_output_roundtrip_mae}
+                                                onChange={e => updateConfig('qc', 'max_output_roundtrip_mae', parseFloat(e.target.value))}
+                                                tooltip="Maximum allowed MAE between in-memory alpha and written output."
+                                            />
+                                            <Input
+                                                label="Alpha range tolerance"
+                                                type="number"
+                                                step="0.0001"
+                                                value={config.qc.alpha_range_eps}
+                                                onChange={e => updateConfig('qc', 'alpha_range_eps', parseFloat(e.target.value))}
+                                                tooltip="Allowed alpha range slack outside [0,1]."
+                                            />
+                                            <Input
+                                                label="Max 95th percentile flicker"
+                                                type="number"
+                                                step="0.0001"
+                                                value={config.qc.max_p95_flicker}
+                                                onChange={e => updateConfig('qc', 'max_p95_flicker', parseFloat(e.target.value))}
+                                                tooltip="Maximum allowed 95th percentile frame-to-frame flicker."
+                                            />
+                                            <Input
+                                                label="Max 95th percentile edge flicker"
+                                                type="number"
+                                                step="0.0001"
+                                                value={config.qc.max_p95_edge_flicker}
+                                                onChange={e => updateConfig('qc', 'max_p95_edge_flicker', parseFloat(e.target.value))}
+                                                tooltip="Maximum allowed 95th percentile edge-band flicker."
+                                            />
+                                            <Input
+                                                label="Minimum mean edge confidence"
+                                                type="number"
+                                                step="0.0001"
+                                                value={config.qc.min_mean_edge_confidence}
+                                                onChange={e => updateConfig('qc', 'min_mean_edge_confidence', parseFloat(e.target.value))}
+                                                tooltip="Minimum allowed mean edge confidence."
+                                            />
+                                            <Input
+                                                label="Band spike ratio limit"
+                                                type="number"
+                                                step="0.1"
+                                                value={config.qc.band_spike_ratio}
+                                                onChange={e => updateConfig('qc', 'band_spike_ratio', parseFloat(e.target.value))}
+                                                tooltip="Coverage ratio above running mean that counts as a spike."
+                                            />
+                                            <Input
+                                                label="Max allowed band spike frames"
+                                                type="number"
+                                                value={config.qc.max_band_spike_frames}
+                                                onChange={e => updateConfig('qc', 'max_band_spike_frames', parseInt(e.target.value || "0"))}
+                                                tooltip="Maximum number of spike frames allowed before QC fails."
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            </Section>
+                        </div>
                     </div>
                 </form>
             </div>
+            {/* Pro Mode Sticky Start FAB */}
+            {runViewMode === 'pro' && (
+                <div className="fixed bottom-6 right-6 z-50">
+                    <button
+                        type="button"
+                        onClick={() => void submitPipelineJob()}
+                        disabled={loading || !config.io.input}
+                        className="shadow-xl px-6 py-4 rounded-full bg-brand-500 hover:bg-brand-400 text-white font-bold text-lg flex items-center gap-3 transition-transform hover:scale-105 disabled:opacity-50 disabled:grayscale disabled:scale-100"
+                    >
+                        {loading ? <FaSpinner className="animate-spin" /> : <FaPlay />}
+                        Start Pipeline
+                    </button>
+                </div>
+            )}
         </DashboardLayout>
     )
 }

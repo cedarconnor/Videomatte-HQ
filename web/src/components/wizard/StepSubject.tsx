@@ -132,34 +132,34 @@ export default function StepSubject({
                     <div className="grid grid-cols-3 gap-1">
                         <button
                             type="button"
+                            title="Draw a box around the subject (B)"
                             onClick={() => onBuilderToolChange('box')}
-                            className={`px-2 py-1.5 rounded text-xs font-semibold border ${
-                                builderTool === 'box'
+                            className={`px-2 py-1.5 rounded text-xs font-semibold border ${builderTool === 'box'
                                     ? 'bg-brand-500/20 border-brand-400 text-brand-200'
                                     : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
-                            }`}
+                                }`}
                         >
                             Box
                         </button>
                         <button
                             type="button"
+                            title="Add Foreground (Positive) Points (F)"
                             onClick={() => onBuilderToolChange('fg')}
-                            className={`px-2 py-1.5 rounded text-xs font-semibold border ${
-                                builderTool === 'fg'
+                            className={`px-2 py-1.5 rounded text-xs font-semibold border ${builderTool === 'fg'
                                     ? 'bg-green-500/20 border-green-400 text-green-200'
                                     : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
-                            }`}
+                                }`}
                         >
                             FG Point
                         </button>
                         <button
                             type="button"
+                            title="Add Background (Negative) Points (G)"
                             onClick={() => onBuilderToolChange('bg')}
-                            className={`px-2 py-1.5 rounded text-xs font-semibold border ${
-                                builderTool === 'bg'
+                            className={`px-2 py-1.5 rounded text-xs font-semibold border ${builderTool === 'bg'
                                     ? 'bg-red-500/20 border-red-400 text-red-200'
                                     : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
-                            }`}
+                                }`}
                         >
                             BG Point
                         </button>

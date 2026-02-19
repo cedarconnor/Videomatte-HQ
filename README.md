@@ -231,51 +231,42 @@ run_web.bat
 ```
 Then open `http://localhost:5173`.
 
-Keyboard shortcuts: `Ctrl+1-4` to switch tabs, `J/K` or arrow keys for frame navigation in QC, `Shift` for 10-frame jumps, `Home/End` for first/last frame.
+### Dual-Mode Interface
+The application now features two distinct modes to suit different workflows:
 
-### Run Job tab
-Two UI modes are available:
+#### 1. Wizard Mode (Default)
+A guided, step-by-step experience designed for new users and standard jobs.
+- **Step 1: Setup**: Drag-and-drop import and IO configuration.
+- **Step 2: Select Subject**: Interactive mask builder with auto-detect and SAM2 integration.
+- **Step 3: Refine Edges**: Simplified controls for matte tightness and softness.
+- **Step 4: Render**: Live job progress and result preview.
 
-- **Wizard (default)**: 4-step happy path (`Setup`, `Select Subject`, `Refine Edges`, `Render`)
-- **Pro Mode**: full dashboard with advanced controls
+![Wizard Step 2 - Subject Selection](docs/images/ui_wizard_step2.png)
 
-In **Pro Mode**, run-stage navigation is in the app left sidebar under **Run Job**:
+#### 2. Pro Mode
+A comprehensive dashboard for power users requiring granular control over the entire pipeline.
+- Access detailed settings for **Memory**, **Refine**, **Temporal Cleanup**, and **QC**.
+- **Sticky Start Button**: Always-available "Start Pipeline" action.
+- **Advanced Debugging**: Access to stage samples and debug exports.
 
-- **Video & Output**
-- **Subject Masks**
-- **Motion Tracking** (MatAnyone, with SAM2/Samurai region constraint)
-- **Background Cleanup / Subject Framing / Global Matte Pass** (advanced-only)
-- **Edge Detail Refinement** (MEMatte)
-- **Final Edge Tuning**
-- **Color Cleanup & Foreground**
-- **Hardware & Preview**
-- **Debug Samples**
-- **Quality Gates**
+![Pro Mode Dashboard](docs/images/ui_pro_dashboard.png)
 
-Mask builder shortcuts:
-- `F`: foreground point tool
-- `B`: background point tool
-- `Enter`: build mask
+### Video Demos
+- **[Wizard Workflow Demo](docs/images/ui_wizard_demo.webp)**
+- **[Pro Dashboard Demo](docs/images/ui_pro_demo.webp)**
 
-![Mask Builder — auto-detect subject and build initial mask](docs/images/mask_builder_result.png)
+### Keyboard Shortcuts
+- `Ctrl+1-4`: Switch tabs (Run, Queue, QC, Settings)
+- **Mask Builder**:
+    - `F`: Add Foreground point
+    - `B`: Add Background point
+    - `Enter`: Build mask
+- **QC Tab**:
+    - `J` / `K`: Previous / Next frame
+    - `Shift + J/K`: Jump 10 frames
 
-### Job Queue tab
-- Job history list with status indicators
-- Job detail view with log viewer, auto-scroll, and Live indicator
-
-### Quality Control tab
-- A/B wipe comparison (drag the divider to compare input RGB vs output alpha)
-- Composite view modes: Alpha (Raw), Checkerboard, White BG, Black BG, Overlay
-- Overlay color + opacity controls for matte inspection
-- Frame scrubber with prev/next/skip-10 navigation
-- Dynamic path discovery from recent jobs (`/api/qc/info`)
-
-![Quality Control — A/B wipe comparison](docs/images/qc_tab.png)
-
-### Settings tab
-- Job defaults (output directory, device, precision)
-- UI preferences (show/hide advanced options)
-- System information
+## Quick Start (CLI)
+If you prefer the command line...
 
 ## API Endpoints (current)
 - `POST /api/jobs`

@@ -47,15 +47,17 @@ export default function WizardLayout({
                         return (
                             <div
                                 key={step.id}
-                                className={`rounded-lg border px-3 py-2 text-xs ${
-                                    active
+                                className={`rounded-lg border px-3 py-2 text-xs ${active
                                         ? 'border-brand-500/50 bg-brand-500/10 text-brand-300'
                                         : complete
                                             ? 'border-green-500/30 bg-green-500/5 text-green-300'
                                             : 'border-gray-700 bg-gray-900 text-gray-400'
-                                }`}
+                                    }`}
                             >
-                                <div className="font-semibold">Step {step.id}</div>
+                                <div className="font-semibold flex items-center gap-1">
+                                    Step {step.id}
+                                    {complete && <span>✓</span>}
+                                </div>
                                 <div className="truncate">{step.label}</div>
                             </div>
                         )
