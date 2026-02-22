@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videomatte-hq-v2"
+version = "0.2.0"
+description = "Videomatte-HQ v2 two-stage video matting pipeline"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+  "imageio>=2.31",
+  "pillow>=10.0",
+  "pyyaml>=6.0",
+  "torch>=2.0",
+  "torchvision>=0.15",
+  "ultralytics>=8.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+videomatte-hq-v2 = "videomatte_hq.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
