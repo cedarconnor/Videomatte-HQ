@@ -615,21 +615,34 @@
 - Rewriting architecture/runtime code unless docs validation reveals a critical inconsistency.
 
 ## Plan
-- [ ] Write `README.md` with setup, CLI usage, examples, troubleshooting, and local-only MEMatte notes.
-- [ ] Write `BEGINNER_GUIDE.md` with step-by-step first-run instructions on Windows.
-- [ ] Verify docs against current CLI flags/help and local MEMatte constraints.
-- [ ] Initialize git in `D:\Videomatte-HQ2`, commit repo contents, and force-push to `https://github.com/cedarconnor/Videomatte-HQ.git`.
+- [x] Write `README.md` with setup, CLI usage, examples, troubleshooting, and local-only MEMatte notes.
+- [x] Write `BEGINNER_GUIDE.md` with step-by-step first-run instructions on Windows.
+- [x] Verify docs against current CLI flags/help and local MEMatte constraints.
+- [x] Initialize git in `D:\Videomatte-HQ2`, commit repo contents, and force-push to `https://github.com/cedarconnor/Videomatte-HQ.git`.
 
 ## Risks / Unknowns
 - Force-push requires valid GitHub credentials/access from this environment.
 - Large repo contents (weights, MEMatte, outputs) may make push slow or exceed repository expectations.
 
 ## Verification
-- [ ] `README.md` and `BEGINNER_GUIDE.md` exist and reflect current CLI behavior.
-- [ ] `videomatte-hq-v2 --help` options documented accurately.
-- [ ] Git push completes to the provided remote URL.
+- [x] `README.md` and `BEGINNER_GUIDE.md` exist and reflect current CLI behavior.
+- [x] `videomatte-hq-v2 --help` options documented accurately.
+- [x] Git push completes to the provided remote URL.
 
 ## Review Notes (fill after)
 - What changed:
+  - Added a detailed project `README.md` for the v2 CLI pipeline (architecture, install, CLI usage, examples, troubleshooting, local-only MEMatte constraint, and notes about large weights/checkpoints).
+  - Added `BEGINNER_GUIDE.md` with a Windows-first setup and first-run walkthrough for full refinement and preview/no-refine modes.
+  - Added `.gitignore` to exclude local outputs, virtualenvs, and large model/checkpoint files (`*.pt`, `*.pth`) that are not suitable for a standard GitHub push.
+  - Flattened `third_party/MEMatte` into a normal vendored directory by removing nested git metadata so this repo tracks MEMatte source directly (not a broken gitlink/submodule).
+  - Initialized git in `D:\Videomatte-HQ2`, committed the repo state, and force-pushed to the user-provided GitHub repo.
 - Evidence it works:
+  - `README.md` and `BEGINNER_GUIDE.md` exist at repo root and describe the current `videomatte-hq-v2` product CLI path.
+  - CLI help was previously validated from the local venv after editable install:
+    - `.\.venv\Scripts\videomatte-hq-v2.exe --help`
+  - Git push succeeded:
+    - commit: `0c3dee4` (`Build v2 CLI pipeline and beginner docs`)
+    - remote: `https://github.com/cedarconnor/Videomatte-HQ.git`
+    - result: forced update of `origin/main`
 - Remaining issues / follow-ups:
+  - Large weights/checkpoints are intentionally not pushed (`*.pt`, `*.pth`) due GitHub size limits; the repo remains code/docs-complete but users must supply local model files.
