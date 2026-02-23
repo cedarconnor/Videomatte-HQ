@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from videomatte_hq.io.reader import FrameSource, VideoReader
+from videomatte_hq.io.reader import FrameSource, VideoReader, discover_frames
 
 
 class _FakeCapture:
@@ -114,3 +114,57 @@ def test_frame_source_video_metadata_accessors(monkeypatch, tmp_path: Path) -> N
     assert source.video_path == fake_video_path
     assert source.video_frame_start == 2
     assert source.video_frame_end == 6
+
+
+def test_discover_frames_resolves_sequence_pattern_relative_to_base_dir(tmp_path: Path) -> None:
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    for idx in (1, 2, 3):
+        img = np.full((4, 4, 3), idx, dtype=np.uint8)
+        cv2.imwrite(str(frames_dir / f"frame_{idx:06d}.png"), img)
+
+    frames = discover_frames("frames/frame_%06d.png", base_dir=tmp_path)
+
+    assert [p.name for p in frames] == [
+        "frame_000001.png",
+        "frame_000002.png",
+        "frame_000003.png",
+    ]
+    assert all(p.parent == frames_dir for p in frames)
+
+
+def test_frame_source_resolution_for_sequence_is_cached(monkeypatch, tmp_path: Path) -> None:
+    frame_path = tmp_path / "frame_000001.png"
+    frame_path.write_bytes(b"dummy")
+
+    monkeypatch.setattr("videomatte_hq.io.reader.discover_frames", lambda *args, **kwargs: [frame_path])
+    calls = {"n": 0}
+
+    def _fake_read_frame(path: Path, as_float: bool = True):
+        calls["n"] += 1
+        return np.zeros((12, 16, 3), dtype=np.float32)
+
+    monkeypatch.setattr("videomatte_hq.io.reader.read_frame", _fake_read_frame)
+
+    source = FrameSource(pattern=str(frame_path), prefetch_workers=0)
+    assert source.resolution == (12, 16)
+    assert source.resolution == (12, 16)
+    assert calls["n"] == 1
+
+
+def test_video_reader_len_clamps_when_codec_reports_zero_frames(monkeypatch) -> None:
+    class _ZeroFrameCapture(_FakeCapture):
+        def get(self, prop: int) -> float:  # noqa: N802
+            if prop == cv2.CAP_PROP_FRAME_COUNT:
+                return 0.0
+            return super().get(prop)
+
+    frames = [np.zeros((8, 8, 3), dtype=np.uint8)]
+    fake = _ZeroFrameCapture(frames)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda _: fake)
+
+    reader = VideoReader(Path("fake.mp4"), frame_start=0, frame_end=None)
+    try:
+        assert len(reader) == 0
+    finally:
+        reader.close()

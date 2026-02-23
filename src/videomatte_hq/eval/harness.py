@@ -5,11 +5,14 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 import json
+import logging
 
 import numpy as np
 
 from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.pipeline.stage_qc import compute_temporal_metrics
+
+logger = logging.getLogger(__name__)
 
 
 def _as_alpha(frame: np.ndarray) -> np.ndarray:
@@ -69,6 +72,15 @@ def compare_alpha_sequences(
     if not reference_alphas or not candidate_alphas:
         raise ValueError("Both reference and candidate alpha sequences are required.")
 
+    length_mismatch = len(reference_alphas) != len(candidate_alphas)
+    if length_mismatch:
+        logger.warning(
+            "Alpha sequence length mismatch: reference=%d candidate=%d; comparing first %d frames.",
+            len(reference_alphas),
+            len(candidate_alphas),
+            min(len(reference_alphas), len(candidate_alphas)),
+        )
+
     count = min(len(reference_alphas), len(candidate_alphas))
     ref = [np.asarray(a, dtype=np.float32) for a in reference_alphas[:count]]
     cand = [np.asarray(a, dtype=np.float32) for a in candidate_alphas[:count]]
@@ -94,6 +106,9 @@ def compare_alpha_sequences(
 
     return {
         "frames_compared": count,
+        "reference_num_frames": len(reference_alphas),
+        "candidate_num_frames": len(candidate_alphas),
+        "length_mismatch": length_mismatch,
         "reference": ref_summary,
         "candidate": cand_summary,
         "diff": diffs,

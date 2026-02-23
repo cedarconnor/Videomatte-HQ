@@ -37,6 +37,7 @@ class SegmentBackend(Protocol):
         frames: list[np.ndarray],
         prompt: SegmentPrompt,
         anchor_frame_index: int = 0,
+        reference_anchor_area: float | None = None,
     ) -> list[np.ndarray]:
         """Return per-frame logits for the chunk."""
 
@@ -571,9 +572,10 @@ class UltralyticsSAM3SegmentBackend:
     _runtime_configured: bool = False
     _half_kwarg_supported: bool | None = None
     _preferred_prompt_variant: str | None = None
+    _resolved_model_name: str | None = None
 
     def _video_predictor_class(self):
-        name = str(self.model_name).lower()
+        name = str(self._resolved_model_name or self.model_name).lower()
         try:
             from ultralytics.models.sam.predict import SAM2VideoPredictor, SAM3VideoPredictor
         except Exception:
@@ -658,10 +660,30 @@ class UltralyticsSAM3SegmentBackend:
             pass
 
         if hasattr(predictor, "inference_state"):
+            reset_done = False
             try:
-                predictor.inference_state = {}
-            except Exception:
-                pass
+                state = getattr(predictor, "inference_state")
+            except Exception as exc:
+                logger.warning("Failed to access Ultralytics predictor inference_state during reset: %s", exc)
+                state = None
+
+            if state is not None:
+                clear_fn = getattr(state, "clear", None)
+                if callable(clear_fn):
+                    try:
+                        clear_fn()
+                        reset_done = True
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to clear Ultralytics predictor inference_state in place; falling back to replacement: %s",
+                            exc,
+                        )
+
+            if not reset_done:
+                try:
+                    predictor.inference_state = {}
+                except Exception as exc:
+                    logger.warning("Failed to replace Ultralytics predictor inference_state during reset: %s", exc)
 
         start = max(0, int(start_frame))
         if start <= 0:
@@ -691,8 +713,9 @@ class UltralyticsSAM3SegmentBackend:
             except Exception:
                 pos = None
 
-        # OpenCV seek reports can be codec-dependent. Fail only on clear mismatch.
-        if pos is not None and abs(pos - float(start)) > 2.0 and not ok:
+        # OpenCV seek reports can be codec-dependent, but a clear position mismatch
+        # should fail regardless of the boolean return value from cap.set().
+        if pos is not None and abs(pos - float(start)) > 2.0:
             raise RuntimeError(
                 f"Failed to seek Ultralytics video predictor to start frame {start} (reported position {pos:.1f})."
             )
@@ -755,7 +778,7 @@ class UltralyticsSAM3SegmentBackend:
                         self.model_name,
                         candidate,
                     )
-                    self.model_name = candidate
+                self._resolved_model_name = str(candidate)
                 return self._model
             except Exception as exc:
                 errors.append(f"{candidate}: {exc.__class__.__name__}: {exc}")
@@ -974,14 +997,16 @@ class UltralyticsSAM3SegmentBackend:
         current_prompt = prompt
         prev_mask: np.ndarray | None = None
         anchor_area: float | None = None
-        if prompt.mask is not None:
+        if reference_anchor_area is not None and float(reference_anchor_area) > 0.0:
+            anchor_area = float(reference_anchor_area)
+        elif prompt.mask is not None:
             anchor_prompt_mask = _resize_mask(prompt.mask, frames[0].shape[:2], threshold=self.mask_threshold)
             anchor_area = float((anchor_prompt_mask >= 0.5).sum())
             if anchor_area <= 0.0:
                 anchor_area = None
 
         for frame in frames:
-            if current_prompt.bbox is None and prev_mask is not None:
+            if prev_mask is not None:
                 current_prompt = self.prompt_adapter.adapt(prev_mask, frame.shape[:2])
             frame_bgr = _to_bgr_u8(frame)
             frame_logit = self._infer_single(model, frame_bgr, current_prompt)
@@ -1062,6 +1087,7 @@ class ChunkedSegmenter(Segmenter):
         src_shape = tuple(int(v) for v in source.resolution)
         logits_by_frame: list[np.ndarray | None] = [None] * num_frames
         anchored_frames: list[int] = [0]
+        anchor_reference_area_proc: float | None = None
 
         maybe_video_backend = self.backend if hasattr(self.backend, "segment_video_sequence") else None
         source_is_video = bool(getattr(source, "is_video", False))
@@ -1100,6 +1126,11 @@ class ChunkedSegmenter(Segmenter):
 
             if chunk_start == 0:
                 chunk_prompt = _scale_prompt(prompt, src_shape, proc_shape)
+                if anchor_reference_area_proc is None and chunk_prompt.mask is not None:
+                    anchor_mask_proc = _resize_mask(chunk_prompt.mask, proc_shape, threshold=self.mask_threshold)
+                    area = float((anchor_mask_proc >= 0.5).sum())
+                    if area > 0.0:
+                        anchor_reference_area_proc = area
             else:
                 if prev_tail_mask_proc is not None:
                     chunk_prompt = self.prompt_adapter.adapt(prev_tail_mask_proc, proc_shape)
@@ -1107,7 +1138,15 @@ class ChunkedSegmenter(Segmenter):
                     chunk_prompt = _scale_prompt(prompt, src_shape, proc_shape)
                 anchored_frames.append(chunk_start)
 
-            chunk_logits = self.backend.segment_chunk(frames_proc, chunk_prompt, anchor_frame_index=0)
+            if isinstance(self.backend, UltralyticsSAM3SegmentBackend):
+                chunk_logits = self.backend.segment_chunk(
+                    frames_proc,
+                    chunk_prompt,
+                    anchor_frame_index=0,
+                    reference_anchor_area=anchor_reference_area_proc,
+                )
+            else:
+                chunk_logits = self.backend.segment_chunk(frames_proc, chunk_prompt, anchor_frame_index=0)
             if len(chunk_logits) != len(frames_proc):
                 raise RuntimeError(
                     f"Segment backend returned {len(chunk_logits)} frames for chunk size {len(frames_proc)}."
@@ -1126,11 +1165,19 @@ class ChunkedSegmenter(Segmenter):
                 )
                 if drift.drift and reanchors < self.max_reanchors_per_chunk:
                     reprompt = self.prompt_adapter.adapt(chunk_masks[local_idx - 1], proc_shape)
-                    replacement_logits = self.backend.segment_chunk(
-                        frames_proc[local_idx:],
-                        reprompt,
-                        anchor_frame_index=0,
-                    )
+                    if isinstance(self.backend, UltralyticsSAM3SegmentBackend):
+                        replacement_logits = self.backend.segment_chunk(
+                            frames_proc[local_idx:],
+                            reprompt,
+                            anchor_frame_index=0,
+                            reference_anchor_area=anchor_reference_area_proc,
+                        )
+                    else:
+                        replacement_logits = self.backend.segment_chunk(
+                            frames_proc[local_idx:],
+                            reprompt,
+                            anchor_frame_index=0,
+                        )
                     if len(replacement_logits) == (len(frames_proc) - local_idx):
                         chunk_logits[local_idx:] = replacement_logits
                         chunk_masks[local_idx:] = [
@@ -1154,10 +1201,11 @@ class ChunkedSegmenter(Segmenter):
                     logits_by_frame[global_idx] = logit_full
                     continue
 
-                if overlap_len <= 1:
-                    alpha = 0.5
+                if overlap_len <= 0 or local_idx >= overlap_len:
+                    alpha = 1.0
                 else:
-                    alpha = float(np.clip(local_idx / float(overlap_len - 1), 0.0, 1.0))
+                    # Use an open-interval crossfade so neither chunk endpoint is fully discarded.
+                    alpha = float((local_idx + 1) / float(overlap_len + 1))
                 logits_by_frame[global_idx] = _blend_overlap(existing, logit_full, alpha)
 
             prev_tail_mask_proc = chunk_masks[-1]

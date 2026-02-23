@@ -375,7 +375,11 @@ class MEMatteModel:
                 token_loss_ratio=0.0,
             )
 
-        checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
+        try:
+            checkpoint = torch.load(str(checkpoint_path), map_location="cpu", weights_only=True)
+        except TypeError:
+            # Backward compatibility for older torch versions without weights_only.
+            checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
         if isinstance(checkpoint, dict):
             if "model" in checkpoint and isinstance(checkpoint["model"], dict):
                 checkpoint = checkpoint["model"]

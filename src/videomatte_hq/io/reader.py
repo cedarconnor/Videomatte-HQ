@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -14,7 +13,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def _parse_frame_pattern(pattern: str) -> tuple[Path, str]:
+def _parse_frame_pattern(pattern: str | Path) -> tuple[Path, str]:
     """Parse a C-style frame pattern like 'frames/%06d.png' into (directory, glob)."""
     p = Path(pattern)
     parent = p.parent
@@ -63,9 +62,7 @@ def discover_frames(
         raise FileNotFoundError(f"Video file not found: {pattern_path}")
 
     # Frame sequence
-    parent, glob_pat = _parse_frame_pattern(pattern)
-    if base_dir:
-        parent = base_dir / parent
+    parent, glob_pat = _parse_frame_pattern(pattern_path)
 
     if not parent.exists():
         raise FileNotFoundError(f"Frame directory not found: {parent}")
@@ -206,7 +203,7 @@ class VideoReader:
         )
 
     def __len__(self) -> int:
-        return self.frame_end - self.frame_start + 1
+        return max(0, int(self.frame_end) - int(self.frame_start) + 1)
 
     def read_frame(self, index: int) -> np.ndarray:
         """Read a specific frame by index (0-based relative to frame_start)."""
@@ -258,7 +255,9 @@ class FrameSource:
         self.pattern = pattern
         self.base_dir = Path(base_dir) if base_dir else None
         self._prefetch_workers = prefetch_workers
-        self._executor = ThreadPoolExecutor(max_workers=prefetch_workers) if prefetch_workers > 0 else None
+        # Prefetch is not implemented yet; avoid creating an unused executor.
+        self._executor = None
+        self._resolution_cache: tuple[int, int] | None = None
 
         # Detect source type
         files = discover_frames(pattern, base_dir, frame_start, frame_end)
@@ -269,6 +268,7 @@ class FrameSource:
             self._video = VideoReader(files[0], frame_start or 0, effective_end)
             self._frames = None
             self._is_video = True
+            self._resolution_cache = (self._video.height, self._video.width)
         else:
             self._video = None
             self._frames = files
@@ -313,9 +313,11 @@ class FrameSource:
         """(height, width) of frames."""
         if self._is_video:
             return (self._video.height, self._video.width)
-        # Read first frame to get resolution
-        first = read_frame(self._frames[0])
-        return first.shape[:2]
+        if self._resolution_cache is None:
+            # Cache sequence resolution to avoid decoding the first frame repeatedly.
+            first = read_frame(self._frames[0])
+            self._resolution_cache = tuple(int(v) for v in first.shape[:2])
+        return self._resolution_cache
 
     def __len__(self) -> int:
         return self.num_frames

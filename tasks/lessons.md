@@ -85,3 +85,15 @@
 - [ ] Verify `third_party/MEMatte` exists inside the current repo before refined CLI signoff.
 - [ ] Ensure CLI preflight rejects MEMatte repo/checkpoint paths outside the current repo root.
 - [ ] Re-run final refined CLI validation using local-only defaults/paths and check `run_summary.json`.
+
+## 2026-02-23 — Treat Path Containment As A User Policy, Not A Permanent Assumption
+**Mistake pattern:**  
+- Kept enforcing repo-local MEMatte paths after the user explicitly requested external path support again.
+
+**New rule:**  
+- Path-containment enforcement for MEMatte is a configurable policy; when the user changes that policy, update CLI/web preflight and UI controls consistently instead of only explaining the current behavior.
+
+**Prevention checklist:**  
+- [ ] Re-state the active path policy (repo-local only vs external-allowed) before changing preflight rules.
+- [ ] Apply policy changes across CLI, web API, and Run UI in the same patch.
+- [ ] Confirm run metadata records the effective policy (`allow_external_paths`) for reproducibility.

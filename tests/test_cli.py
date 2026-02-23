@@ -88,6 +88,41 @@ def test_preflight_checks_validate_invalid_frame_range(tmp_path: Path) -> None:
         _run_preflight_checks(cfg)
 
 
+def test_preflight_checks_reject_unsupported_anchor_frame(tmp_path: Path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"dummy")
+    anchor = tmp_path / "anchor.png"
+    anchor.write_bytes(b"dummy")
+
+    cfg = VideoMatteConfig(
+        input=str(video_path),
+        anchor_mask=str(anchor),
+        anchor_frame=3,
+        refine_enabled=False,
+        segment_backend="static",
+    )
+
+    with pytest.raises(ValueError, match="Only anchor_frame=0"):
+        _run_preflight_checks(cfg)
+
+
+def test_preflight_checks_reject_no_refine_mode(tmp_path: Path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"dummy")
+    anchor = tmp_path / "anchor.png"
+    anchor.write_bytes(b"dummy")
+
+    cfg = VideoMatteConfig(
+        input=str(video_path),
+        anchor_mask=str(anchor),
+        refine_enabled=False,
+        segment_backend="static",
+    )
+
+    with pytest.raises(ValueError, match="MEMatte refinement is mandatory"):
+        _run_preflight_checks(cfg)
+
+
 def test_preflight_checks_reject_mematte_paths_outside_repo(monkeypatch, tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True, exist_ok=True)
@@ -116,6 +151,38 @@ def test_preflight_checks_reject_mematte_paths_outside_repo(monkeypatch, tmp_pat
 
     with pytest.raises(ValueError, match="must be inside this repository"):
         _run_preflight_checks(cfg)
+
+
+def test_preflight_checks_allow_mematte_paths_outside_repo_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    local_video = repo_root / "clip.mp4"
+    local_video.write_bytes(b"dummy")
+    local_anchor = repo_root / "anchor.png"
+    local_anchor.write_bytes(b"dummy")
+
+    external_root = tmp_path / "external_mematte"
+    external_root.mkdir(parents=True, exist_ok=True)
+    (external_root / "inference.py").write_text("# dummy", encoding="utf-8")
+    ckpt = external_root / "checkpoints" / "MEMatte_ViTS_DIM.pth"
+    ckpt.parent.mkdir(parents=True, exist_ok=True)
+    ckpt.write_bytes(b"dummy")
+
+    monkeypatch.setattr("videomatte_hq.cli._repo_root", lambda: repo_root)
+
+    cfg = VideoMatteConfig(
+        input=str(local_video),
+        anchor_mask=str(local_anchor),
+        refine_enabled=True,
+        mematte_repo_dir=str(external_root),
+        mematte_checkpoint=str(ckpt),
+        segment_backend="static",
+    )
+
+    _run_preflight_checks(cfg, allow_external_paths=True)
+
+    assert Path(cfg.mematte_repo_dir) == external_root.resolve()
+    assert Path(cfg.mematte_checkpoint) == ckpt.resolve()
 
 
 def test_preflight_checks_normalize_relative_mematte_paths_under_repo(monkeypatch, tmp_path: Path) -> None:

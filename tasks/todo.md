@@ -646,3 +646,331 @@
     - result: forced update of `origin/main`
 - Remaining issues / follow-ups:
   - Large weights/checkpoints are intentionally not pushed (`*.pt`, `*.pth`) due GitHub size limits; the repo remains code/docs-complete but users must supply local model files.
+
+---
+
+# TODO — Web UI MVP (v2 CLI Wrapper) (2026-02-23)
+
+## Goal
+- Build a local-first UI MVP for the current v2 pipeline with a thin FastAPI backend and a React/Vite frontend shell focused on run/jobs/qc workflows.
+
+## Non-goals
+- Full parity with the legacy UI.
+- Internet-facing deployment or authentication.
+- Rich manual mask/point editor in this pass (can come later).
+
+## Plan
+- [x] Add `videomatte_hq_web` backend package with local-only FastAPI app, job queue, and core endpoints (`fs`, `preflight`, `anchor preview`, `jobs`, `qc info`).
+- [x] Implement subprocess job execution that launches the current `videomatte-hq-v2` CLI and streams logs to per-job files.
+- [x] Scaffold `web/` React + Vite frontend with tabs/pages for Run, Jobs, QC, and Settings, wired to the new API.
+- [x] Add packaging entry point and optional dependencies for launching the web server (`videomatte-hq-web`).
+- [x] Add lightweight tests for backend utilities / endpoint behavior where feasible without requiring full web runtime assets.
+
+## Risks / Unknowns
+- Optional web dependencies (`fastapi`, `uvicorn`) may not be installed in the current venv.
+- Frontend scaffold can be added without `npm install`, but build verification may be limited if Node deps are unavailable in this environment.
+- Cancellation behavior on Windows subprocesses needs to be handled carefully.
+
+## Verification
+- [x] Python tests still pass (`pytest -q`) after backend additions.
+- [x] FastAPI app import verification deferred cleanly when optional web deps are missing (module help still works).
+- [x] `videomatte-hq-web --help` (or module help) works (if web deps installed).
+- [x] Frontend files exist with API wiring for Run / Jobs / QC shell.
+
+## Review Notes (fill after)
+- What changed:
+  - Added a new local web backend package `src/videomatte_hq_web`:
+    - `server.py` (FastAPI app, local UI endpoints, optional dependency-safe import path),
+    - `jobs.py` (serial subprocess job queue executing the existing `videomatte_hq.cli` CLI),
+    - `__main__.py` / console entrypoint support.
+  - Implemented MVP API endpoints for:
+    - file input suggestions + path info,
+    - config preflight using existing CLI preflight logic,
+    - auto-anchor preview (returns frame/mask/overlay previews and effective frame_start),
+    - job submit/list/detail/cancel/logs/artifacts,
+    - QC info + input/alpha frame preview PNGs for completed jobs.
+  - Added `web/` React + Vite + TypeScript scaffold with tabs/pages:
+    - Run, Jobs, QC, Settings
+    - API wiring for preflight, auto-anchor preview, job queue, and QC image previews
+    - custom CSS theme and responsive layout for desktop/mobile.
+  - Added `run_web.bat` helper to launch backend + frontend dev server windows.
+  - Added optional web dependencies and `videomatte-hq-web` console script in `pyproject.toml`.
+  - Added backend job queue tests in `tests/test_web_jobs.py`.
+- Evidence it works:
+  - Syntax compile passes for backend package:
+    - `python -m compileall src\videomatte_hq_web`
+  - Python test suite passes after UI/backend additions:
+    - `python -m pytest -q` => `45 passed`
+  - Web backend module CLI help works from the project venv:
+    - `.\.venv\Scripts\python.exe -m videomatte_hq_web --help`
+  - Direct backend import check currently reports missing optional web deps in the venv:
+    - `ModuleNotFoundError: No module named 'fastapi'`
+    - expected until `pip install -e .[web]` is run
+  - Frontend scaffold exists and is wired to the new API endpoints (`web/src/api.ts`, `web/src/pages/*.tsx`).
+- Remaining issues / follow-ups:
+  - Frontend build/runtime (`npm install`, `npm run dev/build`) was not verified in this environment during this pass.
+  - Manual anchor editor (box + FG/BG points) is not implemented yet in the new v2 UI.
+  - QC metrics dashboards (coverage spikes, empty/full-white detection summaries) are still basic and should be expanded.
+
+---
+
+# TODO — Claude Review Remediation Pass (2026-02-23)
+
+## Goal
+- Address the highest-impact correctness and stability issues identified in the external code review, then validate with regression tests.
+
+## Non-goals
+- Fix every low-priority or architectural/documentation item in one pass.
+- Rework unused/dead modules beyond targeted safety fixes.
+
+## Plan
+- [x] Fix prioritized segmentation/refinement correctness issues affecting temporal tracking and chunk stitching.
+- [x] Fix IO and CLI preflight issues with clear regression tests.
+- [x] Add targeted tests for new guardrails and rerun the full test suite.
+- [x] Patch a small set of low-risk follow-up issues (prompt search radius, eval length mismatch visibility, MEMatte checkpoint load safety).
+
+## Risks / Unknowns
+- Review items around Ultralytics internals can be partially false positives if behavior depends on call ordering; changes must be regression-tested.
+- Test doubles for chunked segmentation can accidentally trigger prompt-adapter edge cases if masks are degenerate.
+
+## Verification
+- [x] Full Python suite passes after remediation (`python -m pytest -q`).
+
+## Review Notes (fill after)
+- What changed:
+  - Fixed image-sequence frame pattern resolution and cached sequence resolution in `FrameSource`.
+  - Clamped `VideoReader.__len__()` to avoid negative lengths.
+  - Removed unused `FrameSource` prefetch executor allocation.
+  - Fixed `AlphaWriter.flush()` to collect and surface multiple async write failures.
+  - Fixed Stage-2 refine skip path to keep `prev_alpha` in sync when reusing a frame.
+  - Hardened Stage-1 chunk overlap blending, global anchor-area guarding across chunks, OpenCV seek verification, and model fallback name handling.
+  - Added CLI preflight rejection for unsupported non-zero `anchor_frame`.
+  - Fixed prompt negative-point spiral search to check immediate neighbors.
+  - Made eval harness length mismatches explicit via logging and return metadata.
+  - Used `torch.load(..., weights_only=True)` for MEMatte checkpoints when supported (fallback kept for older torch).
+  - Added regression tests for reader/writer/CLI/segmenter/eval/prompt adapter changes.
+- Evidence it works:
+  - `python -m pytest -q` => `55 passed`
+- Remaining issues / follow-ups:
+  - Several review items remain deferred (e.g., tile-band logit accumulation optimization, MEMatte multi-repo sys.modules behavior, some low-priority docs/dead-code cleanup).
+
+---
+
+# TODO — Claude Review Follow-up (#8, #21) (2026-02-23)
+
+## Goal
+- Fix the next two runtime-impacting review items: band-only tile logit accumulation (`#8`) and safer Ultralytics predictor state reset (`#21`).
+
+## Non-goals
+- Broader cleanup of remaining medium/low review items in the same pass.
+
+## Plan
+- [x] Patch `tiling/stitch.py` to restrict logit accumulation to band pixels only.
+- [x] Patch `stage_segment.py` predictor state reset to clear in place when possible and log reset failures.
+- [x] Add targeted regression tests where practical.
+- [x] Run full test suite.
+
+## Risks / Unknowns
+- `#8` is mostly an optimization/containment fix; black-box output differences may be minimal, so tests may need behavioral probes rather than visual deltas.
+- Predictor internals vary across Ultralytics versions; reset logic must remain tolerant.
+
+## Verification
+- [x] `python -m pytest -q`
+
+## Review Notes (fill after)
+- What changed:
+- `stitch_tiles()` now restricts tile logit numerator/denominator accumulation to the local `band` slice and skips tiles with no band coverage.
+- `_prepare_video_predictor_for_stream()` now clears `predictor.inference_state` in place when possible (preserving the object and dropping references), logs reset failures, and only falls back to replacement assignment if in-place clear is unavailable.
+- Added a tiling regression test to catch outside-band tile accumulation leaks and a Stage-1 regression test for in-place predictor state clearing.
+- Evidence it works:
+- `python -m pytest -q` => `57 passed`
+- Targeted regressions:
+  - `tests/test_tiling_stitch.py`
+  - `tests/test_stage_segment.py::test_ultralytics_backend_prepare_video_predictor_for_stream_clears_inference_state_in_place`
+- Remaining issues / follow-ups:
+- Remaining deferred review items include `#9`, `#15`, `#17`, `#19`, `#20`, and several low-priority cleanup/documentation items.
+
+---
+
+# TODO — Web UI Hardening & UX Pass (Gemini Review) (2026-02-23)
+
+## Goal
+- Implement the recommended UI/backend improvements for the v2 local web app: job durability, safer log tailing, file browsing UX, QC preview caching, local form validation/settings persistence, progress display, server import cleanup, UI polish, and clearer launcher URL reporting.
+
+## Non-goals
+- Internet-facing auth/multi-user deployment.
+- Relaxing repo-local MEMatte path policy.
+- Replacing the core config system with a new library.
+
+## Plan
+- [x] Fix immediate UI submit bug (`auto_anchor` undefined) and suppress noisy Uvicorn access logs.
+- [x] Refactor web server optional dependency handling into a runtime module (remove stubbed FastAPI classes from the main entry module).
+- [x] Add backend hardening: SQLite-backed job metadata persistence, safe log tailing, parsed progress fields, and `/api/fs/browse`.
+- [x] Add backend QC preview caching (LRU) for scrub performance.
+- [x] Update frontend API/types/pages for progress display and new file browser endpoint.
+- [x] Add Run page local validation + path picker controls.
+- [x] Add Settings page localStorage-backed defaults and feed them into Run page defaults.
+- [x] Improve UI polish (contrast, micro-interactions, scrollbar styling).
+- [x] Improve launcher to surface actual frontend URL clearly (including port changes).
+- [x] Run Python tests + lightweight frontend checks and document results.
+
+## Risks / Unknowns
+- Vite dev server port can auto-switch when 5173 is occupied; launcher output must detect and surface the actual port reliably.
+- SQLite persistence must avoid storing non-serializable runtime fields (process handles).
+- QC preview caching must be bounded to avoid growing memory usage during long scrubs.
+
+## Verification
+- [x] `python -m pytest -q`
+- [x] `python -m compileall src\\videomatte_hq_web`
+- [x] `npm run build` (from `web/`) if local Node toolchain is available
+- [x] `run_web.bat` launches without batch parse errors and clearly prints the active frontend URL
+
+## Review Notes (fill after)
+- What changed:
+- Fixed the `RunPage` submit regression (`auto_anchor is not defined`) by passing the correct state variable to `submitJob(...)`.
+- Suppressed noisy Uvicorn access logs by default in the web entrypoint (`--access-log` opt-in), which removes repeated `/api/jobs` polling logs.
+- Refactored the web backend into a thin wrapper (`server.py`) plus runtime module (`server_runtime.py`) so FastAPI/Pydantic imports are no longer stubbed in the entry module.
+- Added backend job durability and observability in `jobs.py`:
+  - SQLite persistence for job metadata/history across restarts
+  - safe log tailing using seek-from-end instead of full-file reads
+  - parsed progress fields (`progress_stage/current/total/percent/message`) from live CLI logs
+  - enum-value status persistence fix (`queued/running/...`) to keep UI status badges stable
+- Added `/api/fs/browse` backend endpoint for file/directory browsing and wired QC preview image caching (bounded LRU) for faster scrubbing.
+- Updated frontend API/types and pages:
+  - progress-aware job list/detail rendering
+  - file browser modal for selecting input/output/anchor/MEMatte paths
+  - local validation on Run form numeric bounds before submit/preflight
+  - Settings page now stores user defaults in `localStorage` and Run page initializes from them
+  - App sidebar now shows the actual frontend origin instead of a hardcoded dev port
+- Improved UI polish with higher muted-text contrast, transitions, progress bars, modal styles, and themed scrollbars.
+- Improved `run_web.bat`:
+  - checks/selects a free frontend port (5173..5199)
+  - launches Vite with explicit `--host/--port --strictPort`
+  - prints the exact frontend/backend URLs clearly
+  - writes a frontend URL hint file for the backend root page
+- Evidence it works:
+- `python -m pytest -q` => `60 passed`
+- `python -m compileall src\\videomatte_hq_web` passes
+- `cd web && npm run build` passes (Vite production build completes)
+- `cmd /c run_web.bat` now runs without batch parse errors and prints explicit URLs
+- Remaining issues / follow-ups:
+- File browser currently lists generic filesystem entries and does not yet provide media-type filtering/search in the UI.
+- Progress parsing is log-pattern-based and best-effort; deeper pipeline instrumentation would provide more precise stage/frame progress in the future.
+
+### Follow-up (User Request)
+- Added opt-in external MEMatte path support:
+  - CLI flag `--allow-external-paths`
+  - Web UI checkbox `Allow External MEMatte Paths` on Run page
+  - Web preflight/submit now pass this flag through to the CLI
+- Added QC page hint explaining the wipe-slider reveal behavior for alpha visibility.
+- Validation:
+  - `python -m pytest -q tests/test_cli.py` => `7 passed`
+  - `npm run build` (web) passes
+
+---
+
+# TODO — MEMatte-Only Refine Enforcement + QC Trimap Preview (2026-02-23)
+
+## Goal
+- Enforce MEMatte as the only refinement path (no preview/no-refine fallback) and fail runs if MEMatte does not execute.
+- Add a real trimap preview to the web QC page to inspect the Stage-2 input band.
+
+## Non-goals
+- Replacing trimap generation logic or retuning thresholds in this pass.
+- Building a full QC metrics panel for trimap statistics.
+
+## Plan
+- [x] Enforce MEMatte-only behavior in Stage-2 runtime and CLI preflight (clear error when `refine_enabled=false` or no MEMatte tile calls occur).
+- [x] Persist QC trimap preview images from the actual Stage-2 trimap inputs during pipeline runs.
+- [x] Add `/api/qc/frame-preview?kind=trimap` support with preview caching.
+- [x] Update QC UI to display trimap preview and wire API types.
+- [x] Update/replace affected tests and run targeted + full verification.
+
+## Risks / Unknowns
+- Strict "MEMatte must execute" may fail on clips whose trimap has zero unknown pixels on every frame (intended strictness, but error must be clear).
+- Writing trimap previews adds extra IO; keep them compact (`uint8` PNG) and under a dedicated QC subfolder.
+
+## Verification
+- [x] `python -m pytest -q tests/test_stage_refine.py tests/test_cli.py`
+- [x] `python -m pytest -q`
+- [x] `cd web && npm run build`
+- [ ] Manual smoke: QC page loads trimap preview for a completed job
+
+## Review Notes (fill after)
+- What changed:
+- Stage-2 refine path now fails fast when `refine_enabled=false` (preview/no-refine fallback removed) and also fails if the MEMatte refiner never executes any tile calls (e.g., trimap unknown band empty across the entire run).
+- CLI preflight and web submit now reject no-refine runs with a clear "MEMatte refinement is mandatory" error.
+- Pipeline now writes QC trimap previews from actual Stage-2 trimap inputs to `output_dir/qc/trimap.%06d.png`.
+- Web QC API now serves `kind=trimap` previews with caching, reports trimap preview availability in `/api/qc/info`, and the QC page shows trimap preview (image + wipe comparison against input).
+- Run page refine checkbox is now locked as required (`MEMatte Refine Enabled (required)`).
+- Evidence it works:
+- `python -m pytest -q tests/test_stage_refine.py tests/test_cli.py` => `11 passed`
+- `python -m pytest -q` => `63 passed`
+- `cd web && npm run build` passes
+- Added/updated regressions:
+  - `tests/test_stage_refine.py` covers no-refine rejection and "MEMatte did not execute" failure.
+  - `tests/test_cli.py` covers preflight rejection for no-refine mode.
+- Remaining issues / follow-ups:
+- Existing/older completed jobs will not have trimap preview artifacts until they are re-run with this build.
+- Manual UI smoke for trimap preview rendering was not run in this pass.
+
+---
+
+# TODO — UI Trimap Tuning + MEMatte No-Tile Error Guidance (2026-02-23)
+
+## Goal
+- Expose a visible trimap tuning control on the Run page so users can widen the MEMatte unknown band without digging through advanced config internals.
+- Show a clear remediation hint in the Jobs UI when a run fails with `MEMatte did not execute on any tiles`.
+
+## Non-goals
+- WebSocket progress transport (polling progress is already implemented).
+- Full frontend end-to-end browser automation in this pass.
+
+## Plan
+- [x] Add trimap threshold fields to the web form types/defaults and a visible RunPage preset/slider control that maps to `trimap_fg_threshold` / `trimap_bg_threshold`.
+- [x] Add a JobsPage error/log hint panel for the MEMatte no-tile failure with actionable remediation steps.
+- [x] Rebuild frontend and record verification/results.
+
+## Risks / Unknowns
+- Preset mapping should improve usability without hiding the exact thresholds; include a readout to keep behavior transparent.
+- Existing jobs may fail for unrelated reasons; error hint should key off a specific string match to avoid false suggestions.
+
+## Verification
+- [x] `cd web && npm run build`
+
+## Review Notes (fill after)
+- What changed:
+- Added `trimap_fg_threshold` / `trimap_bg_threshold` to the web form type/defaults and validation so the UI can submit trimap tuning values explicitly.
+- Added a visible `Trimap Refine Band` control on `RunPage` (slider + preset buttons + exact threshold readout) and exposed matching advanced numeric inputs for manual overrides.
+- Added a Jobs detail hint panel that triggers on the specific `MEMatte did not execute on any tiles` failure text and recommends widening the trimap band plus checking QC trimap preview.
+- Evidence it works:
+- `cd web && npm run build` passes (Vite production build completes)
+- Remaining issues / follow-ups:
+- I did not reproduce the reported rapid-click/double-click Run page issue in this pass; if it persists, we should capture exact browser + click sequence and add a focused repro.
+
+---
+
+# TODO — Docs Refresh For Current v2 Features (2026-02-23)
+
+## Goal
+- Update `README.md` and `BEGINNER_GUIDE.md` so they reflect the current product behavior and web UI features (MEMatte-only refine, trimap QC preview, visible trimap tuning, external-path override support, launcher workflow).
+
+## Non-goals
+- Markdown linting/style normalization across the whole repo.
+
+## Plan
+- [x] Rewrite `README.md` to document current CLI + web UI features and current runtime behavior.
+- [x] Rewrite `BEGINNER_GUIDE.md` for the current beginner workflow (short refined runs, trimap tuning, QC trimap previews, web UI path).
+- [x] Sanity-scan for stale no-refine and path-policy guidance.
+
+## Verification
+- [x] `rg -n "no-refine|preview fallback|allow-external-paths|Trimap Refine Band|run_web.bat" README.md BEGINNER_GUIDE.md`
+
+## Review Notes (fill after)
+- What changed:
+- `README.md` now documents the local web UI, strict MEMatte-only refine behavior, QC trimap preview outputs, visible Run-page trimap tuning control, Jobs error guidance, and external MEMatte path override support.
+- `BEGINNER_GUIDE.md` now includes both CLI and web UI setup/first-run paths, replaces the old no-refine preview workflow with short refined runs + trimap tuning, and adds beginner-friendly fixes for the MEMatte no-tile error.
+- Evidence it works:
+- Sanity grep confirms stale `--no-refine` guidance is only described as unsupported behavior and the new features are present in both docs.
+- Remaining issues / follow-ups:
+- None for this doc pass.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import pytest
 
 from videomatte_hq.pipeline.stage_refine import RefineStageConfig, refine_sequence
 
@@ -67,7 +68,7 @@ def test_refine_sequence_skip_reuse_behavior() -> None:
     assert refiner.calls == 1
 
 
-def test_refine_sequence_preview_solidify_fills_holes_without_refiner() -> None:
+def test_refine_sequence_rejects_no_refine_preview_fallback() -> None:
     frames = [np.zeros((64, 64, 3), dtype=np.float32)]
     source = DummySource(frames)
 
@@ -87,14 +88,35 @@ def test_refine_sequence_preview_solidify_fills_holes_without_refiner() -> None:
         preview_bg_ceiling=0.1,
     )
 
-    result = refine_sequence(
-        source=source,
-        coarse_masks=coarse_masks,
-        coarse_logits=coarse_logits,
-        cfg=cfg,
-        refiner=None,
-    )
+    with pytest.raises(RuntimeError, match="MEMatte refinement is mandatory"):
+        refine_sequence(
+            source=source,
+            coarse_masks=coarse_masks,
+            coarse_logits=coarse_logits,
+            cfg=cfg,
+            refiner=None,
+        )
 
-    alpha = result.alphas[0]
-    assert float(alpha[32, 32]) >= 0.89  # filled interior hole
-    assert float(alpha[4, 4]) <= 0.1
+
+def test_refine_sequence_fails_if_mematte_never_executes_tiles() -> None:
+    frames = [np.zeros((32, 32, 3), dtype=np.float32)]
+    source = DummySource(frames)
+
+    coarse_mask = np.zeros((32, 32), dtype=np.float32)
+    coarse_mask[8:24, 8:24] = 1.0
+    coarse_masks = [coarse_mask]
+
+    # Strong foreground logits produce no unknown-band pixels under default thresholds.
+    coarse_logits = [np.full((32, 32), 8.0, dtype=np.float32)]
+
+    cfg = RefineStageConfig(refine_enabled=True, tile_size=64, tile_overlap=0)
+    refiner = CountingRefiner()
+
+    with pytest.raises(RuntimeError, match="MEMatte did not execute"):
+        refine_sequence(
+            source=source,
+            coarse_masks=coarse_masks,
+            coarse_logits=coarse_logits,
+            cfg=cfg,
+            refiner=refiner,
+        )

@@ -14,11 +14,15 @@ from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.io.writer import AlphaWriter
 from videomatte_hq.pipeline.stage_refine import RefineSequenceResult, refine_sequence
 from videomatte_hq.pipeline.stage_segment import build_segmenter
+from videomatte_hq.pipeline.stage_trimap import build_trimap_from_logits, resize_logits
 from videomatte_hq.postprocess.matte_tuning import apply_matte_tuning
 from videomatte_hq.prompts.mask_adapter import MaskPromptAdapter
 from videomatte_hq.protocols import SegmentResult
 
 logger = logging.getLogger(__name__)
+
+QC_TRIMAP_DIR = "qc"
+QC_TRIMAP_PATTERN = "trimap.%06d.png"
 
 
 @dataclass(slots=True)
@@ -55,6 +59,20 @@ def _read_anchor_mask(path: str | Path, shape: tuple[int, int]) -> np.ndarray:
     if mask_f.shape != (h, w):
         mask_f = cv2.resize(mask_f, (w, h), interpolation=cv2.INTER_LINEAR)
     return np.clip(mask_f, 0.0, 1.0).astype(np.float32)
+
+
+def _qc_trimap_frame_path(output_dir: Path, frame_idx: int) -> Path:
+    return output_dir / QC_TRIMAP_DIR / (QC_TRIMAP_PATTERN % int(frame_idx))
+
+
+def _write_qc_trimap_preview_png(output_dir: Path, frame_idx: int, trimap: np.ndarray) -> None:
+    path = _qc_trimap_frame_path(output_dir, frame_idx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tri = np.asarray(trimap, dtype=np.float32)
+    out = np.full(tri.shape, 128, dtype=np.uint8)
+    out[tri >= 1.0] = 255
+    out[tri <= 0.0] = 0
+    cv2.imwrite(str(path), out)
 
 
 def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
@@ -106,6 +124,17 @@ def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
             len(refine_result.reused_frames),
         )
 
+        write_start = max(int(cfg.frame_start), 0)
+        for idx, logits in enumerate(segment_result.logits):
+            logits_up = resize_logits(logits, frame_shape)
+            trimap = build_trimap_from_logits(
+                logits_up,
+                fg_threshold=cfg.trimap_fg_threshold,
+                bg_threshold=cfg.trimap_bg_threshold,
+            )
+            _write_qc_trimap_preview_png(output_dir, write_start + idx, trimap)
+        logger.info("Wrote %d QC trimap preview frames to %s/%s", len(segment_result.logits), output_dir, QC_TRIMAP_DIR)
+
         tuned = apply_matte_tuning(refine_result.alphas, cfg.matte_tuning_config())
         writer = AlphaWriter(
             output_pattern=cfg.output_alpha,
@@ -113,7 +142,6 @@ def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
             workers=max(1, int(cfg.workers_io)),
             base_dir=output_dir,
         )
-        write_start = max(int(cfg.frame_start), 0)
         for idx, alpha in enumerate(tuned):
             writer.write(write_start + idx, alpha)
         writer.close()

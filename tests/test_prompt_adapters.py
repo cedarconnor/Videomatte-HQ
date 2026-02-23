@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from videomatte_hq.prompts.box_adapter import BoxPromptAdapter
-from videomatte_hq.prompts.mask_adapter import MaskPromptAdapter
+from videomatte_hq.prompts.mask_adapter import MaskPromptAdapter, _nearest_background_point
 
 
 def _sample_mask() -> np.ndarray:
@@ -57,3 +57,9 @@ def test_box_prompt_adapter_only_returns_bbox() -> None:
     assert prompt.bbox is not None
     assert prompt.positive_points == []
     assert prompt.negative_points == []
+
+
+def test_nearest_background_point_checks_immediate_neighbors() -> None:
+    binary = np.ones((5, 5), dtype=np.uint8)
+    binary[2, 3] = 0  # Immediate neighbor at radius 1.
+    assert _nearest_background_point(binary, 2, 2, max_radius=4) == (3, 2)

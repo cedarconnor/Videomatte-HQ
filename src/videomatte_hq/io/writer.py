@@ -157,9 +157,20 @@ class AlphaWriter:
 
     def flush(self) -> None:
         """Wait for all queued writes to complete."""
-        for f in self._futures:
-            f.result()  # raises any exceptions
+        futures = list(self._futures)
         self._futures.clear()
+        errors: list[BaseException] = []
+        for f in futures:
+            try:
+                f.result()
+            except BaseException as exc:  # noqa: BLE001 - collect all write failures before raising
+                errors.append(exc)
+        if not errors:
+            return
+        if len(errors) == 1:
+            raise errors[0]
+        detail = "; ".join(f"{type(e).__name__}: {e}" for e in errors[:3])
+        raise RuntimeError(f"Multiple alpha write failures ({len(errors)}). {detail}")
 
     def close(self) -> None:
         """Flush and shut down the executor."""

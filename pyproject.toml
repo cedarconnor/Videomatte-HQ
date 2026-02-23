@@ -22,9 +22,14 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
+web = [
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+]
 
 [project.scripts]
 videomatte-hq-v2 = "videomatte_hq.cli:main"
+videomatte-hq-web = "videomatte_hq_web.server:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

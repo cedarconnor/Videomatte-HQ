@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import numpy as np
 
 from videomatte_hq.eval.harness import compare_alpha_sequences, summarize_alpha_sequence
@@ -36,3 +37,15 @@ def test_compare_alpha_sequences_reports_deltas() -> None:
     assert result["frames_compared"] == 5
     assert "diff" in result
     assert result["frame_mae_mean"] > 0.0
+
+
+def test_compare_alpha_sequences_reports_length_mismatch(caplog) -> None:
+    ref = _sequence(shift=0)
+    cand = _sequence(shift=0)[:3]
+    with caplog.at_level(logging.WARNING):
+        result = compare_alpha_sequences(ref, cand)
+    assert result["frames_compared"] == 3
+    assert result["reference_num_frames"] == 5
+    assert result["candidate_num_frames"] == 3
+    assert result["length_mismatch"] is True
+    assert "length mismatch" in caplog.text.lower()

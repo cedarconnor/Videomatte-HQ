@@ -95,6 +95,18 @@ class RefineSequenceResult:
 
 
 @dataclass(slots=True)
+class _RefinerCallCounter(EdgeRefiner):
+    """Wrap an EdgeRefiner and count actual tile-level refine invocations."""
+
+    inner: EdgeRefiner
+    calls: int = 0
+
+    def refine(self, rgb: np.ndarray, trimap: np.ndarray) -> np.ndarray:
+        self.calls += 1
+        return self.inner.refine(rgb, trimap)
+
+
+@dataclass(slots=True)
 class MEMatteEdgeRefiner(EdgeRefiner):
     """EdgeRefiner adapter backed by the detectron2-free MEMatte wrapper."""
 
@@ -350,9 +362,17 @@ def refine_sequence(
         )
 
     use_refiner = bool(cfg.refine_enabled)
+    if not use_refiner:
+        raise RuntimeError(
+            "MEMatte refinement is mandatory for this tool. "
+            "Preview/no-refine fallback output is disabled."
+        )
     active_refiner = refiner
     if use_refiner and active_refiner is None:
         active_refiner = build_edge_refiner(cfg)
+    if active_refiner is None:
+        raise RuntimeError("MEMatte refinement is required, but no refiner instance is available.")
+    counted_refiner = _RefinerCallCounter(active_refiner)
 
     reused_frames: list[int] = []
     out_alphas: list[np.ndarray] = []
@@ -371,7 +391,9 @@ def refine_sequence(
             and prev_alpha is not None
             and compute_iou(mask_up, prev_mask) > float(cfg.skip_iou_threshold)
         ):
-            out_alphas.append(prev_alpha.copy())
+            reused_alpha = prev_alpha.copy()
+            out_alphas.append(reused_alpha)
+            prev_alpha = reused_alpha
             reused_frames.append(frame_idx)
             prev_mask = mask_up
             continue
@@ -383,23 +405,13 @@ def refine_sequence(
         )
         coarse_prob = sigmoid_logits(logits_up)
 
-        if not use_refiner or active_refiner is None:
-            if bool(cfg.preview_solidify_mask):
-                preview_mask = _cleanup_preview_mask(mask_up, prev_mask, cfg)
-                alpha = preview_mask.astype(np.float32)
-            else:
-                alpha = coarse_prob.copy()
-                alpha[trimap >= 1.0] = 1.0
-                alpha[trimap <= 0.0] = 0.0
-            alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
-        else:
-            alpha = _refine_frame_tiled(
-                rgb=rgb,
-                trimap=trimap,
-                coarse_prob=coarse_prob,
-                refiner=active_refiner,
-                cfg=cfg,
-            )
+        alpha = _refine_frame_tiled(
+            rgb=rgb,
+            trimap=trimap,
+            coarse_prob=coarse_prob,
+            refiner=counted_refiner,
+            cfg=cfg,
+        )
 
         out_alphas.append(alpha)
         prev_mask = mask_up
@@ -412,5 +424,11 @@ def refine_sequence(
                 num_frames,
                 len(reused_frames),
             )
+
+    if num_frames > 0 and counted_refiner.calls <= 0:
+        raise RuntimeError(
+            "MEMatte did not execute on any tiles (trimap unknown band was empty for all processed frames). "
+            "Widen the trimap unknown band (adjust trimap_fg_threshold/trimap_bg_threshold) and retry."
+        )
 
     return RefineSequenceResult(alphas=out_alphas, reused_frames=reused_frames)

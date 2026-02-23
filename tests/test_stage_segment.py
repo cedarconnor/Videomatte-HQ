@@ -419,3 +419,119 @@ def test_ultralytics_backend_prepare_video_predictor_for_stream_seeks_and_resets
     assert predictor.inference_state == {}
     assert predictor.dataset.frame == 7
     assert predictor.dataset.cap.set_calls == [(int(cv2.CAP_PROP_POS_FRAMES), 7.0)]
+
+
+def test_ultralytics_backend_prepare_video_predictor_for_stream_clears_inference_state_in_place() -> None:
+    class _State(dict):
+        def __init__(self) -> None:
+            super().__init__({"stale": True})
+            self.clear_calls = 0
+
+        def clear(self) -> None:
+            self.clear_calls += 1
+            return super().clear()
+
+    state = _State()
+
+    class _Predictor:
+        inference_state = state
+
+    backend = UltralyticsSAM3SegmentBackend()
+    backend._prepare_video_predictor_for_stream(_Predictor(), start_frame=0)
+
+    assert state.clear_calls == 1
+    assert state == {}
+
+
+def test_ultralytics_backend_prepare_video_predictor_for_stream_raises_on_position_mismatch() -> None:
+    class _Cap:
+        def set(self, prop: int, value: float) -> bool:
+            return True
+
+        def get(self, prop: int) -> float:
+            # Deliberately report the wrong position despite set() returning True.
+            return 0.0
+
+    class _Dataset:
+        mode = "video"
+        frames = 100
+        frame = 0
+        cap = _Cap()
+
+    class _Predictor:
+        dataset = _Dataset()
+        inference_state = {}
+
+        def reset_prompts(self):
+            pass
+
+    backend = UltralyticsSAM3SegmentBackend()
+    with np.testing.assert_raises_regex(RuntimeError, "Failed to seek"):
+        backend._prepare_video_predictor_for_stream(_Predictor(), start_frame=10)
+
+
+def test_chunked_segmenter_overlap_blend_uses_open_interval_crossfade() -> None:
+    class _ChunkConstantBackend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def segment_chunk(self, frames, prompt, anchor_frame_index=0):
+            value = 2.0 if self.calls == 0 else 10.0
+            self.calls += 1
+            h, w = frames[0].shape[:2]
+            out = np.full((h, w), -10.0, dtype=np.float32)
+            if prompt.mask is not None:
+                mask = np.asarray(prompt.mask, dtype=np.float32)
+                if mask.shape != (h, w):
+                    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+                out[mask >= 0.5] = value
+            elif prompt.bbox is not None:
+                x0, y0, x1, y1 = prompt.bbox
+                out[int(y0):int(y1), int(x0):int(x1)] = value
+            return [out.copy() for _ in frames]
+
+    frames = [np.zeros((16, 16, 3), dtype=np.float32) for _ in range(6)]
+    source = DummySource(frames)
+    anchor_mask = np.zeros((16, 16), dtype=np.float32)
+    anchor_mask[4:12, 4:12] = 1.0
+    prompt = MaskPromptAdapter().adapt(anchor_mask, frame_shape=anchor_mask.shape)
+
+    result = ChunkedSegmenter(backend=_ChunkConstantBackend(), processing_long_side=16).segment_sequence(
+        source=source,
+        prompt=prompt,
+        anchor_frame=0,
+        chunk_size=4,
+        chunk_overlap=2,
+    )
+
+    region = (slice(4, 12), slice(4, 12))
+    # Overlap frames 2 and 3 should blend within the subject region, not snap to only existing (2) or incoming (10).
+    assert 2.0 < float(np.mean(result.logits[2][region])) < 10.0
+    assert 2.0 < float(np.mean(result.logits[3][region])) < 10.0
+
+
+def test_chunked_segmenter_passes_global_anchor_reference_area_to_ultralytics_backend(monkeypatch) -> None:
+    calls: list[float | None] = []
+
+    def _fake_segment_chunk(self, frames, prompt, anchor_frame_index=0, reference_anchor_area=None):
+        calls.append(reference_anchor_area)
+        return [np.zeros(frames[0].shape[:2], dtype=np.float32) for _ in frames]
+
+    monkeypatch.setattr(UltralyticsSAM3SegmentBackend, "segment_chunk", _fake_segment_chunk)
+
+    backend = UltralyticsSAM3SegmentBackend(device="cpu")
+    frames = [np.zeros((32, 32, 3), dtype=np.float32) for _ in range(6)]
+    source = DummySource(frames)
+    anchor_mask = np.zeros((32, 32), dtype=np.float32)
+    anchor_mask[8:24, 10:22] = 1.0
+    prompt = MaskPromptAdapter().adapt(anchor_mask, frame_shape=anchor_mask.shape)
+
+    _ = ChunkedSegmenter(
+        backend=backend,
+        processing_long_side=32,
+        max_reanchors_per_chunk=0,
+    ).segment_sequence(source=source, prompt=prompt, anchor_frame=0, chunk_size=4, chunk_overlap=1)
+
+    assert len(calls) >= 2  # multiple chunks
+    assert all(c is not None and c > 0.0 for c in calls)
+    assert len({round(float(c), 4) for c in calls if c is not None}) == 1

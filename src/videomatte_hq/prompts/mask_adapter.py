@@ -61,7 +61,7 @@ def _nearest_background_point(binary: np.ndarray, x: int, y: int, max_radius: in
     if 0 <= x < w and 0 <= y < h and not bool(binary[y, x]):
         return (x, y)
 
-    for r in range(2, max_radius + 1, 2):
+    for r in range(1, max_radius + 1):
         x0 = max(0, x - r)
         x1 = min(w - 1, x + r)
         y0 = max(0, y - r)

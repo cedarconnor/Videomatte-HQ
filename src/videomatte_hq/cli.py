@@ -62,9 +62,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--chunk-overlap", type=int, default=None, help="Chunk overlap.")
 
     p.add_argument("--refine-enabled", action="store_true", help="Enable MEMatte refinement.")
-    p.add_argument("--no-refine", action="store_true", help="Disable MEMatte refinement.")
+    p.add_argument(
+        "--no-refine",
+        action="store_true",
+        help="Disable MEMatte refinement (unsupported in this build; preflight will fail).",
+    )
     p.add_argument("--mematte-repo-dir", type=str, default=None, help="Path to local MEMatte repository.")
     p.add_argument("--mematte-checkpoint", type=str, default=None, help="Path to MEMatte checkpoint (.pth).")
+    p.add_argument(
+        "--allow-external-paths",
+        action="store_true",
+        help="Allow MEMatte repo/checkpoint paths outside this repository (power-user override).",
+    )
     p.add_argument("--tile-size", type=int, default=None, help="Refinement tile size.")
     p.add_argument("--tile-overlap", type=int, default=None, help="Refinement tile overlap.")
     p.add_argument("--trimap-fg-threshold", type=float, default=None, help="Definite FG probability threshold.")
@@ -163,7 +172,7 @@ def _ensure_within_repo(path: Path, *, label: str) -> Path:
     return candidate
 
 
-def _run_preflight_checks(cfg: VideoMatteConfig) -> None:
+def _run_preflight_checks(cfg: VideoMatteConfig, *, allow_external_paths: bool = False) -> None:
     input_path = Path(str(cfg.input))
     if _looks_like_video_input(cfg.input):
         if not input_path.exists():
@@ -193,31 +202,45 @@ def _run_preflight_checks(cfg: VideoMatteConfig) -> None:
         raise ValueError(
             f"Invalid frame range after preflight: frame_end ({cfg.frame_end}) < frame_start ({cfg.frame_start})."
         )
+    if int(cfg.anchor_frame) != 0:
+        raise ValueError(
+            f"Unsupported anchor_frame ({cfg.anchor_frame}) for v2 pipeline. Only anchor_frame=0 is currently supported."
+        )
+    if not bool(cfg.refine_enabled):
+        raise ValueError(
+            "MEMatte refinement is mandatory for this tool. "
+            "Disable-preview/no-refine runs are not supported."
+        )
 
-    if bool(cfg.refine_enabled):
+    mematte_repo_candidate = _resolve_path_under_repo(str(cfg.mematte_repo_dir))
+    mematte_ckpt_candidate = _resolve_path_under_repo(str(cfg.mematte_checkpoint))
+    if allow_external_paths:
+        mematte_repo = mematte_repo_candidate
+        mematte_ckpt = mematte_ckpt_candidate
+    else:
         mematte_repo = _ensure_within_repo(
-            _resolve_path_under_repo(str(cfg.mematte_repo_dir)),
+            mematte_repo_candidate,
             label="MEMatte repo dir",
         )
         mematte_ckpt = _ensure_within_repo(
-            _resolve_path_under_repo(str(cfg.mematte_checkpoint)),
+            mematte_ckpt_candidate,
             label="MEMatte checkpoint",
         )
-        # Persist normalized absolute local paths for runtime and metadata.
-        cfg.mematte_repo_dir = str(mematte_repo)
-        cfg.mematte_checkpoint = str(mematte_ckpt)
-        if not mematte_repo.exists():
-            raise FileNotFoundError(
-                f"MEMatte repo dir not found: {mematte_repo}. "
-                "Populate third_party/MEMatte inside this repo."
-            )
-        if not (mematte_repo / "inference.py").exists():
-            raise FileNotFoundError(f"MEMatte repo dir looks invalid (missing inference.py): {mematte_repo}")
-        if not mematte_ckpt.exists():
-            raise FileNotFoundError(
-                f"MEMatte checkpoint not found: {mematte_ckpt}. "
-                "Place the checkpoint under third_party/MEMatte/checkpoints inside this repo."
-            )
+    # Persist normalized absolute local paths for runtime and metadata.
+    cfg.mematte_repo_dir = str(mematte_repo)
+    cfg.mematte_checkpoint = str(mematte_ckpt)
+    if not mematte_repo.exists():
+        raise FileNotFoundError(
+            f"MEMatte repo dir not found: {mematte_repo}. "
+            "Populate third_party/MEMatte inside this repo."
+        )
+    if not (mematte_repo / "inference.py").exists():
+        raise FileNotFoundError(f"MEMatte repo dir looks invalid (missing inference.py): {mematte_repo}")
+    if not mematte_ckpt.exists():
+        raise FileNotFoundError(
+            f"MEMatte checkpoint not found: {mematte_ckpt}. "
+            "Place the checkpoint under third_party/MEMatte/checkpoints inside this repo."
+        )
 
 
 def _resolve_auto_anchor(
@@ -267,6 +290,7 @@ def _write_cli_run_metadata(
     *,
     requested_frame_start: int,
     auto_anchor: AutoAnchorResult | None,
+    allow_external_paths: bool,
 ) -> None:
     out_dir = Path(str(cfg.output_dir))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -286,6 +310,7 @@ def _write_cli_run_metadata(
         "device": str(cfg.device),
         "precision": str(cfg.precision),
         "anchor_mask": str(cfg.anchor_mask),
+        "allow_external_paths": bool(allow_external_paths),
     }
     if auto_anchor is not None:
         summary["auto_anchor"] = {
@@ -311,11 +336,12 @@ def main(argv: list[str] | None = None) -> int:
 
     requested_frame_start = int(cfg.frame_start)
     auto_anchor_result = _resolve_auto_anchor(cfg, args)
-    _run_preflight_checks(cfg)
+    _run_preflight_checks(cfg, allow_external_paths=bool(args.allow_external_paths))
     _write_cli_run_metadata(
         cfg,
         requested_frame_start=requested_frame_start,
         auto_anchor=auto_anchor_result,
+        allow_external_paths=bool(args.allow_external_paths),
     )
 
     run_pipeline(cfg)

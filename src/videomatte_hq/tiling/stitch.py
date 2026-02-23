@@ -62,12 +62,17 @@ def stitch_tiles(
         # Hann window
         window = hann_2d(th, tw)
 
+        band_view = np.asarray(band[tile.y0:tile.y1, tile.x0:tile.x1], dtype=bool)
+        if not bool(band_view.any()):
+            continue
+
         # Logit transform (inside band only)
         L_tile = _np_safe_logit(alpha_tile)
+        window_band = window * band_view.astype(window.dtype, copy=False)
 
         # Accumulate
-        logit_num[tile.y0:tile.y1, tile.x0:tile.x1] += window * L_tile
-        logit_den[tile.y0:tile.y1, tile.x0:tile.x1] += window
+        logit_num[tile.y0:tile.y1, tile.x0:tile.x1] += window_band * L_tile
+        logit_den[tile.y0:tile.y1, tile.x0:tile.x1] += window_band
 
     # Stitched result inside band
     has_coverage = logit_den > DIV_EPS
