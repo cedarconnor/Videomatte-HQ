@@ -1,411 +1,251 @@
-# Beginner Guide (Windows, First Successful Run)
+# Beginner Guide
 
-This guide walks you through getting your first alpha matte output from `D:\Videomatte-HQ2`.
+Step-by-step setup and first run on Windows. Covers both the CLI and web UI.
 
-It covers both:
+## Prerequisites
 
-- the product CLI (`videomatte-hq-v2`)
-- the local web UI (`run_web.bat`)
+| Requirement | Check | Install |
+|-------------|-------|---------|
+| Python 3.10+ | `python --version` | [python.org/downloads](https://www.python.org/downloads/) — check "Add to PATH" |
+| NVIDIA GPU + driver | `nvidia-smi` | [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx) |
+| Node.js 18+ (web UI only) | `node --version` | [nodejs.org](https://nodejs.org/) |
+| Git | `git --version` | [git-scm.com](https://git-scm.com/) |
 
-It assumes:
-
-- You are on Windows
-- You want the real refined pipeline (SAM + MEMatte)
-- You want a short test run first, then a longer run
-
-## 0. What You Are Running
-
-This tool has two stages:
-
-1. SAM-based segmentation/tracking (finds and tracks the subject)
-2. MEMatte refinement (improves edges/hair/soft details)
-
-Important behavior in this build:
-
-- MEMatte refinement is required (no preview/no-refine mode)
-- If MEMatte gets no unknown trimap band to refine, the run fails with a clear error and you widen the trimap band thresholds
-- The web UI and QC previews are designed to help you do that quickly
-
-## 1. Open PowerShell in the Repo
+## 1. Clone and Install
 
 ```powershell
-cd D:\Videomatte-HQ2
+cd D:\
+git clone <repo-url> Videomatte-HQ2
+cd Videomatte-HQ2
 ```
 
-## 2. Activate the Virtual Environment
-
-If `.venv` already exists:
+Run the automated installer:
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
+install.bat
 ```
 
-If it does not exist:
+It will:
+1. Ask which CUDA version to use (or CPU-only)
+2. Create a Python virtual environment (`.venv`)
+3. Install PyTorch with GPU support
+4. Install all project dependencies
+5. Build the web frontend
+6. Download the SAM2 model (~450 MB)
+7. Check for MEMatte assets
+8. Run the test suite
+
+### Manual install (if you prefer)
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.venv\Scripts\activate
+
+# Install PyTorch with CUDA 12.4 (adjust for your GPU)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+# Install project + web extras
+pip install -e ".[web,dev]"
+pip install einops timm
+
+# Web frontend
+cd web && npm install && npm run build && cd ..
 ```
 
-## 3. Install the Project (CLI)
+## 2. Set Up MEMatte
 
-Install the repo so the CLI command is available:
+The pipeline needs the MEMatte model for edge refinement. Two files are required:
+
+| Asset | Expected path |
+|-------|---------------|
+| MEMatte source code | `third_party/MEMatte/` (must contain `inference.py`) |
+| MEMatte checkpoint | `third_party/MEMatte/checkpoints/MEMatte_ViTS_DIM.pth` |
+
+### Download MEMatte
 
 ```powershell
-pip install -e .
+# Clone the MEMatte repo (if not already present)
+git clone https://github.com/AcademicFuworker/MEMatte third_party/MEMatte
+
+# Download the checkpoint (~112 MB)
+# Get MEMatte_ViTS_DIM.pth from the MEMatte GitHub releases page
+# and place it at: third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth
 ```
 
-Test it:
+Verify:
 
 ```powershell
-videomatte-hq-v2 --help
+Test-Path third_party\MEMatte\inference.py        # should be True
+Test-Path third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth  # should be True
 ```
 
-If needed, you can always run the module directly:
+### Alternative: external MEMatte
 
-```powershell
-python -m videomatte_hq.cli --help
-```
+If your MEMatte repo/checkpoint are stored outside this project, add `--allow-external-paths` (CLI) or check "Allow External MEMatte Paths" (web UI).
 
-## 4. Confirm MEMatte Assets Exist (Local or External)
+## 3. First Run (Web UI)
 
-### Recommended (self-contained inside this repo)
-
-Check these paths:
-
-```powershell
-Test-Path .\third_party\MEMatte
-Test-Path .\third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth
-```
-
-Both should return `True`.
-
-### Optional (external MEMatte path)
-
-You can also use a MEMatte repo/checkpoint outside `D:\Videomatte-HQ2`, but you must opt in:
-
-- CLI: add `--allow-external-paths`
-- Web UI: enable `Allow External MEMatte Paths`
-
-If you do not opt in, preflight will reject external MEMatte paths.
-
-## 5. (Optional) Install the Web UI Dependencies
-
-Skip this if you only want the CLI.
-
-Install Python web extras:
-
-```powershell
-pip install -e .[web]
-```
-
-Install frontend packages:
-
-```powershell
-cd web
-npm install
-cd ..
-```
-
-## 6. First Successful Run (CLI, Short Range)
-
-Use a short range first so failures are fast and easy to inspect.
-
-```powershell
-videomatte-hq-v2 `
-  --input "D:\Videomatte-HQ2\TestFiles\4625475-hd_1920_1080_24fps.mp4" `
-  --output-dir "D:\Videomatte-HQ2\output_cli\first_run" `
-  --frame-start 0 `
-  --frame-end 9 `
-  --device cuda `
-  --precision fp16
-```
-
-What this does:
-
-- Uses default segmenter (`ultralytics_sam3`)
-- Uses the default high-quality SAM checkpoint (`sam2_l.pt`)
-- Auto-generates an anchor mask (video input, no manual anchor provided)
-- Runs MEMatte refinement (required)
-- Writes alpha frames and QC trimap preview frames
-
-## 7. Check the Output
-
-Open the output folder:
-
-- `D:\Videomatte-HQ2\output_cli\first_run`
-
-You should see:
-
-- `alpha\` (alpha matte images)
-- `qc\` (trimap preview images)
-- `config_used.json`
-- `run_summary.json`
-- `anchor_mask.auto.png` (if auto-anchor was used)
-
-Quick checks:
-
-```powershell
-Get-ChildItem .\output_cli\first_run\alpha\*.png | Measure-Object
-Get-ChildItem .\output_cli\first_run\qc\trimap*.png | Measure-Object
-Get-Content .\output_cli\first_run\run_summary.json
-```
-
-## 8. If the First Frame Is Black (Auto-Anchor Start Shift)
-
-Some videos begin with a black or near-black frame.
-
-The CLI handles this automatically for auto-anchor runs:
-
-- it probes forward to find a usable frame for anchor generation
-- it may shift the effective `frame_start`
-
-You may see a log like:
-
-- `Auto-anchor probed frame 1 (requested frame_start=0). Using effective frame_start=1.`
-
-Confirm in `run_summary.json`:
-
-- `requested_frame_start`
-- `frame_start` (effective)
-
-## 9. If You Get `MEMatte did not execute on any tiles`
-
-This means MEMatte was enabled and loaded, but the trimap unknown band was empty (no gray region for Stage 2 to refine).
-
-### Fast fix (CLI)
-
-Widen the trimap band by making FG/BG thresholds more strict:
-
-```powershell
-videomatte-hq-v2 `
-  --input "D:\Videomatte-HQ2\TestFiles\4625475-hd_1920_1080_24fps.mp4" `
-  --output-dir "D:\Videomatte-HQ2\output_cli\first_run_retuned" `
-  --frame-start 0 `
-  --frame-end 9 `
-  --trimap-fg-threshold 0.97 `
-  --trimap-bg-threshold 0.03 `
-  --device cuda `
-  --precision fp16
-```
-
-Why this helps:
-
-- fewer pixels become “definitely FG” or “definitely BG”
-- more pixels remain gray/unknown
-- MEMatte gets a region to refine
-
-## 10. First Successful Run (Web UI)
-
-Start the backend + frontend:
+The web UI is the easiest way to get started.
 
 ```powershell
 run_web.bat
 ```
 
-Open the printed frontend URL (the script prints the exact port).
+This starts two servers and prints their URLs:
+- **Backend** — `http://127.0.0.1:8000`
+- **Frontend** — `http://127.0.0.1:5173` (or next available port)
 
-### Suggested beginner flow in the UI
+Open the frontend URL in your browser.
 
-1. Go to `Run`
-2. Use `Browse` to pick input and output folder
-3. Click `Auto-Anchor Preview` (optional but useful)
-4. Keep a short range (for example `0..30`)
-5. Click `Preflight`
-6. Click `Start Job`
-7. Open `Jobs` and watch progress/logs
-8. Open `QC` and inspect:
-   - alpha preview
-   - trimap preview (gray = MEMatte unknown band)
+### Workflow
 
-### If the web job fails with the MEMatte no-tile error
+1. **Run tab** — Browse to your input video, set a short frame range (e.g. 0–29)
+2. Choose subject selection:
+   - **Auto-Anchor** — click "Auto-Anchor Preview" to detect the person automatically
+   - **Point Picker** — left-click on the subject (foreground), right-click on background
+3. Click **Preflight** to validate everything
+4. Click **Start Job** to run the pipeline
+5. **Jobs tab** — watch progress and logs
+6. **QC tab** — inspect alpha mattes and trimap overlays
+7. **Help tab** — tuning reference, workflow guide, common issues
 
-Use the visible `Trimap Refine Band` control on the `Run` page:
+### Tips
 
-- try `Wider`
-- then `Maximum` if needed
+- Start with a short range (0–29) before processing the full video
+- The UI auto-clamps `frame_end` to the video's actual last frame
+- SAM-only preview mode (uncheck "MEMatte Refine") gives fast results without soft edges
+- Point picker: 2–5 foreground points + 1–2 background points usually works well
 
-The UI also shows exact thresholds (FG/BG) so you can see what changed.
-
-## 11. Using Your Own Video
-
-Replace the input path with your own file and keep the first run short:
+## 4. First Run (CLI)
 
 ```powershell
-videomatte-hq-v2 `
-  --input "D:\MyClips\person_shot.mp4" `
-  --output-dir "D:\Videomatte-HQ2\output_cli\my_clip_run" `
-  --frame-start 0 `
-  --frame-end 30 `
-  --device cuda `
-  --precision fp16
+.venv\Scripts\activate
+
+videomatte-hq-v2 ^
+  --input "D:\Videomatte-HQ2\TestFiles\my_clip.mp4" ^
+  --output-dir output_cli\first_run ^
+  --frame-start 0 --frame-end 29 ^
+  --device cuda --precision fp16
 ```
 
-Tips:
-
-- Start with `0..30` or `0..60`
-- Confirm the anchor mask looks correct
-- Check the `qc\trimap...png` outputs (or the web QC tab)
-- Then extend the frame range
-
-## 12. Manual Anchor Mask (If Auto-Anchor Picks the Wrong Subject)
-
-If auto-anchor picks the wrong person/object:
-
-1. Create a black/white anchor mask for the starting frame
-2. Save it as PNG (white subject, black background)
-3. Run with `--anchor-mask`
-
-Example:
+Check the output:
 
 ```powershell
-videomatte-hq-v2 `
-  --input "D:\MyClips\group_shot.mp4" `
-  --output-dir "D:\Videomatte-HQ2\output_cli\manual_anchor_run" `
-  --frame-start 0 `
-  --frame-end 100 `
-  --anchor-mask "D:\Masks\group_shot_anchor.png" `
-  --device cuda `
-  --precision fp16
+dir output_cli\first_run\alpha\       # alpha matte frames
+dir output_cli\first_run\qc\          # trimap visualization
+type output_cli\first_run\run_summary.json
 ```
 
-To force manual mode and prevent auto-anchor:
+## 5. Tuning MEMatte for Better Edges
 
-```powershell
---no-auto-anchor
+The default settings work well for most content. For difficult cases (fine hair, fur, translucent fabric), adjust the trimap parameters.
+
+### How the trimap works
+
+```
+SAM binary mask edge
+|<-- erosion (inward) -->|<-- unknown band -->|<-- dilation (outward) -->|
+|                        |                    |                          |
+|   Definite Foreground  |  MEMatte refines   |   Definite Background    |
+|   (alpha = 1.0)        |  alpha values here |   (alpha = 0.0)          |
 ```
 
-## 13. External MEMatte Assets (Optional)
+### Recommended adjustments
 
-If your MEMatte repo/checkpoint are stored outside `D:\Videomatte-HQ2`, enable the override.
+| Goal | Erosion | Dilation | Tile size |
+|------|---------|----------|-----------|
+| Default (balanced) | 20 | 10 | 1536 |
+| Better hair detail | 10–12 | 20–25 | 2048 |
+| Very fine strands | 8 | 25–30 | 2048 |
+| Reduce VRAM usage | 20 | 10 | 1024 |
 
-### CLI example
+In the web UI, these settings are on the Run page under "Trimap Generation".
+
+### CLI example with tuned settings
 
 ```powershell
-videomatte-hq-v2 `
-  --input "D:\MyClips\person_shot.mp4" `
-  --output-dir "D:\Videomatte-HQ2\output_cli\external_mematte" `
-  --allow-external-paths `
-  --mematte-repo-dir "D:\Models\MEMatte" `
-  --mematte-checkpoint "D:\Models\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth"
+videomatte-hq-v2 ^
+  --input video.mp4 --output-dir output ^
+  --trimap-erosion-px 12 --trimap-dilation-px 20 ^
+  --tile-size 2048 --tile-overlap 128 ^
+  --device cuda --precision fp16
 ```
 
-### Web UI
+## 6. Common Issues
 
-- Check `Allow External MEMatte Paths` on the `Run` page
-- Enter/browse the external MEMatte repo/checkpoint paths
+### "Frame out of range" crash
 
-## 14. Common Errors and Fixes
+`frame_end` is the last frame **index** (inclusive), not the frame count. A 30-frame video has indices 0–29, so use `--frame-end 29`. The web UI auto-corrects this.
 
-### Error: `MEMatte refinement is mandatory for this tool`
+### "MEMatte did not execute on any tiles"
 
-Cause:
+The unknown band is empty — MEMatte has nothing to refine. Fix:
+- Use `morphological` trimap mode (the default)
+- Increase erosion and/or dilation to widen the unknown band
 
-- `--no-refine` was passed
-- or a config/web payload attempted to disable refinement
+### Auto-anchor picks the wrong person
 
-Fix:
+Use the Point Picker instead, or provide a manual `--anchor-mask` (white = subject, black = background).
 
-- Remove `--no-refine`
-- Keep MEMatte enabled (required in this build)
+### Black first frame shifts frame_start
 
-### Error: `MEMatte did not execute on any tiles ...`
+Videos that start with black frames trigger the auto-anchor probe, which skips forward to a usable frame. Check `run_summary.json` for the effective `frame_start`.
 
-Cause:
+### Slow processing
 
-- The trimap unknown band is empty
+- Use `--device cuda` (CPU is 10-50x slower)
+- Use `--precision fp16` (default, faster than fp32)
+- Reduce `--tile-size` to 1024 (less VRAM, faster tiles)
+- Process a short range first, extend once you're happy with quality
 
-Fix:
+## 7. Full CLI Reference
 
-- Widen the trimap band:
-  - Web UI: `Trimap Refine Band` -> `Wider` or `Maximum`
-  - CLI: try `--trimap-fg-threshold 0.97 --trimap-bg-threshold 0.03`
-- Inspect QC trimap preview (gray pixels should exist around edges/uncertain regions)
-
-### Error: `External MEMatte paths are not allowed for this tool`
-
-Cause:
-
-- You used external MEMatte paths without enabling override
-
-Fix:
-
-- Add `--allow-external-paths` (CLI), or
-- Enable `Allow External MEMatte Paths` (web UI), or
-- Use repo-local MEMatte assets under `third_party\MEMatte`
-
-### Error: `MEMatte repo dir not found` / `MEMatte checkpoint not found`
-
-Fix:
-
-- Verify the paths exist (local or external)
-- For the self-contained repo setup, make sure:
-  - `D:\Videomatte-HQ2\third_party\MEMatte`
-  - `D:\Videomatte-HQ2\third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth`
-
-### Error: `Ultralytics is required for segment_backend='ultralytics_sam3'`
-
-Fix:
-
-```powershell
-pip install ultralytics
 ```
-
-### Error: `anchor_mask is required for v2 pipeline runs`
-
-Usually means:
-
-- You are using an image sequence and did not provide `--anchor-mask`
-- Or you disabled auto-anchor for a video (`--no-auto-anchor`)
-
-Fix:
-
-- Provide `--anchor-mask`, or
-- Use a video input and allow auto-anchor
-
-### Error: `Invalid frame range ... frame_end < frame_start`
-
-Fix:
-
-- Make sure `--frame-end >= --frame-start`
-
-## 15. Useful Next Commands
-
-Show CLI help:
-
-```powershell
 videomatte-hq-v2 --help
 ```
 
-Run with verbose logs:
+Key flags:
 
-```powershell
-videomatte-hq-v2 ... --verbose
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input` | (required) | Video file or image sequence pattern |
+| `--output-dir` | `output` | Output directory |
+| `--frame-start` | `0` | First frame index |
+| `--frame-end` | `-1` (all) | Last frame index (inclusive) |
+| `--device` | `cuda` | `cuda` or `cpu` |
+| `--precision` | `fp16` | `fp16` or `fp32` |
+| `--anchor-mask` | (auto) | Manual anchor mask path |
+| `--auto-anchor` | (default for video) | Force auto-anchor on |
+| `--no-auto-anchor` | — | Disable auto-anchor |
+| `--prompt-mode` | `mask` | `mask` or `points` |
+| `--trimap-mode` | `morphological` | `morphological` or `logit` |
+| `--trimap-erosion-px` | `20` | Erosion into FG (px) |
+| `--trimap-dilation-px` | `10` | Dilation into BG (px) |
+| `--tile-size` | `1536` | MEMatte tile size (px) |
+| `--tile-overlap` | `96` | Tile overlap (px) |
+| `--no-refine` | — | SAM-only output (no MEMatte) |
+| `--config` | — | Load settings from JSON/YAML file |
+| `--verbose` | — | Debug logging |
+| `--allow-external-paths` | — | Allow MEMatte paths outside repo |
+
+## 8. Using a Config File
+
+Save settings to a JSON or YAML file instead of passing flags:
+
+```json
+{
+  "input": "D:\\clips\\interview.mp4",
+  "output_dir": "output",
+  "frame_start": 0,
+  "frame_end": 149,
+  "device": "cuda",
+  "precision": "fp16",
+  "trimap_erosion_px": 12,
+  "trimap_dilation_px": 20,
+  "tile_size": 2048
+}
 ```
 
-Use a config file:
-
 ```powershell
-videomatte-hq-v2 --config .\my_run.yaml
+videomatte-hq-v2 --config my_settings.json
 ```
-
-## 16. Beginner Workflow Recommendation (Current Best Practice)
-
-Use this sequence for new clips:
-
-1. Run a short refined range (`10-30` frames)
-2. Inspect `anchor_mask.auto.png`
-3. Inspect alpha outputs and `qc\trimap...png` (or web QC tab)
-4. If MEMatte no-tile error occurs, widen the trimap band and rerun the short range
-5. When the short range looks good, extend to a larger frame range
-
-This is the fastest reliable workflow now that no-refine preview mode is disabled.
-
-## 17. Where To Confirm What Actually Ran
-
-Use these files written for every product CLI run:
-
-- `config_used.json` (full resolved config)
-- `run_summary.json` (compact summary, auto-anchor info, MEMatte paths, `allow_external_paths`)
-
-These are the first place to check if results look different than expected.

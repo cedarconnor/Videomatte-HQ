@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from videomatte_hq.cli import _resolve_auto_anchor, _run_preflight_checks
+from videomatte_hq.cli import _apply_cli_overrides, _build_parser, _resolve_auto_anchor, _run_preflight_checks
 from videomatte_hq.config import VideoMatteConfig
 from videomatte_hq.prompts.auto_anchor import AutoAnchorResult
 
@@ -106,7 +106,8 @@ def test_preflight_checks_reject_unsupported_anchor_frame(tmp_path: Path) -> Non
         _run_preflight_checks(cfg)
 
 
-def test_preflight_checks_reject_no_refine_mode(tmp_path: Path) -> None:
+def test_preflight_checks_allow_no_refine_preview_mode(tmp_path: Path) -> None:
+    """refine_enabled=False should pass preflight (SAM-only preview mode)."""
     video_path = tmp_path / "clip.mp4"
     video_path.write_bytes(b"dummy")
     anchor = tmp_path / "anchor.png"
@@ -119,8 +120,8 @@ def test_preflight_checks_reject_no_refine_mode(tmp_path: Path) -> None:
         segment_backend="static",
     )
 
-    with pytest.raises(ValueError, match="MEMatte refinement is mandatory"):
-        _run_preflight_checks(cfg)
+    # Should not raise — preview mode is now supported.
+    _run_preflight_checks(cfg)
 
 
 def test_preflight_checks_reject_mematte_paths_outside_repo(monkeypatch, tmp_path: Path) -> None:
@@ -215,3 +216,29 @@ def test_preflight_checks_normalize_relative_mematte_paths_under_repo(monkeypatc
 
     assert Path(cfg.mematte_repo_dir) == mematte_repo.resolve()
     assert Path(cfg.mematte_checkpoint) == ckpt.resolve()
+
+
+def test_preflight_checks_reject_chunk_overlap_gte_chunk_size(tmp_path: Path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"dummy")
+    anchor = tmp_path / "anchor.png"
+    anchor.write_bytes(b"dummy")
+
+    cfg = VideoMatteConfig(
+        input=str(video_path),
+        anchor_mask=str(anchor),
+        refine_enabled=False,
+        segment_backend="static",
+        chunk_size=50,
+        chunk_overlap=50,
+    )
+
+    with pytest.raises(ValueError, match="chunk_overlap.*must be less than chunk_size"):
+        _run_preflight_checks(cfg)
+
+
+def test_cli_overrides_apply_trimap_fallback_band_px() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--trimap-fallback-band-px", "3"])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.trimap_fallback_band_px == 3

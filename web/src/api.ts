@@ -1,9 +1,11 @@
 import type {
   BrowseResponse,
   JobRecord,
+  PointPromptPreviewResponse,
   PreflightResponse,
   PreviewResponse,
   QcInfoResponse,
+  VideoInfoResponse,
   VideoMatteConfigForm
 } from "./types";
 
@@ -25,6 +27,21 @@ export async function getInputSuggestions(): Promise<string[]> {
   const res = await fetch("/api/fs/input-suggestions");
   const data = await parseJson<{ status: string; paths: string[] }>(res);
   return Array.isArray(data.paths) ? data.paths : [];
+}
+
+export async function pickNative(
+  mode: "file" | "dir",
+  title: string,
+  initialDir = "",
+  fileTypes?: [string, string][]
+): Promise<string | null> {
+  const res = await fetch("/api/fs/pick-native", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode, title, initial_dir: initialDir, file_types: fileTypes ?? null })
+  });
+  const data = await parseJson<{ status: string; path: string }>(res);
+  return data.status === "ok" && data.path ? data.path : null;
 }
 
 export async function browseFs(path: string | null, mode: "any" | "file" | "dir"): Promise<BrowseResponse> {
@@ -104,4 +121,39 @@ export function qcPreviewUrl(jobId: string, frame: number, kind: "input" | "alph
     kind
   });
   return `/api/qc/frame-preview?${params.toString()}`;
+}
+
+export async function getVideoInfo(inputPath: string): Promise<VideoInfoResponse> {
+  const params = new URLSearchParams({ input_path: inputPath });
+  const res = await fetch(`/api/video/info?${params.toString()}`);
+  return parseJson<VideoInfoResponse>(res);
+}
+
+export function pointPickerFrameUrl(inputPath: string, frame: number, frameStart = 0, maxLongSide = 1280): string {
+  const params = new URLSearchParams({
+    input_path: inputPath,
+    frame: String(frame),
+    frame_start: String(frameStart),
+    max_long_side: String(maxLongSide),
+  });
+  return `/api/point-picker/frame?${params.toString()}`;
+}
+
+export async function previewPointPrompt(
+  config: Partial<VideoMatteConfigForm>,
+  frameIndex: number,
+  positivePoints: [number, number][],
+  negativePoints: [number, number][],
+): Promise<PointPromptPreviewResponse> {
+  const res = await fetch("/api/point-prompt/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      config,
+      frame_index: frameIndex,
+      positive_points: positivePoints,
+      negative_points: negativePoints,
+    }),
+  });
+  return parseJson<PointPromptPreviewResponse>(res);
 }

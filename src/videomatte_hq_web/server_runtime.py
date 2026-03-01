@@ -23,6 +23,7 @@ from videomatte_hq.cli import _looks_like_video_input, _run_preflight_checks
 from videomatte_hq.config import VideoMatteConfig
 from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.prompts.auto_anchor import build_auto_anchor_mask_for_video
+from videomatte_hq.prompts.point_adapter import parse_point_prompts
 from videomatte_hq.utils.image import frame_to_rgb_u8
 from videomatte_hq_web.jobs import JobManager, JobStatus
 
@@ -57,6 +58,20 @@ class JobSubmitRequest(BaseModel):
     auto_anchor: bool | None = None
     allow_external_paths: bool = False
     verbose: bool = False
+
+
+class PointPromptPreviewRequest(BaseModel):
+    config: dict[str, Any] = Field(default_factory=dict)
+    frame_index: int = 0
+    positive_points: list[list[float]] = Field(default_factory=list)
+    negative_points: list[list[float]] = Field(default_factory=list)
+
+
+class NativePickRequest(BaseModel):
+    mode: Literal["file", "dir"] = "file"
+    title: str = "Select"
+    initial_dir: str = ""
+    file_types: list[list[str]] | None = None
 
 
 class PathInfoRequest(BaseModel):
@@ -396,6 +411,43 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/fs/pick-native")
+    async def fs_pick_native(req: NativePickRequest) -> dict[str, Any]:
+        """Open a native OS file/directory picker dialog and return the selected path."""
+        def _open_dialog() -> str:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            initial = str(req.initial_dir).strip() if req.initial_dir else str(Path.cwd())
+            if initial and not Path(initial).is_dir():
+                parent = Path(initial).parent
+                initial = str(parent) if parent.is_dir() else str(Path.cwd())
+            filetypes = None
+            if req.file_types:
+                filetypes = [(label, pattern) for label, pattern in req.file_types]
+            if req.mode == "dir":
+                result = filedialog.askdirectory(
+                    title=req.title,
+                    initialdir=initial,
+                )
+            else:
+                result = filedialog.askopenfilename(
+                    title=req.title,
+                    initialdir=initial,
+                    filetypes=filetypes or [("All files", "*.*")],
+                )
+            root.destroy()
+            return str(result) if result else ""
+        try:
+            path = await asyncio.to_thread(_open_dialog)
+            if not path:
+                return {"status": "cancelled", "path": ""}
+            return {"status": "ok", "path": path}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @app.post("/api/preflight")
     async def preflight(req: PreflightRequest) -> dict[str, Any]:
         try:
@@ -405,7 +457,7 @@ def create_app() -> FastAPI:
             auto_anchor_default = is_video
             auto_anchor_effective = req.auto_anchor if req.auto_anchor is not None else auto_anchor_default
             anchor_missing = not str(cfg.anchor_mask).strip()
-            anchor_required = bool(anchor_missing and not auto_anchor_effective)
+            anchor_required = bool(anchor_missing and not auto_anchor_effective and cfg.prompt_mode != "points")
             return {
                 "status": "ok",
                 "input": str(cfg.input),
@@ -463,6 +515,124 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # ── Point picker endpoints ──
+
+    @app.get("/api/video/info")
+    async def video_info(
+        input_path: str = Query(..., min_length=1),
+    ) -> dict[str, Any]:
+        try:
+            def _get_info() -> dict[str, Any]:
+                cap = cv2.VideoCapture(input_path)
+                if not cap.isOpened():
+                    raise ValueError(f"Cannot open video: {input_path}")
+                try:
+                    return {
+                        "frame_count": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
+                        "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                        "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                        "fps": float(cap.get(cv2.CAP_PROP_FPS)),
+                    }
+                finally:
+                    cap.release()
+            info = await asyncio.to_thread(_get_info)
+            return {"status": "ok", **info}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/point-picker/frame")
+    async def point_picker_frame(
+        input_path: str = Query(..., min_length=1),
+        frame: int = Query(0, ge=0),
+        frame_start: int = Query(0, ge=0),
+        max_long_side: int = Query(1280, ge=64, le=4096),
+    ) -> Response:
+        try:
+            def _get_frame() -> bytes:
+                cfg = VideoMatteConfig(input=input_path, frame_start=int(frame_start), frame_end=-1)
+                rgb = _load_video_frame_rgb_u8(cfg, int(frame))
+                h, w = rgb.shape[:2]
+                long_side = max(h, w)
+                if long_side > max_long_side:
+                    scale = max_long_side / long_side
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    rgb = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                ok, enc = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                if not ok:
+                    raise RuntimeError("Failed to encode frame JPEG")
+                return bytes(enc.tobytes())
+
+            data = await asyncio.to_thread(_get_frame)
+            return Response(content=data, media_type="image/jpeg")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _sam_preview_cache: dict[str, Any] = {}
+
+    @app.post("/api/point-prompt/preview")
+    async def point_prompt_preview(req: PointPromptPreviewRequest) -> dict[str, Any]:
+        try:
+            cfg = _config_from_payload(req.config)
+
+            def _run_preview() -> dict[str, Any]:
+                from videomatte_hq.pipeline.stage_segment import (
+                    UltralyticsSAM3SegmentBackend,
+                )
+                from videomatte_hq.protocols import SegmentPrompt
+
+                frame_rgb = _load_video_frame_rgb_u8(cfg, int(req.frame_index))
+                h, w = frame_rgb.shape[:2]
+
+                pos_px = [(float(x) * w, float(y) * h) for x, y in req.positive_points]
+                neg_px = [(float(x) * w, float(y) * h) for x, y in req.negative_points]
+
+                prompt = SegmentPrompt(
+                    bbox=None,
+                    positive_points=pos_px,
+                    negative_points=neg_px,
+                    mask=None,
+                )
+
+                # Use cached backend to avoid reloading model
+                cache_key = f"{cfg.sam3_model}:{cfg.device}:{cfg.precision}"
+                backend = _sam_preview_cache.get(cache_key)
+                if backend is None:
+                    backend = UltralyticsSAM3SegmentBackend(
+                        model_name=cfg.sam3_model,
+                        device=cfg.device,
+                        precision=cfg.precision,
+                    )
+                    _sam_preview_cache[cache_key] = backend
+
+                model = backend._load_model()
+                mask_prob = backend._infer_single(model, frame_rgb, prompt)
+
+                mask_binary = (mask_prob >= 0.5).astype(np.uint8)
+                if mask_binary.shape[:2] != (h, w):
+                    mask_binary = cv2.resize(mask_binary, (w, h), interpolation=cv2.INTER_NEAREST)
+
+                overlay = frame_rgb.copy()
+                green = np.zeros_like(overlay)
+                green[..., 1] = 255
+                alpha_blend = (mask_binary.astype(np.float32))[..., None] * 0.45
+                overlay = np.clip((1.0 - alpha_blend) * overlay + alpha_blend * green, 0, 255).astype(np.uint8)
+
+                mask_u8 = (mask_binary * 255).astype(np.uint8)
+
+                return {
+                    "status": "ok",
+                    "frame_index": int(req.frame_index),
+                    "mask_coverage": float(mask_binary.mean()),
+                    "mask_preview_data_url": _png_data_url_from_gray(mask_u8),
+                    "overlay_preview_data_url": _png_data_url_from_rgb(overlay),
+                }
+
+            return await asyncio.to_thread(_run_preview)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/jobs")
     async def list_jobs() -> list[dict[str, Any]]:
         return [_job_to_json(j) for j in job_manager.list_jobs()]
@@ -471,11 +641,6 @@ def create_app() -> FastAPI:
     async def submit_job(req: JobSubmitRequest) -> dict[str, Any]:
         try:
             cfg = _config_from_payload(req.config)
-            if not bool(cfg.refine_enabled):
-                raise ValueError(
-                    "MEMatte refinement is mandatory for this tool. "
-                    "Disable-preview/no-refine runs are not supported."
-                )
             job_id = await job_manager.submit(cfg, cli_flags=_job_cli_flags_from_request(req))
             return {"status": "queued", "id": job_id}
         except Exception as exc:

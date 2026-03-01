@@ -135,6 +135,7 @@ def _detect_person_anchor_mask(frame_bgr: np.ndarray, device: str = "cpu") -> np
 
 
 def _postprocess_anchor_mask(mask_u8: np.ndarray) -> np.ndarray:
+    h, w = mask_u8.shape[:2]
     mask = (np.asarray(mask_u8) > 0).astype(np.uint8)
     if int(mask.sum()) == 0:
         return np.zeros_like(mask, dtype=np.uint8)
@@ -149,8 +150,8 @@ def _postprocess_anchor_mask(mask_u8: np.ndarray) -> np.ndarray:
     close_k = int(np.clip(close_k, 3, 41))
     if close_k % 2 == 0:
         close_k += 1
-    dilate_k = int(round(ref * 0.02))
-    dilate_k = int(np.clip(dilate_k, 3, 61))
+    dilate_k = int(round(ref * 0.05))
+    dilate_k = int(np.clip(dilate_k, 5, 81))
     if dilate_k % 2 == 0:
         dilate_k += 1
 
@@ -158,6 +159,23 @@ def _postprocess_anchor_mask(mask_u8: np.ndarray) -> np.ndarray:
     dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_k, dilate_k))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel, iterations=1)
     mask = cv2.dilate(mask, dilate_kernel, iterations=1)
+
+    # YOLO seg masks clip at their detection bbox, producing hard horizontal
+    # cuts at the top/bottom.  Add vertical padding to recover head/feet that
+    # the detection box missed.  The padding fills a rectangle at the top and
+    # bottom using the mask's horizontal extent so the silhouette stays plausible.
+    ys2, xs2 = np.where(mask > 0)
+    if ys2.size > 0:
+        y_min, y_max = int(ys2.min()), int(ys2.max())
+        x_min, x_max = int(xs2.min()), int(xs2.max())
+        v_pad = max(int(round(bh * 0.12)), 30)
+        pad_top = max(0, y_min - v_pad)
+        pad_bot = min(h, y_max + 1 + v_pad)
+        # Narrow the horizontal extent slightly so the padding tapers
+        x_inset = max(0, int(round((x_max - x_min) * 0.10)))
+        mask[pad_top:y_min, x_min + x_inset : x_max + 1 - x_inset] = 1
+        mask[y_max + 1 : pad_bot, x_min + x_inset : x_max + 1 - x_inset] = 1
+
     mask = _largest_component(mask)
     return (mask * 255).astype(np.uint8)
 

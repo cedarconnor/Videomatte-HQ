@@ -17,6 +17,34 @@ def compute_iou(mask_a: np.ndarray, mask_b: np.ndarray, threshold: float = 0.5) 
     return float(intersection / union)
 
 
+def compute_boundary_iou(
+    mask_a: np.ndarray,
+    mask_b: np.ndarray,
+    threshold: float = 0.5,
+    boundary_width: int = 3,
+) -> float:
+    """IoU computed on boundary pixels only (morphological gradient).
+
+    This detects silhouette shifts that mask-level IoU misses: two masks can
+    have IoU > 0.98 yet their edges may have moved several pixels.
+    """
+    import cv2
+
+    a = (np.asarray(mask_a, dtype=np.float32) >= float(threshold)).astype(np.uint8)
+    b = (np.asarray(mask_b, dtype=np.float32) >= float(threshold)).astype(np.uint8)
+
+    k = max(3, 2 * int(boundary_width) + 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    edge_a = cv2.dilate(a, kernel) - cv2.erode(a, kernel)
+    edge_b = cv2.dilate(b, kernel) - cv2.erode(b, kernel)
+
+    inter = int(np.logical_and(edge_a > 0, edge_b > 0).sum())
+    union = int(np.logical_or(edge_a > 0, edge_b > 0).sum())
+    if union <= 0:
+        return 1.0
+    return float(inter / union)
+
+
 @dataclass(slots=True)
 class DriftCheck:
     iou: float

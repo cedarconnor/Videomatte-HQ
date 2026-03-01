@@ -24,12 +24,16 @@ def _parse_frame_pattern(pattern: str | Path) -> tuple[Path, str]:
 
 
 def _extract_frame_number(path: Path, pattern_name: str) -> int:
-    """Extract frame number from filename using the pattern."""
+    """Extract frame number from filename using the last digit sequence.
+
+    Using the *last* digit group avoids missorting filenames that contain
+    timestamps or version numbers before the frame counter
+    (e.g. ``2024_frame_001.png`` → 1, not 2024).
+    """
     stem = path.stem
-    # Try to extract leading digits from the stem
-    match = re.search(r"(\d+)", stem)
-    if match:
-        return int(match.group(1))
+    matches = re.findall(r"(\d+)", stem)
+    if matches:
+        return int(matches[-1])
     return 0
 
 
@@ -166,8 +170,14 @@ def _read_exr(path: Path) -> np.ndarray:
             return y[..., np.newaxis]
 
         else:
-            # Try first available channel
+            # Try first available channel — warn because it may not be alpha
             ch_name = channels[0]
+            logger.warning(
+                "EXR %s has no R/G/B or Y channels; reading first available channel '%s'. "
+                "Verify this contains the expected data.",
+                path,
+                ch_name,
+            )
             ch_str = exr_file.channel(ch_name, pt)
             ch = np.frombuffer(ch_str, dtype=np.float32).reshape(height, width)
             return ch[..., np.newaxis]
@@ -194,6 +204,11 @@ class VideoReader:
 
         self.frame_start = frame_start
         self.frame_end = frame_end if (frame_end is not None and frame_end >= 0) else self.total_frames - 1
+        self.frame_end = min(self.frame_end, self.total_frames - 1)  # never exceed actual range
+        if frame_end is not None and frame_end >= 0 and self.frame_end < self.frame_start:
+            raise ValueError(
+                f"frame_end ({self.frame_end}) must be >= frame_start ({self.frame_start})"
+            )
         self._next_abs_idx = int(self.frame_start)
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, float(self.frame_start))
 

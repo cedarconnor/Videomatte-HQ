@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { listJobs } from "./api";
+import { HelpPage } from "./pages/HelpPage";
 import { JobsPage } from "./pages/JobsPage";
 import { QCPage } from "./pages/QCPage";
 import { RunPage } from "./pages/RunPage";
@@ -7,7 +8,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import type { JobRecord, UiPreferences } from "./types";
 import { loadUiPreferences, saveUiPreferences } from "./uiPrefs";
 
-type TabId = "run" | "jobs" | "qc" | "settings";
+type TabId = "run" | "jobs" | "qc" | "help" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<TabId>("run");
@@ -81,6 +82,7 @@ export default function App() {
             <TabButton id="run" tab={tab} setTab={setTab} label="Run" />
             <TabButton id="jobs" tab={tab} setTab={setTab} label={`Jobs (${jobs.length})`} />
             <TabButton id="qc" tab={tab} setTab={setTab} label="QC" />
+            <TabButton id="help" tab={tab} setTab={setTab} label="Help" />
             <TabButton id="settings" tab={tab} setTab={setTab} label="Settings" />
           </nav>
           <div className="sidebar-foot">
@@ -105,6 +107,7 @@ export default function App() {
           {tab === "qc" && (
             <QCPage jobs={jobs} selectedJobId={selectedJobId} onSelectJob={setSelectedJobId} />
           )}
+          {tab === "help" && <HelpPage />}
           {tab === "settings" && <SettingsPage prefs={uiPrefs} onSave={handleSavePrefs} />}
         </main>
       </div>

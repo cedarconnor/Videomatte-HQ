@@ -16,21 +16,25 @@ web/dist/
 # Generated outputs
 output_tests/
 output_cli/
+output_ui/
 output/
 logs/
 
 # Local test media
 TestFiles/
 
-# Local model weights / checkpoints (too large for standard GitHub push)
+# Local model weights / checkpoints (too large for Git)
 *.pt
 *.pth
 
-# Keep MEMatte source but exclude local nested repo metadata
+# MEMatte third-party (keep source, exclude nested repo metadata)
 third_party/MEMatte/.git/
 third_party/MEMatte/__pycache__/
 third_party/MEMatte/**/__pycache__/
 
-# Misc
-*.log
+# Internal dev files (not needed in public repo)
+Agents.md
+tasks/
+tools/
 Videomatte-HQ-v2-Design-Document.md
+*.log

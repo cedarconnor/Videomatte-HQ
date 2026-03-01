@@ -24,7 +24,7 @@ def write_alpha_png16(path: Path, alpha: np.ndarray) -> None:
         alpha: (H, W) float32 in [0, 1].
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    alpha_u16 = np.clip(alpha * 65535.0, 0, 65535).astype(np.uint16)
+    alpha_u16 = np.round(np.clip(alpha, 0.0, 1.0) * 65535.0).astype(np.uint16)
     cv2.imwrite(str(path), alpha_u16)
 
 
@@ -91,7 +91,7 @@ def write_rgb_frame(path: Path, rgb: np.ndarray, depth: int = 16) -> None:
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR) if rgb.shape[2] == 3 else rgb
 
     if depth == 16:
-        out = np.clip(bgr * 65535.0, 0, 65535).astype(np.uint16)
+        out = np.round(np.clip(bgr, 0.0, 1.0) * 65535.0).astype(np.uint16)
     else:
         out = np.clip(bgr * 255.0, 0, 255).astype(np.uint8)
     cv2.imwrite(str(path), out)
@@ -151,6 +151,10 @@ class AlphaWriter:
                 write_alpha_exr, path, alpha.copy(), "none"
             )
         else:
+            logger.warning(
+                "Unrecognized alpha_format=%r; falling back to png16.",
+                self.alpha_format,
+            )
             future = self._executor.submit(write_alpha_png16, path, alpha.copy())
 
         self._futures.append(future)

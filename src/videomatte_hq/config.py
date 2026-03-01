@@ -31,8 +31,8 @@ class VideoMatteConfig:
     chunk_size: int = 100
     chunk_overlap: int = 5
     mask_threshold: float = 0.5
-    bbox_expand_ratio: float = 0.08
-    min_bbox_expand_px: int = 12
+    bbox_expand_ratio: float = 0.10
+    min_bbox_expand_px: int = 20
     temporal_component_filter: bool = False
     strict_background_suppression: bool = False
     strict_bbox_expand_ratio: float = 0.10
@@ -56,8 +56,12 @@ class VideoMatteConfig:
     tile_size: int = 1536
     tile_overlap: int = 96
     tile_min_unknown_coverage: float = 0.001
+    trimap_mode: str = "morphological"
+    trimap_erosion_px: int = 20
+    trimap_dilation_px: int = 10
     trimap_fg_threshold: float = 0.9
     trimap_bg_threshold: float = 0.1
+    trimap_fallback_band_px: int = 1
     skip_iou_threshold: float = 0.98
 
     # ---- Matte Tuning (Optional) ----
@@ -66,6 +70,10 @@ class VideoMatteConfig:
     offset_x_px: int = 0
     offset_y_px: int = 0
     matte_tuning_enabled: bool = True
+
+    # ---- Prompt Mode ----
+    prompt_mode: str = "mask"          # "mask" | "points"
+    point_prompts_json: str = ""       # JSON string with normalized coords keyed by frame index
 
     # ---- Runtime ----
     device: str = "cuda"
@@ -109,8 +117,12 @@ class VideoMatteConfig:
             tile_size=self.tile_size,
             tile_overlap=self.tile_overlap,
             tile_min_unknown_coverage=self.tile_min_unknown_coverage,
+            trimap_mode=self.trimap_mode,
+            trimap_erosion_px=self.trimap_erosion_px,
+            trimap_dilation_px=self.trimap_dilation_px,
             trimap_fg_threshold=self.trimap_fg_threshold,
             trimap_bg_threshold=self.trimap_bg_threshold,
+            trimap_fallback_band_px=self.trimap_fallback_band_px,
             skip_iou_threshold=self.skip_iou_threshold,
             device=self.device,
             precision=self.precision,

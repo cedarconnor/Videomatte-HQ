@@ -47,12 +47,13 @@ def _expand_bbox(
     x0, y0, x1, y1 = [float(v) for v in bbox]
     bw = max(1.0, x1 - x0)
     bh = max(1.0, y1 - y0)
-    expand = max(float(min_expand_px), max(bw, bh) * float(expand_ratio))
+    expand_x = max(float(min_expand_px), bw * float(expand_ratio))
+    expand_y = max(float(min_expand_px), bh * float(expand_ratio))
 
-    ex0 = max(0.0, x0 - expand)
-    ey0 = max(0.0, y0 - expand)
-    ex1 = min(float(w), x1 + expand)
-    ey1 = min(float(h), y1 + expand)
+    ex0 = max(0.0, x0 - expand_x)
+    ey0 = max(0.0, y0 - expand_y)
+    ex1 = min(float(w), x1 + expand_x)
+    ey1 = min(float(h), y1 + expand_y)
     return (ex0, ey0, ex1, ey1)
 
 
@@ -153,8 +154,8 @@ class MaskPromptAdapter(PromptAdapter):
     min_negative_margin_px: int = 8
     suppression_ratio: float = 0.3
     min_suppression_radius: int = 10
-    bbox_expand_ratio: float = 0.08
-    min_bbox_expand_px: int = 12
+    bbox_expand_ratio: float = 0.10
+    min_bbox_expand_px: int = 20
 
     def adapt(self, mask: np.ndarray, frame_shape: tuple[int, int]) -> SegmentPrompt:
         mask_f = _normalize_mask(mask, frame_shape)

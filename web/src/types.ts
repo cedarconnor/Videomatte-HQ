@@ -105,10 +105,32 @@ export interface VideoMatteConfigForm {
   mematte_checkpoint: string;
   tile_size: number;
   tile_overlap: number;
+  trimap_mode: string;
+  trimap_erosion_px: number;
+  trimap_dilation_px: number;
   trimap_fg_threshold: number;
   trimap_bg_threshold: number;
+  trimap_fallback_band_px: number;
   device: string;
   precision: string;
+  prompt_mode: "mask" | "points";
+  point_prompts: Record<string, { positive: [number, number][]; negative: [number, number][] }>;
+}
+
+export interface VideoInfoResponse {
+  status: "ok";
+  frame_count: number;
+  width: number;
+  height: number;
+  fps: number;
+}
+
+export interface PointPromptPreviewResponse {
+  status: "ok";
+  frame_index: number;
+  mask_coverage: number;
+  mask_preview_data_url: string;
+  overlay_preview_data_url: string;
 }
 
 export interface UiPreferences {

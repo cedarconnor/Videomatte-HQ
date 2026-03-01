@@ -92,12 +92,13 @@ def _expand_bbox(
     x0, y0, x1, y1 = [float(v) for v in bbox]
     bw = max(1.0, x1 - x0)
     bh = max(1.0, y1 - y0)
-    expand = max(float(min_expand_px), max(bw, bh) * float(expand_ratio))
+    expand_x = max(float(min_expand_px), bw * float(expand_ratio))
+    expand_y = max(float(min_expand_px), bh * float(expand_ratio))
     return (
-        max(0.0, x0 - expand),
-        max(0.0, y0 - expand),
-        min(float(w), x1 + expand),
-        min(float(h), y1 + expand),
+        max(0.0, x0 - expand_x),
+        max(0.0, y0 - expand_y),
+        min(float(w), x1 + expand_x),
+        min(float(h), y1 + expand_y),
     )
 
 
@@ -555,6 +556,7 @@ class UltralyticsSAM3SegmentBackend:
     device: str = "cuda"
     precision: str = "fp16"
     enable_tf32: bool = True
+    anchor_area_ema_decay: float = 0.95
     processing_long_side: int = 960
     mask_threshold: float = 0.5
     temporal_component_filter: bool = False
@@ -961,10 +963,12 @@ class UltralyticsSAM3SegmentBackend:
 
                 logits.append(frame_logit.astype(np.float32))
                 prev_mask = _to_mask(frame_logit, threshold=self.mask_threshold)
+                area = float((prev_mask >= 0.5).sum())
                 if anchor_area is None:
-                    area = float((prev_mask >= 0.5).sum())
                     if area > 0.0:
                         anchor_area = area
+                elif area > 0.0:
+                    anchor_area = self.anchor_area_ema_decay * anchor_area + (1.0 - self.anchor_area_ema_decay) * area
                 current_prompt = self.prompt_adapter.adapt(prev_mask, frame_shape)
 
                 if len(logits) >= total:
@@ -987,6 +991,7 @@ class UltralyticsSAM3SegmentBackend:
         frames: list[np.ndarray],
         prompt: SegmentPrompt,
         anchor_frame_index: int = 0,
+        reference_anchor_area: float | None = None,
     ) -> list[np.ndarray]:
         if not frames:
             return []
@@ -1046,10 +1051,12 @@ class UltralyticsSAM3SegmentBackend:
                 frame_logit = probability_to_logits(prob)
             logits.append(frame_logit.astype(np.float32))
             prev_mask = _to_mask(frame_logit, threshold=self.mask_threshold)
+            area = float((prev_mask >= 0.5).sum())
             if anchor_area is None:
-                area = float((prev_mask >= 0.5).sum())
                 if area > 0.0:
                     anchor_area = area
+            elif area > 0.0:
+                anchor_area = self.anchor_area_ema_decay * anchor_area + (1.0 - self.anchor_area_ema_decay) * area
             current_prompt = self.prompt_adapter.adapt(prev_mask, frame.shape[:2])
         return logits
 
@@ -1189,8 +1196,13 @@ class ChunkedSegmenter(Segmenter):
                         continue
                 local_idx += 1
 
-            # Blend overlap against already-filled frames.
+            # Blend overlap against already-filled frames using Hann-windowed
+            # temporal crossfade for smoother transitions at chunk boundaries.
             overlap_len = min(chunk_overlap, len(chunk_logits))
+            if overlap_len > 0:
+                hann_weights = np.hanning(2 * overlap_len + 2)[1:overlap_len + 1].astype(np.float32)
+            else:
+                hann_weights = np.empty(0, dtype=np.float32)
             for local_idx, logit_proc in enumerate(chunk_logits):
                 global_idx = chunk_start + local_idx
                 if global_idx >= num_frames:
@@ -1204,8 +1216,7 @@ class ChunkedSegmenter(Segmenter):
                 if overlap_len <= 0 or local_idx >= overlap_len:
                     alpha = 1.0
                 else:
-                    # Use an open-interval crossfade so neither chunk endpoint is fully discarded.
-                    alpha = float((local_idx + 1) / float(overlap_len + 1))
+                    alpha = float(hann_weights[local_idx])
                 logits_by_frame[global_idx] = _blend_overlap(existing, logit_full, alpha)
 
             prev_tail_mask_proc = chunk_masks[-1]

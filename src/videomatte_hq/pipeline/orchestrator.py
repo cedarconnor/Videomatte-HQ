@@ -14,10 +14,16 @@ from videomatte_hq.io.reader import FrameSource
 from videomatte_hq.io.writer import AlphaWriter
 from videomatte_hq.pipeline.stage_refine import RefineSequenceResult, refine_sequence
 from videomatte_hq.pipeline.stage_segment import build_segmenter
-from videomatte_hq.pipeline.stage_trimap import build_trimap_from_logits, resize_logits
+from videomatte_hq.pipeline.stage_trimap import (
+    build_trimap_from_logits,
+    build_trimap_morphological,
+    resize_binary_mask,
+    resize_logits,
+)
 from videomatte_hq.postprocess.matte_tuning import apply_matte_tuning
 from videomatte_hq.prompts.mask_adapter import MaskPromptAdapter
-from videomatte_hq.protocols import SegmentResult
+from videomatte_hq.prompts.point_adapter import PointPromptAdapter, parse_point_prompts
+from videomatte_hq.protocols import SegmentPrompt, SegmentResult
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +83,8 @@ def _write_qc_trimap_preview_png(output_dir: Path, frame_idx: int, trimap: np.nd
 
 def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
     """Execute v2 segmentation + refinement pipeline."""
-    if not str(cfg.anchor_mask).strip():
-        raise ValueError("anchor_mask is required for v2 pipeline runs.")
+    if cfg.prompt_mode == "mask" and not str(cfg.anchor_mask).strip():
+        raise ValueError("anchor_mask is required for v2 pipeline runs in mask mode.")
 
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -94,9 +100,30 @@ def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
         frame_shape = source.resolution
         logger.info("Loaded source: frames=%d, shape=%dx%d", len(source), frame_shape[1], frame_shape[0])
 
-        anchor_mask = _read_anchor_mask(cfg.anchor_mask, frame_shape)
-        prompt_adapter = MaskPromptAdapter()
-        prompt = prompt_adapter.adapt(anchor_mask, frame_shape)
+        if cfg.prompt_mode == "points":
+            parsed = parse_point_prompts(cfg.point_prompts_json, frame_shape)
+            frame0_pts = parsed.get(0, {"positive": [], "negative": []})
+            if not frame0_pts["positive"]:
+                raise ValueError("Point prompt mode requires at least one positive point on frame 0.")
+            prompt_adapter = PointPromptAdapter(
+                positive_points=frame0_pts["positive"],
+                negative_points=frame0_pts["negative"],
+            )
+            prompt = SegmentPrompt(
+                bbox=None,
+                positive_points=list(frame0_pts["positive"]),
+                negative_points=list(frame0_pts["negative"]),
+                mask=None,
+            )
+            logger.info(
+                "Point prompt mode: %d positive, %d negative points on frame 0.",
+                len(frame0_pts["positive"]),
+                len(frame0_pts["negative"]),
+            )
+        else:
+            anchor_mask = _read_anchor_mask(cfg.anchor_mask, frame_shape)
+            prompt_adapter = MaskPromptAdapter()
+            prompt = prompt_adapter.adapt(anchor_mask, frame_shape)
 
         segmenter = build_segmenter(cfg.segment_stage_config(), prompt_adapter=prompt_adapter)
         segment_result = segmenter.segment_sequence(
@@ -125,13 +152,22 @@ def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
         )
 
         write_start = max(int(cfg.frame_start), 0)
-        for idx, logits in enumerate(segment_result.logits):
-            logits_up = resize_logits(logits, frame_shape)
-            trimap = build_trimap_from_logits(
-                logits_up,
-                fg_threshold=cfg.trimap_fg_threshold,
-                bg_threshold=cfg.trimap_bg_threshold,
-            )
+        for idx in range(len(segment_result.logits)):
+            if cfg.trimap_mode == "morphological":
+                mask_up = resize_binary_mask(segment_result.masks[idx], frame_shape, threshold=0.5)
+                trimap = build_trimap_morphological(
+                    mask_up,
+                    erosion_px=cfg.trimap_erosion_px,
+                    dilation_px=cfg.trimap_dilation_px,
+                )
+            else:
+                logits_up = resize_logits(segment_result.logits[idx], frame_shape)
+                trimap = build_trimap_from_logits(
+                    logits_up,
+                    fg_threshold=cfg.trimap_fg_threshold,
+                    bg_threshold=cfg.trimap_bg_threshold,
+                    fallback_band_px=cfg.trimap_fallback_band_px,
+                )
             _write_qc_trimap_preview_png(output_dir, write_start + idx, trimap)
         logger.info("Wrote %d QC trimap preview frames to %s/%s", len(segment_result.logits), output_dir, QC_TRIMAP_DIR)
 

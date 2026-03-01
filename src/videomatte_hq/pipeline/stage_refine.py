@@ -8,9 +8,10 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from videomatte_hq.pipeline.stage_qc import compute_iou
+from videomatte_hq.pipeline.stage_qc import compute_boundary_iou, compute_iou
 from videomatte_hq.pipeline.stage_trimap import (
     build_trimap_from_logits,
+    build_trimap_morphological,
     resize_binary_mask,
     resize_logits,
     sigmoid_logits,
@@ -74,8 +75,12 @@ class RefineStageConfig:
     tile_size: int = 1536
     tile_overlap: int = 96
     tile_min_unknown_coverage: float = 0.001
+    trimap_mode: str = "morphological"
+    trimap_erosion_px: int = 20
+    trimap_dilation_px: int = 10
     trimap_fg_threshold: float = 0.9
     trimap_bg_threshold: float = 0.1
+    trimap_fallback_band_px: int = 1
     skip_iou_threshold: float = 0.98
     preview_solidify_mask: bool = True
     preview_fg_floor: float = 0.9
@@ -298,8 +303,8 @@ def _refine_frame_tiled(
     if not bool(unknown.any()):
         return np.clip(alpha, 0.0, 1.0).astype(np.float32)
 
-    acc_num = np.zeros((h, w), dtype=np.float64)
-    acc_den = np.zeros((h, w), dtype=np.float64)
+    acc_num = np.zeros((h, w), dtype=np.float32)
+    acc_den = np.zeros((h, w), dtype=np.float32)
 
     tile_size = max(64, int(cfg.tile_size))
     overlap = int(np.clip(cfg.tile_overlap, 0, tile_size - 1))
@@ -315,15 +320,13 @@ def _refine_frame_tiled(
         trimap_tile = trimap[y0:y1, x0:x1]
         tile_alpha = np.asarray(refiner.refine(rgb_tile, trimap_tile), dtype=np.float32)
         if tile_alpha.shape != (y1 - y0, x1 - x0):
-            import cv2
-
             tile_alpha = cv2.resize(
                 tile_alpha,
                 (x1 - x0, y1 - y0),
                 interpolation=cv2.INTER_LINEAR,
             )
 
-        window = np.maximum(hann_2d(y1 - y0, x1 - x0), 1e-4).astype(np.float32)
+        window = hann_2d(y1 - y0, x1 - x0)
         weight = window * unknown_tile.astype(np.float32)
         acc_num[y0:y1, x0:x1] += weight * np.clip(tile_alpha, 0.0, 1.0)
         acc_den[y0:y1, x0:x1] += weight
@@ -363,12 +366,19 @@ def refine_sequence(
 
     use_refiner = bool(cfg.refine_enabled)
     if not use_refiner:
-        raise RuntimeError(
-            "MEMatte refinement is mandatory for this tool. "
-            "Preview/no-refine fallback output is disabled."
-        )
+        logger.info("MEMatte refinement disabled — generating SAM-only preview alphas.")
+        out_alphas: list[np.ndarray] = []
+        prev_mask: np.ndarray | None = None
+        for frame_idx in range(num_frames):
+            shape = tuple(int(v) for v in np.asarray(source[frame_idx]).shape[:2])
+            mask_up = resize_binary_mask(coarse_masks[frame_idx], shape, threshold=0.5)
+            alpha = _cleanup_preview_mask(mask_up, prev_mask, cfg)
+            out_alphas.append(np.clip(alpha, 0.0, 1.0).astype(np.float32))
+            prev_mask = mask_up
+        return RefineSequenceResult(alphas=out_alphas, reused_frames=[])
+
     active_refiner = refiner
-    if use_refiner and active_refiner is None:
+    if active_refiner is None:
         active_refiner = build_edge_refiner(cfg)
     if active_refiner is None:
         raise RuntimeError("MEMatte refinement is required, but no refiner instance is available.")
@@ -390,6 +400,7 @@ def refine_sequence(
             prev_mask is not None
             and prev_alpha is not None
             and compute_iou(mask_up, prev_mask) > float(cfg.skip_iou_threshold)
+            and compute_boundary_iou(mask_up, prev_mask) > float(cfg.skip_iou_threshold) * 0.9
         ):
             reused_alpha = prev_alpha.copy()
             out_alphas.append(reused_alpha)
@@ -398,12 +409,21 @@ def refine_sequence(
             prev_mask = mask_up
             continue
 
-        trimap = build_trimap_from_logits(
-            logits_up,
-            fg_threshold=cfg.trimap_fg_threshold,
-            bg_threshold=cfg.trimap_bg_threshold,
-        )
-        coarse_prob = sigmoid_logits(logits_up)
+        if cfg.trimap_mode == "morphological":
+            trimap = build_trimap_morphological(
+                mask_up,
+                erosion_px=cfg.trimap_erosion_px,
+                dilation_px=cfg.trimap_dilation_px,
+            )
+            coarse_prob = mask_up
+        else:
+            trimap = build_trimap_from_logits(
+                logits_up,
+                fg_threshold=cfg.trimap_fg_threshold,
+                bg_threshold=cfg.trimap_bg_threshold,
+                fallback_band_px=cfg.trimap_fallback_band_px,
+            )
+            coarse_prob = sigmoid_logits(logits_up)
 
         alpha = _refine_frame_tiled(
             rgb=rgb,

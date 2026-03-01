@@ -401,8 +401,10 @@ class MEMatteModel:
         # Upstream MEMatte allocates some internal tensors in float32 during
         # patch inference; forcing model half can trigger dtype mismatch errors.
         if self.precision == "fp16" and self.device.type == "cuda":
-            logger.warning(
-                "MEMatte requested fp16, but running MEMatte in fp32 for compatibility."
+            logger.info(
+                "MEMatte runs in fp32 regardless of precision=%s — upstream patch-inference "
+                "allocates internal float32 tensors that cause dtype mismatches under half().",
+                self.precision,
             )
 
         self.model = model

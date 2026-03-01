@@ -78,12 +78,40 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tile-overlap", type=int, default=None, help="Refinement tile overlap.")
     p.add_argument("--trimap-fg-threshold", type=float, default=None, help="Definite FG probability threshold.")
     p.add_argument("--trimap-bg-threshold", type=float, default=None, help="Definite BG probability threshold.")
+    p.add_argument(
+        "--trimap-mode",
+        type=str,
+        default=None,
+        choices=["morphological", "logit"],
+        help="Trimap generation mode: 'morphological' (default, uses erosion/dilation) or 'logit' (legacy threshold-based).",
+    )
+    p.add_argument("--trimap-erosion-px", type=int, default=None, help="Morphological trimap erosion radius in pixels (default 20).")
+    p.add_argument("--trimap-dilation-px", type=int, default=None, help="Morphological trimap dilation radius in pixels (default 10).")
+    p.add_argument(
+        "--trimap-fallback-band-px",
+        type=int,
+        default=None,
+        help="Fallback trimap edge band width in pixels when threshold trimap is empty (hard-mask SAM outputs).",
+    )
 
     p.add_argument("--shrink-grow-px", type=int, default=None, help="Matte shrink/grow amount.")
     p.add_argument("--feather-px", type=int, default=None, help="Matte feather radius.")
     p.add_argument("--offset-x-px", type=int, default=None, help="Matte x-offset.")
     p.add_argument("--offset-y-px", type=int, default=None, help="Matte y-offset.")
 
+    p.add_argument(
+        "--prompt-mode",
+        type=str,
+        default=None,
+        choices=["mask", "points"],
+        help="Prompt mode: 'mask' (default, uses anchor mask) or 'points' (interactive foreground/background points).",
+    )
+    p.add_argument(
+        "--point-prompts-json",
+        type=str,
+        default=None,
+        help="JSON string or file path with normalized [0,1] point prompts keyed by frame index.",
+    )
     p.add_argument("--device", type=str, default=None, help="Runtime device, e.g. cuda/cpu.")
     p.add_argument("--precision", type=str, default=None, help="Runtime precision hint.")
     p.add_argument("--workers-io", type=int, default=None, help="IO worker count.")
@@ -119,14 +147,25 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, args: argparse.Namespace) -> Vid
     _apply_optional(cfg, "mematte_checkpoint", args.mematte_checkpoint)
     _apply_optional(cfg, "tile_size", args.tile_size)
     _apply_optional(cfg, "tile_overlap", args.tile_overlap)
+    _apply_optional(cfg, "trimap_mode", args.trimap_mode)
+    _apply_optional(cfg, "trimap_erosion_px", args.trimap_erosion_px)
+    _apply_optional(cfg, "trimap_dilation_px", args.trimap_dilation_px)
     _apply_optional(cfg, "trimap_fg_threshold", args.trimap_fg_threshold)
     _apply_optional(cfg, "trimap_bg_threshold", args.trimap_bg_threshold)
+    _apply_optional(cfg, "trimap_fallback_band_px", args.trimap_fallback_band_px)
 
     _apply_optional(cfg, "shrink_grow_px", args.shrink_grow_px)
     _apply_optional(cfg, "feather_px", args.feather_px)
     _apply_optional(cfg, "offset_x_px", args.offset_x_px)
     _apply_optional(cfg, "offset_y_px", args.offset_y_px)
 
+    _apply_optional(cfg, "prompt_mode", args.prompt_mode)
+    if args.point_prompts_json is not None:
+        json_val = args.point_prompts_json
+        # If it looks like a file path, read from file
+        if json_val and not json_val.strip().startswith("{") and Path(json_val).is_file():
+            json_val = Path(json_val).read_text(encoding="utf-8")
+        cfg.point_prompts_json = json_val
     _apply_optional(cfg, "device", args.device)
     _apply_optional(cfg, "precision", args.precision)
     _apply_optional(cfg, "workers_io", args.workers_io)
@@ -193,7 +232,10 @@ def _run_preflight_checks(cfg: VideoMatteConfig, *, allow_external_paths: bool =
             if not sam_path.exists():
                 raise FileNotFoundError(f"SAM model checkpoint not found: {sam_path}")
 
-    if str(cfg.anchor_mask).strip():
+    if cfg.prompt_mode == "points":
+        if not cfg.point_prompts_json.strip():
+            raise ValueError("point_prompts_json is required when prompt_mode is 'points'.")
+    elif str(cfg.anchor_mask).strip():
         anchor_path = Path(str(cfg.anchor_mask))
         if not anchor_path.exists():
             raise FileNotFoundError(f"Anchor mask not found: {anchor_path}")
@@ -202,15 +244,19 @@ def _run_preflight_checks(cfg: VideoMatteConfig, *, allow_external_paths: bool =
         raise ValueError(
             f"Invalid frame range after preflight: frame_end ({cfg.frame_end}) < frame_start ({cfg.frame_start})."
         )
+    if int(cfg.chunk_overlap) >= int(cfg.chunk_size):
+        raise ValueError(
+            f"chunk_overlap ({cfg.chunk_overlap}) must be less than chunk_size ({cfg.chunk_size})."
+        )
     if int(cfg.anchor_frame) != 0:
         raise ValueError(
             f"Unsupported anchor_frame ({cfg.anchor_frame}) for v2 pipeline. Only anchor_frame=0 is currently supported."
         )
     if not bool(cfg.refine_enabled):
-        raise ValueError(
-            "MEMatte refinement is mandatory for this tool. "
-            "Disable-preview/no-refine runs are not supported."
+        logger.info(
+            "MEMatte refinement disabled — pipeline will produce SAM-only preview alphas."
         )
+        return
 
     mematte_repo_candidate = _resolve_path_under_repo(str(cfg.mematte_repo_dir))
     mematte_ckpt_candidate = _resolve_path_under_repo(str(cfg.mematte_checkpoint))
@@ -305,6 +351,12 @@ def _write_cli_run_metadata(
         "segment_backend": str(cfg.segment_backend),
         "sam3_model": str(cfg.sam3_model),
         "refine_enabled": bool(cfg.refine_enabled),
+        "trimap_mode": str(cfg.trimap_mode),
+        "trimap_erosion_px": int(cfg.trimap_erosion_px),
+        "trimap_dilation_px": int(cfg.trimap_dilation_px),
+        "trimap_fg_threshold": float(cfg.trimap_fg_threshold),
+        "trimap_bg_threshold": float(cfg.trimap_bg_threshold),
+        "trimap_fallback_band_px": int(cfg.trimap_fallback_band_px),
         "mematte_repo_dir": str(cfg.mematte_repo_dir),
         "mematte_checkpoint": str(cfg.mematte_checkpoint),
         "device": str(cfg.device),
@@ -335,7 +387,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg = _apply_cli_overrides(cfg, args)
 
     requested_frame_start = int(cfg.frame_start)
-    auto_anchor_result = _resolve_auto_anchor(cfg, args)
+    auto_anchor_result = None
+    if cfg.prompt_mode != "points":
+        auto_anchor_result = _resolve_auto_anchor(cfg, args)
     _run_preflight_checks(cfg, allow_external_paths=bool(args.allow_external_paths))
     _write_cli_run_metadata(
         cfg,
