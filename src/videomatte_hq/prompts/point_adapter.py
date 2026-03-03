@@ -16,6 +16,37 @@ from videomatte_hq.prompts.mask_adapter import (
 from videomatte_hq.protocols import PromptAdapter, SegmentPrompt
 
 
+def _bbox_from_points(
+    points: list[tuple[float, float]],
+    frame_shape: tuple[int, int],
+    expand_ratio: float = 0.10,
+    min_expand_px: int = 20,
+) -> tuple[float, float, float, float] | None:
+    """Compute an expanded bounding box around a set of pixel-coordinate points.
+
+    Returns (x0, y0, x1, y1) or None if no points are provided.
+    """
+    if not points:
+        return None
+    xs = [float(x) for x, _ in points]
+    ys = [float(y) for _, y in points]
+    x0, x1 = min(xs), max(xs)
+    y0, y1 = min(ys), max(ys)
+    # Ensure non-degenerate bbox (single point → expand to minimum size)
+    if x1 - x0 < 1.0:
+        x0 -= 0.5
+        x1 += 0.5
+    if y1 - y0 < 1.0:
+        y0 -= 0.5
+        y1 += 0.5
+    return _expand_bbox(
+        (x0, y0, x1, y1),
+        frame_shape,
+        expand_ratio=expand_ratio,
+        min_expand_px=min_expand_px,
+    )
+
+
 @dataclass(slots=True)
 class PointPromptAdapter(PromptAdapter):
     """Convert user-placed positive/negative points into SAM3 prompts.
@@ -40,9 +71,16 @@ class PointPromptAdapter(PromptAdapter):
         has_mask = mask is not None and np.any(mask > 0.5)
 
         if not has_mask:
-            # No propagated mask — return original user points (initial prompt).
+            # No propagated mask — return original user points with a bbox
+            # derived from positive points to give SAM spatial context.
+            bbox = _bbox_from_points(
+                self.positive_points,
+                frame_shape,
+                expand_ratio=self.bbox_expand_ratio,
+                min_expand_px=self.min_bbox_expand_px,
+            )
             return SegmentPrompt(
-                bbox=None,
+                bbox=bbox,
                 positive_points=list(self.positive_points),
                 negative_points=list(self.negative_points),
                 mask=None,

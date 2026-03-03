@@ -588,8 +588,33 @@ def create_app() -> FastAPI:
                 pos_px = [(float(x) * w, float(y) * h) for x, y in req.positive_points]
                 neg_px = [(float(x) * w, float(y) * h) for x, y in req.negative_points]
 
+                # Derive a bounding box from positive points to give SAM spatial context
+                bbox = None
+                if pos_px:
+                    xs = [p[0] for p in pos_px]
+                    ys = [p[1] for p in pos_px]
+                    bx0, bx1 = min(xs), max(xs)
+                    by0, by1 = min(ys), max(ys)
+                    if bx1 - bx0 < 1.0:
+                        bx0 -= 0.5
+                        bx1 += 0.5
+                    if by1 - by0 < 1.0:
+                        by0 -= 0.5
+                        by1 += 0.5
+                    # Expand bbox by 10% or 20px minimum
+                    bw = max(1.0, bx1 - bx0)
+                    bh = max(1.0, by1 - by0)
+                    ex = max(20.0, bw * 0.10)
+                    ey = max(20.0, bh * 0.10)
+                    bbox = (
+                        max(0.0, bx0 - ex),
+                        max(0.0, by0 - ey),
+                        min(float(w), bx1 + ex),
+                        min(float(h), by1 + ey),
+                    )
+
                 prompt = SegmentPrompt(
-                    bbox=None,
+                    bbox=bbox,
                     positive_points=pos_px,
                     negative_points=neg_px,
                     mask=None,
@@ -606,9 +631,13 @@ def create_app() -> FastAPI:
                     )
                     _sam_preview_cache[cache_key] = backend
 
-                model = backend._load_model()
-                mask_prob = backend._infer_single(model, frame_rgb, prompt)
+                from videomatte_hq.pipeline.stage_trimap import sigmoid_logits
 
+                model = backend._load_model()
+                mask_logits = backend._infer_single(model, frame_rgb, prompt)
+
+                # _infer_single returns logits; convert to probability for thresholding
+                mask_prob = sigmoid_logits(mask_logits)
                 mask_binary = (mask_prob >= 0.5).astype(np.uint8)
                 if mask_binary.shape[:2] != (h, w):
                     mask_binary = cv2.resize(mask_binary, (w, h), interpolation=cv2.INTER_NEAREST)
@@ -738,22 +767,23 @@ def create_app() -> FastAPI:
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
         cfg = job.config
+        no_cache = {"Cache-Control": "no-store"}
         try:
             if kind == "input":
                 png_bytes = await asyncio.to_thread(_cached_qc_input_preview_png, cfg, int(frame))
-                return Response(content=png_bytes, media_type="image/png")
+                return Response(content=png_bytes, media_type="image/png", headers=no_cache)
             if kind == "trimap":
                 trimap_path = _trimap_output_frame_path(cfg, int(frame))
                 if not trimap_path.exists():
                     raise FileNotFoundError(f"Trimap preview frame not found: {trimap_path}")
                 png_bytes = await asyncio.to_thread(_cached_qc_trimap_preview_png, trimap_path)
-                return Response(content=png_bytes, media_type="image/png")
+                return Response(content=png_bytes, media_type="image/png", headers=no_cache)
 
             alpha_path = _alpha_output_frame_path(cfg, int(frame))
             if not alpha_path.exists():
                 raise FileNotFoundError(f"Alpha frame not found: {alpha_path}")
             png_bytes = await asyncio.to_thread(_cached_qc_alpha_preview_png, alpha_path)
-            return Response(content=png_bytes, media_type="image/png")
+            return Response(content=png_bytes, media_type="image/png", headers=no_cache)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

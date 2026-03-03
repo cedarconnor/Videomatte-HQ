@@ -72,7 +72,8 @@ def test_nearest_background_point_checks_immediate_neighbors() -> None:
 # ── PointPromptAdapter tests ──
 
 
-def test_point_adapter_initial_prompt_no_bbox() -> None:
+def test_point_adapter_initial_prompt_derives_bbox() -> None:
+    """Initial prompt (no mask) should derive a bounding box from positive points."""
     adapter = PointPromptAdapter(
         positive_points=[(100.0, 200.0), (150.0, 250.0)],
         negative_points=[(10.0, 10.0)],
@@ -81,7 +82,14 @@ def test_point_adapter_initial_prompt_no_bbox() -> None:
     prompt = adapter.adapt(empty_mask, (480, 640))
 
     assert isinstance(prompt, SegmentPrompt)
-    assert prompt.bbox is None
+    # bbox should be derived from positive points, expanded
+    assert prompt.bbox is not None
+    x0, y0, x1, y1 = prompt.bbox
+    # The bbox should contain all positive points
+    assert x0 <= 100.0
+    assert y0 <= 200.0
+    assert x1 >= 150.0
+    assert y1 >= 250.0
     assert len(prompt.positive_points) == 2
     assert len(prompt.negative_points) == 1
     assert prompt.mask is None

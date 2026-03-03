@@ -51,9 +51,10 @@ export function QCPage({ jobs, selectedJobId, onSelectJob }: Props) {
   }, [qcInfo]);
 
   const jobId = qcInfo?.job_id ?? selectedJobId;
-  const inputSrc = jobId ? `${qcPreviewUrl(jobId, frame, "input")}&v=${nonce}` : "";
-  const alphaSrc = jobId ? `${qcPreviewUrl(jobId, frame, "alpha")}&v=${nonce}` : "";
-  const trimapSrc = jobId ? `${qcPreviewUrl(jobId, frame, "trimap")}&v=${nonce}` : "";
+  const cacheBust = `v=${nonce}&t=${Date.now()}`;
+  const inputSrc = jobId ? `${qcPreviewUrl(jobId, frame, "input")}&${cacheBust}` : "";
+  const alphaSrc = jobId ? `${qcPreviewUrl(jobId, frame, "alpha")}&${cacheBust}` : "";
+  const trimapSrc = jobId ? `${qcPreviewUrl(jobId, frame, "trimap")}&${cacheBust}` : "";
   const trimapAvailable = Boolean(qcInfo?.output.trimap_available);
 
   return (

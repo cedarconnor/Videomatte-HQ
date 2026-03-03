@@ -368,8 +368,24 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
           </label>
           <label title="Last frame number to process (inclusive). Use a short range (e.g. 30) for testing before running the full clip.">
             Frame End
-            <input type="number" value={form.frame_end} onChange={(e) => update("frame_end", Number(e.target.value))} />
+            <input type="number" value={form.frame_end} onChange={(e) => update("frame_end", Number(e.target.value))} disabled={form.frame_end === -1} />
           </label>
+          {videoFrameCount > 0 && (
+            <label className="check-line" title="Process every frame in the video instead of a limited range.">
+              <input
+                type="checkbox"
+                checked={form.frame_end >= videoFrameCount - 1 || form.frame_end === -1}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    update("frame_end", videoFrameCount - 1);
+                  } else {
+                    update("frame_end", Math.min(30, videoFrameCount - 1));
+                  }
+                }}
+              />
+              All frames ({videoFrameCount})
+            </label>
+          )}
           <label title="Compute device for inference. CUDA uses the GPU for much faster processing; CPU is a fallback.">
             Device
             <select value={form.device} onChange={(e) => update("device", e.target.value)}>
