@@ -638,6 +638,22 @@ def create_app() -> FastAPI:
 
                 # _infer_single returns logits; convert to probability for thresholding
                 mask_prob = sigmoid_logits(mask_logits)
+
+                # Inversion safeguard: if most positive points are outside the
+                # mask, the result is inverted — use the complement.
+                if pos_px:
+                    prob_bin = mask_prob >= 0.5
+                    hits = sum(
+                        1
+                        for px, py in pos_px
+                        if prob_bin[
+                            int(np.clip(round(py), 0, prob_bin.shape[0] - 1)),
+                            int(np.clip(round(px), 0, prob_bin.shape[1] - 1)),
+                        ]
+                    )
+                    if hits < len(pos_px) / 2:
+                        mask_prob = 1.0 - mask_prob
+
                 mask_binary = (mask_prob >= 0.5).astype(np.uint8)
                 if mask_binary.shape[:2] != (h, w):
                     mask_binary = cv2.resize(mask_binary, (w, h), interpolation=cv2.INTER_NEAREST)

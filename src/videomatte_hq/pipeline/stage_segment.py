@@ -256,7 +256,33 @@ def _select_mask_candidate(arr: np.ndarray, prompt: SegmentPrompt | None) -> np.
             best_score = score
             best_idx = idx
 
-    return data[int(best_idx)]
+    selected = data[int(best_idx)]
+
+    # Inversion safeguard: if most positive points fall OUTSIDE the selected
+    # mask, the mask is likely inverted. Check if the complement is better.
+    if prompt.positive_points:
+        sel_bin = selected >= 0.5
+        pos_hits = 0
+        for x, y in prompt.positive_points:
+            xi = int(np.clip(round(x), 0, sel_bin.shape[1] - 1))
+            yi = int(np.clip(round(y), 0, sel_bin.shape[0] - 1))
+            if sel_bin[yi, xi]:
+                pos_hits += 1
+        pos_miss = len(prompt.positive_points) - pos_hits
+        if pos_miss > pos_hits:
+            # More positive points outside than inside — mask is inverted
+            inv = 1.0 - selected
+            inv_bin = inv >= 0.5
+            inv_hits = 0
+            for x, y in prompt.positive_points:
+                xi = int(np.clip(round(x), 0, inv_bin.shape[1] - 1))
+                yi = int(np.clip(round(y), 0, inv_bin.shape[0] - 1))
+                if inv_bin[yi, xi]:
+                    inv_hits += 1
+            if inv_hits > pos_hits:
+                selected = inv
+
+    return selected
 
 
 def _apply_temporal_area_guard(
@@ -813,7 +839,29 @@ class UltralyticsSAM3SegmentBackend:
             prob = cv2.resize(prob, (w, h), interpolation=cv2.INTER_LINEAR)
         if float(prob.max()) > 1.0 or float(prob.min()) < 0.0:
             prob = sigmoid_logits(prob)
-        return np.clip(prob, 0.0, 1.0).astype(np.float32)
+        prob = np.clip(prob, 0.0, 1.0).astype(np.float32)
+
+        # Final inversion safeguard: if most positive points fall outside
+        # the mask, the entire result is inverted — use the complement.
+        if prompt is not None and prompt.positive_points:
+            prob_bin = prob >= 0.5
+            pos_hits = sum(
+                1
+                for x, y in prompt.positive_points
+                if prob_bin[
+                    int(np.clip(round(y), 0, prob_bin.shape[0] - 1)),
+                    int(np.clip(round(x), 0, prob_bin.shape[1] - 1)),
+                ]
+            )
+            if pos_hits < len(prompt.positive_points) / 2:
+                logger.warning(
+                    "SAM mask inversion detected: %d/%d positive points outside mask. Using complement.",
+                    len(prompt.positive_points) - pos_hits,
+                    len(prompt.positive_points),
+                )
+                prob = 1.0 - prob
+
+        return prob
 
     def _infer_single(self, model: object, frame: np.ndarray, prompt: SegmentPrompt) -> np.ndarray:
         variants = self._ordered_prompt_variants(self._prompt_variants(prompt))

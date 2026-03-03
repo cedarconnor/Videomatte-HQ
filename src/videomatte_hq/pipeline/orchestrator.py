@@ -109,11 +109,9 @@ def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
                 positive_points=frame0_pts["positive"],
                 negative_points=frame0_pts["negative"],
             )
-            prompt = SegmentPrompt(
-                bbox=None,
-                positive_points=list(frame0_pts["positive"]),
-                negative_points=list(frame0_pts["negative"]),
-                mask=None,
+            # Use the adapter to derive the initial prompt (includes bbox from points)
+            prompt = prompt_adapter.adapt(
+                np.zeros(frame_shape, dtype=np.float32), frame_shape
             )
             logger.info(
                 "Point prompt mode: %d positive, %d negative points on frame 0.",
