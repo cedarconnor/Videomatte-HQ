@@ -1166,6 +1166,12 @@ class ChunkedSegmenter(Segmenter):
                     return SegmentResult(masks=masks, logits=[np.asarray(l, dtype=np.float32) for l in logits], anchored_frames=[0])
             except Exception as exc:
                 logger.warning("Video fast path failed; falling back to chunked per-frame path: %s", exc)
+                # Clear the cached video predictor so that per-frame inference
+                # creates a fresh SAM2Predictor instead of reusing the video one
+                # (SAM2VideoPredictor accesses dataset.frame which LoadPilAndNumpy lacks).
+                model = getattr(maybe_video_backend, "_model", None)
+                if model is not None and hasattr(model, "predictor"):
+                    model.predictor = None
 
         prev_tail_mask_proc: np.ndarray | None = None
 

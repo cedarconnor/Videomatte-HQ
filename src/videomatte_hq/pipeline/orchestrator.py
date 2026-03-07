@@ -21,6 +21,7 @@ from videomatte_hq.pipeline.stage_trimap import (
     resize_logits,
 )
 from videomatte_hq.postprocess.matte_tuning import apply_matte_tuning
+from videomatte_hq.postprocess.temporal_smooth import apply_temporal_smooth
 from videomatte_hq.prompts.mask_adapter import MaskPromptAdapter
 from videomatte_hq.prompts.point_adapter import PointPromptAdapter, parse_point_prompts
 from videomatte_hq.protocols import SegmentPrompt, SegmentResult
@@ -170,6 +171,7 @@ def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
         logger.info("Wrote %d QC trimap preview frames to %s/%s", len(segment_result.logits), output_dir, QC_TRIMAP_DIR)
 
         tuned = apply_matte_tuning(refine_result.alphas, cfg.matte_tuning_config())
+        tuned = apply_temporal_smooth(tuned, cfg.temporal_smooth_config())
         writer = AlphaWriter(
             output_pattern=cfg.output_alpha,
             alpha_format=cfg.alpha_format,
@@ -180,6 +182,22 @@ def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
             writer.write(write_start + idx, alpha)
         writer.close()
         logger.info("Wrote %d alpha frames to %s", len(tuned), output_dir)
+
+        if cfg.generate_preview_mp4:
+            from videomatte_hq.io.preview_mp4 import generate_alpha_preview_mp4
+
+            preview_fps = cfg.preview_fps if cfg.preview_fps > 0 else source.fps
+            try:
+                mp4_path = generate_alpha_preview_mp4(
+                    output_dir=output_dir,
+                    alpha_pattern=cfg.output_alpha,
+                    frame_start=write_start,
+                    frame_count=len(tuned),
+                    fps=preview_fps,
+                )
+                logger.info("Alpha preview MP4: %s", mp4_path)
+            except Exception:
+                logger.warning("Failed to generate preview MP4.", exc_info=True)
 
         return PipelineRunResult(
             segment_result=segment_result,

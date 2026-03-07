@@ -1,5 +1,6 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
   echo [run_web] Project venv not found at .venv\Scripts\python.exe
@@ -26,12 +27,12 @@ if not exist "logs" mkdir logs >nul 2>&1
 > "logs\web_frontend_dev_url.txt" echo %FRONTEND_URL%
 
 echo [run_web] Starting FastAPI backend on http://127.0.0.1:8000
-start "Videomatte-HQ2 Backend" cmd /k ".venv\Scripts\python.exe -m videomatte_hq_web --host 127.0.0.1 --port 8000"
+start "Videomatte-HQ2 Backend" cmd /k "cd /d %~dp0 && .venv\Scripts\python.exe -m videomatte_hq_web --host 127.0.0.1 --port 8000"
 
 if exist "web\package.json" (
   echo [run_web] Starting Vite frontend on %FRONTEND_URL%
   if not exist "web\node_modules" echo [run_web] web\node_modules missing - the frontend window will run npm install first.
-  start "Videomatte-HQ2 Frontend" cmd /k "cd /d web && (if not exist node_modules npm install) && npm run dev -- --host 127.0.0.1 --port %FRONTEND_PORT% --strictPort"
+  start "Videomatte-HQ2 Frontend" cmd /k "cd /d %~dp0web && (if not exist node_modules npm install) && npm run dev -- --host 127.0.0.1 --port %FRONTEND_PORT% --strictPort"
 ) else (
   echo [run_web] web\package.json not found. Frontend scaffold missing.
 )

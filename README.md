@@ -48,7 +48,7 @@ run_web.bat
 Opens a local browser UI with:
 - **Run** tab — configure input, frame range, subject selection (auto-anchor or point picker), trimap/MEMatte settings
 - **Jobs** tab — monitor running jobs, view logs, progress
-- **QC** tab — inspect alpha output, trimap overlays, wipe comparison
+- **QC** tab — inspect alpha output, trimap overlays, wipe comparison. Live-updates during running jobs, cancel button, frame stride for fast scrubbing, and zoom (2x/4x) for inspecting fine alpha detail
 - **Help** tab — workflow guide, MEMatte tuning reference, troubleshooting
 
 ### CLI

@@ -10,6 +10,7 @@ import json
 from videomatte_hq.pipeline.stage_refine import RefineStageConfig
 from videomatte_hq.pipeline.stage_segment import SegmentStageConfig
 from videomatte_hq.postprocess.matte_tuning import MatteTuningConfig
+from videomatte_hq.postprocess.temporal_smooth import TemporalSmoothConfig
 
 
 @dataclass(slots=True)
@@ -71,9 +72,18 @@ class VideoMatteConfig:
     offset_y_px: int = 0
     matte_tuning_enabled: bool = True
 
+    # ---- Temporal Smoothing ----
+    temporal_smooth_enabled: bool = False
+    temporal_smooth_strength: float = 0.6
+    temporal_smooth_motion_threshold: float = 0.04
+
     # ---- Prompt Mode ----
     prompt_mode: str = "mask"          # "mask" | "points"
     point_prompts_json: str = ""       # JSON string with normalized coords keyed by frame index
+
+    # ---- Preview ----
+    generate_preview_mp4: bool = True
+    preview_fps: float = 0.0  # 0 = auto-detect from source
 
     # ---- Runtime ----
     device: str = "cuda"
@@ -135,6 +145,13 @@ class VideoMatteConfig:
             feather_px=self.feather_px,
             offset_x_px=self.offset_x_px,
             offset_y_px=self.offset_y_px,
+        )
+
+    def temporal_smooth_config(self) -> TemporalSmoothConfig:
+        return TemporalSmoothConfig(
+            enabled=self.temporal_smooth_enabled,
+            strength=self.temporal_smooth_strength,
+            motion_threshold=self.temporal_smooth_motion_threshold,
         )
 
     def to_dict(self) -> dict[str, Any]:

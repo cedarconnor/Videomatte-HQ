@@ -69,6 +69,11 @@ function buildInitialForm(prefs: UiPreferences): VideoMatteConfigForm {
     trimap_fg_threshold: 0.9,
     trimap_bg_threshold: 0.1,
     trimap_fallback_band_px: 1,
+    temporal_smooth_enabled: false,
+    temporal_smooth_strength: 0.5,
+    temporal_smooth_motion_threshold: 0.1,
+    generate_preview_mp4: true,
+    preview_fps: 0,
     device: prefs.default_device || "cuda",
     precision: prefs.default_precision || "fp16",
     prompt_mode: "mask",
@@ -135,6 +140,7 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
   const [pointPreview, setPointPreview] = useState<PointPromptPreviewResponse | null>(null);
   const [overlayOpacity, setOverlayOpacity] = useState(0.45);
   const [videoFrameCount, setVideoFrameCount] = useState(0);
+  const [sourceIsVideo, setSourceIsVideo] = useState(false);
 
   useEffect(() => {
     void getInputSuggestions().then(setSuggestions).catch(() => {});
@@ -150,6 +156,7 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
     void getVideoInfo(form.input)
       .then((info) => {
         setVideoFrameCount(info.frame_count);
+        setSourceIsVideo(info.fps > 0 && info.frame_count > 0);
         if (info.frame_count > 0) {
           setForm((prev) => ({
             ...prev,
@@ -157,7 +164,7 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
           }));
         }
       })
-      .catch(() => setVideoFrameCount(0));
+      .catch(() => { setVideoFrameCount(0); setSourceIsVideo(false); });
   }, [form.input]);
 
   // Update frame image when picker frame or input changes
@@ -386,6 +393,28 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
               All frames ({videoFrameCount})
             </label>
           )}
+          <label className="check-line" title="Generate an H.264 MP4 preview of the alpha output for quick QC playback.">
+            <input
+              type="checkbox"
+              checked={form.generate_preview_mp4}
+              onChange={(e) => update("generate_preview_mp4", e.target.checked)}
+            />
+            Generate alpha preview MP4
+          </label>
+          {form.generate_preview_mp4 && !sourceIsVideo && (
+            <label title="Framerate for the preview MP4 when the input is an image sequence (not auto-detectable).">
+              Preview FPS
+              <input
+                type="number"
+                value={form.preview_fps || 24}
+                onChange={(e) => update("preview_fps", Number(e.target.value))}
+                min={1}
+                max={120}
+                step={1}
+                className="frame-input"
+              />
+            </label>
+          )}
           <label title="Compute device for inference. CUDA uses the GPU for much faster processing; CPU is a fallback.">
             Device
             <select value={form.device} onChange={(e) => update("device", e.target.value)}>
@@ -470,6 +499,43 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
                 Hard-mask fallback band: <strong>{form.trimap_fallback_band_px}px</strong> (ensures MEMatte runs when threshold trimap is empty)
               </div>
             </>
+          )}
+        </div>
+
+        <div className="hint-box">
+          <label className="check-line" title="Smooths alpha values over time using a motion-adaptive EMA filter. Static pixels are smoothed aggressively to suppress flicker while moving pixels pass through unchanged.">
+            <input
+              type="checkbox"
+              checked={form.temporal_smooth_enabled}
+              onChange={(e) => update("temporal_smooth_enabled", e.target.checked)}
+            />
+            Temporal alpha smoothing
+          </label>
+          {form.temporal_smooth_enabled && (
+            <div className="field-grid">
+              <label title="How much to smooth static pixels. 0 = disabled, 1 = maximum temporal persistence.">
+                Strength
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <input type="range" min={0} max={1} step={0.05}
+                    value={form.temporal_smooth_strength}
+                    onChange={(e) => update("temporal_smooth_strength", Number(e.target.value))}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ minWidth: "2.5rem", textAlign: "right" }}>{form.temporal_smooth_strength.toFixed(2)}</span>
+                </div>
+              </label>
+              <label title="Alpha-space difference below which pixels are considered flickering vs moving. 0.1 means alpha changes < 10% are smoothed.">
+                Motion threshold
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <input type="range" min={0.01} max={0.5} step={0.01}
+                    value={form.temporal_smooth_motion_threshold}
+                    onChange={(e) => update("temporal_smooth_motion_threshold", Number(e.target.value))}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ minWidth: "2.5rem", textAlign: "right" }}>{form.temporal_smooth_motion_threshold.toFixed(2)}</span>
+                </div>
+              </label>
+            </div>
           )}
         </div>
 

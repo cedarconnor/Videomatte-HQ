@@ -94,6 +94,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Fallback trimap edge band width in pixels when threshold trimap is empty (hard-mask SAM outputs).",
     )
 
+    p.add_argument("--temporal-smooth", action="store_true", dest="temporal_smooth_enabled", default=None)
+    p.add_argument("--no-temporal-smooth", action="store_false", dest="temporal_smooth_enabled")
+    p.add_argument("--temporal-smooth-strength", type=float, default=None)
+    p.add_argument("--temporal-smooth-motion-threshold", type=float, default=None)
+
     p.add_argument("--shrink-grow-px", type=int, default=None, help="Matte shrink/grow amount.")
     p.add_argument("--feather-px", type=int, default=None, help="Matte feather radius.")
     p.add_argument("--offset-x-px", type=int, default=None, help="Matte x-offset.")
@@ -115,6 +120,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", type=str, default=None, help="Runtime device, e.g. cuda/cpu.")
     p.add_argument("--precision", type=str, default=None, help="Runtime precision hint.")
     p.add_argument("--workers-io", type=int, default=None, help="IO worker count.")
+    p.add_argument("--generate-preview-mp4", action="store_true", dest="generate_preview_mp4", default=None,
+                   help="Generate an H.264 MP4 preview of the alpha output (default: on).")
+    p.add_argument("--no-preview-mp4", action="store_false", dest="generate_preview_mp4",
+                   help="Skip MP4 preview generation.")
+    p.add_argument("--preview-fps", type=float, default=None,
+                   help="Override FPS for the preview MP4 (default: auto-detect from source).")
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     return p
 
@@ -154,6 +165,11 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, args: argparse.Namespace) -> Vid
     _apply_optional(cfg, "trimap_bg_threshold", args.trimap_bg_threshold)
     _apply_optional(cfg, "trimap_fallback_band_px", args.trimap_fallback_band_px)
 
+    if args.temporal_smooth_enabled is not None:
+        cfg.temporal_smooth_enabled = args.temporal_smooth_enabled
+    _apply_optional(cfg, "temporal_smooth_strength", args.temporal_smooth_strength)
+    _apply_optional(cfg, "temporal_smooth_motion_threshold", args.temporal_smooth_motion_threshold)
+
     _apply_optional(cfg, "shrink_grow_px", args.shrink_grow_px)
     _apply_optional(cfg, "feather_px", args.feather_px)
     _apply_optional(cfg, "offset_x_px", args.offset_x_px)
@@ -166,6 +182,9 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, args: argparse.Namespace) -> Vid
         if json_val and not json_val.strip().startswith("{") and Path(json_val).is_file():
             json_val = Path(json_val).read_text(encoding="utf-8")
         cfg.point_prompts_json = json_val
+    if args.generate_preview_mp4 is not None:
+        cfg.generate_preview_mp4 = args.generate_preview_mp4
+    _apply_optional(cfg, "preview_fps", args.preview_fps)
     _apply_optional(cfg, "device", args.device)
     _apply_optional(cfg, "precision", args.precision)
     _apply_optional(cfg, "workers_io", args.workers_io)

@@ -111,8 +111,13 @@ export interface VideoMatteConfigForm {
   trimap_fg_threshold: number;
   trimap_bg_threshold: number;
   trimap_fallback_band_px: number;
+  temporal_smooth_enabled: boolean;
+  temporal_smooth_strength: number;
+  temporal_smooth_motion_threshold: number;
   device: string;
   precision: string;
+  generate_preview_mp4: boolean;
+  preview_fps: number;
   prompt_mode: "mask" | "points";
   point_prompts: Record<string, { positive: [number, number][]; negative: [number, number][] }>;
 }

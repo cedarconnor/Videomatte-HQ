@@ -111,6 +111,43 @@ export function HelpPage() {
       </details>
 
       <details className="stacked-details">
+        <summary>QC Tab Features</summary>
+        <div>
+          <h4>Live Updates</h4>
+          <p>
+            While a job is running, the QC tab automatically polls for new frames every 4 seconds.
+            A green <strong>Recording...</strong> indicator shows the current frame count and total progress.
+            Your scrub position is preserved — only the slider range expands as new frames arrive.
+          </p>
+
+          <h4>Cancel Job</h4>
+          <p>
+            A red <strong>Cancel Job</strong> button appears next to "Refresh Images" while a job is running.
+            Use it to stop a run early if the alpha output looks wrong — no need to switch to the Jobs tab.
+          </p>
+
+          <h4>Frame Stride</h4>
+          <p>
+            The <strong>Stride</strong> selector (1, 2, 5, 10, 25, 50) controls how many frames Prev/Next skip and the
+            slider step size. On a 1500-frame job, set stride to 25 to quickly scan every 25th frame instead of scrubbing
+            one-by-one. A summary line shows how many frames are visible at the current stride.
+          </p>
+
+          <h4>Zoom</h4>
+          <p>
+            The <strong>Zoom</strong> selector (Fit, 2x, 4x) enlarges the wipe comparison and preview thumbnails so you can
+            inspect fine alpha detail — hair edges, feathering quality, and artifacts. When zoomed, the preview becomes
+            scrollable so you can pan around the image. The wipe divider continues to work normally while zoomed.
+          </p>
+
+          <div className="tip-box">
+            <strong>Tip:</strong> Combine stride + zoom for an efficient review workflow: use stride 10–25 to spot-check frames
+            across the timeline, then zoom to 4x on any frame where you want to verify edge quality.
+          </div>
+        </div>
+      </details>
+
+      <details className="stacked-details">
         <summary>Common Issues</summary>
         <div>
           <dl className="help-issues">
