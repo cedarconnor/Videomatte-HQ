@@ -111,6 +111,54 @@ export function HelpPage() {
       </details>
 
       <details className="stacked-details">
+        <summary>Flicker Reduction</summary>
+        <div>
+          <p>
+            Alpha flicker happens when SAM's binary mask jitters by even 1 pixel between frames.
+            That shifts the trimap boundary, causing MEMatte to produce a different alpha edge every frame.
+            The pipeline has two layers of flicker reduction that work together:
+          </p>
+
+          <h4>Layer 1: Mask Temporal Smoothing (pre-trimap)</h4>
+          <p>
+            <strong>Mask temporal smooth radius</strong> applies a temporal median filter to SAM's binary masks
+            <em>before</em> trimap generation. This eliminates single-frame mask pops at the source — a pixel
+            must be foreground in the majority of neighbouring frames to stay foreground.
+          </p>
+          <table className="settings-table">
+            <thead><tr><th>Radius</th><th>Window</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td>0</td><td>Off</td><td>No mask smoothing (use for fast-moving subjects where any temporal averaging smears edges)</td></tr>
+              <tr><td>1</td><td>3-frame</td><td>Default. Kills isolated single-frame jitter with minimal motion lag</td></tr>
+              <tr><td>2</td><td>5-frame</td><td>Stronger smoothing for slow/static shots with persistent flicker</td></tr>
+            </tbody>
+          </table>
+
+          <h4>Layer 2: Temporal Alpha Smoothing (post-process)</h4>
+          <p>
+            When enabled, applies a two-pass filter to the final alpha output: a temporal median pass to remove
+            isolated frame spikes, then a forward-backward EMA (exponential moving average) to smooth remaining
+            per-pixel jitter. Motion-adaptive — pixels with large frame-to-frame changes pass through unsmoothed
+            to preserve genuine movement.
+          </p>
+          <table className="settings-table">
+            <thead><tr><th>Setting</th><th>Default</th><th>Tip</th></tr></thead>
+            <tbody>
+              <tr><td>Strength</td><td>0.6</td><td>Higher (0.7–0.8) for more aggressive smoothing on static subjects. Lower (0.3–0.5) for fast motion.</td></tr>
+              <tr><td>Motion threshold</td><td>0.04</td><td>Lower catches subtler flicker but risks smoothing real motion. Higher passes more through.</td></tr>
+            </tbody>
+          </table>
+
+          <div className="tip-box">
+            <strong>Tip:</strong> Start with the defaults (mask radius 1, alpha smoothing off). If you still see flicker,
+            enable temporal alpha smoothing at strength 0.6. For stubborn flicker on static shots, try mask radius 2 +
+            alpha strength 0.8. Use <code>tools/resmooth.py</code> to iterate on post-process settings without
+            re-running the full pipeline.
+          </div>
+        </div>
+      </details>
+
+      <details className="stacked-details">
         <summary>QC Tab Features</summary>
         <div>
           <h4>Live Updates</h4>

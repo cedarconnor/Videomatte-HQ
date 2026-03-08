@@ -73,6 +73,7 @@ class VideoMatteConfig:
     matte_tuning_enabled: bool = True
 
     # ---- Temporal Smoothing ----
+    mask_temporal_smooth_radius: int = 1  # 0 = off, 1 = 3-frame median, 2 = 5-frame (max 2)
     temporal_smooth_enabled: bool = False
     temporal_smooth_strength: float = 0.6
     temporal_smooth_motion_threshold: float = 0.04

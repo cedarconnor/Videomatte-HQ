@@ -69,9 +69,10 @@ function buildInitialForm(prefs: UiPreferences): VideoMatteConfigForm {
     trimap_fg_threshold: 0.9,
     trimap_bg_threshold: 0.1,
     trimap_fallback_band_px: 1,
+    mask_temporal_smooth_radius: 1,
     temporal_smooth_enabled: false,
-    temporal_smooth_strength: 0.5,
-    temporal_smooth_motion_threshold: 0.1,
+    temporal_smooth_strength: 0.6,
+    temporal_smooth_motion_threshold: 0.04,
     generate_preview_mp4: true,
     preview_fps: 0,
     device: prefs.default_device || "cuda",
@@ -503,13 +504,27 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
         </div>
 
         <div className="hint-box">
+          <strong>Flicker Reduction</strong>
+          <label title="Temporal median filter on SAM masks before trimap generation. Eliminates single-frame mask jitter that causes MEMatte to produce inconsistent alpha edges. 0 = off, 1 = 3-frame median, 2 = 5-frame median.">
+            Mask temporal smooth radius
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <input type="range" min={0} max={2} step={1}
+                value={form.mask_temporal_smooth_radius}
+                onChange={(e) => update("mask_temporal_smooth_radius", Number(e.target.value))}
+                style={{ flex: 1 }}
+              />
+              <span style={{ minWidth: "4rem", textAlign: "right" }}>
+                {form.mask_temporal_smooth_radius === 0 ? "Off" : `${form.mask_temporal_smooth_radius} (${2 * form.mask_temporal_smooth_radius + 1}-frame)`}
+              </span>
+            </div>
+          </label>
           <label className="check-line" title="Smooths alpha values over time using a motion-adaptive EMA filter. Static pixels are smoothed aggressively to suppress flicker while moving pixels pass through unchanged.">
             <input
               type="checkbox"
               checked={form.temporal_smooth_enabled}
               onChange={(e) => update("temporal_smooth_enabled", e.target.checked)}
             />
-            Temporal alpha smoothing
+            Temporal alpha smoothing (post-process)
           </label>
           {form.temporal_smooth_enabled && (
             <div className="field-grid">
@@ -524,7 +539,7 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
                   <span style={{ minWidth: "2.5rem", textAlign: "right" }}>{form.temporal_smooth_strength.toFixed(2)}</span>
                 </div>
               </label>
-              <label title="Alpha-space difference below which pixels are considered flickering vs moving. 0.1 means alpha changes < 10% are smoothed.">
+              <label title="Alpha-space difference below which pixels are considered flickering vs moving. Lower values smooth more aggressively.">
                 Motion threshold
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                   <input type="range" min={0.01} max={0.5} step={0.01}

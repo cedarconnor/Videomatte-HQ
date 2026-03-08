@@ -20,6 +20,7 @@ from videomatte_hq.pipeline.stage_trimap import (
     resize_binary_mask,
     resize_logits,
 )
+from videomatte_hq.postprocess.mask_temporal import smooth_logits_temporal, smooth_masks_temporal
 from videomatte_hq.postprocess.matte_tuning import apply_matte_tuning
 from videomatte_hq.postprocess.temporal_smooth import apply_temporal_smooth
 from videomatte_hq.prompts.mask_adapter import MaskPromptAdapter
@@ -137,6 +138,10 @@ def run_pipeline(cfg: VideoMatteConfig) -> PipelineRunResult:
             len(segment_result.masks),
             len(segment_result.anchored_frames),
         )
+
+        if cfg.mask_temporal_smooth_radius > 0:
+            smooth_masks_temporal(segment_result.masks, radius=cfg.mask_temporal_smooth_radius)
+            smooth_logits_temporal(segment_result.logits, radius=cfg.mask_temporal_smooth_radius)
 
         refine_result = refine_sequence(
             source=source,

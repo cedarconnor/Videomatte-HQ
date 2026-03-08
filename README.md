@@ -86,6 +86,7 @@ Each run produces:
 ```
 output/
   alpha/000000.png ...    16-bit alpha mattes
+  alpha_preview.mp4       H.264 preview video of the alpha sequence
   qc/trimap.000000.png    Trimap visualization (gray = unknown band)
   config_used.json        Exact settings used
   run_summary.json        Run metadata and timing
@@ -109,6 +110,9 @@ output/
 | `trimap_dilation_px` | `10` | Expands unknown outward (px) |
 | `tile_size` | `1536` | MEMatte tile size (larger = more VRAM) |
 | `tile_overlap` | `96` | Tile overlap for seam-free blending |
+| `mask_temporal_smooth_radius` | `1` | Temporal median on SAM masks before trimap (0=off, 1=3-frame, 2=5-frame) |
+| `temporal_smooth_enabled` | `false` | Post-process alpha EMA smoothing |
+| `temporal_smooth_strength` | `0.6` | EMA strength (0–1, higher = more smoothing) |
 | `sam3_model` | `sam2_l.pt` | SAM checkpoint (auto-downloaded) |
 | `device` | `cuda` | `cuda` or `cpu` |
 | `precision` | `fp16` | `fp16` (faster) or `fp32` |
@@ -147,6 +151,8 @@ tools/                      Dev/debug utilities
 ```
 
 ## Troubleshooting
+
+**Alpha flicker between frames** — Two-layer fix: (1) `mask_temporal_smooth_radius=1` (default, on) applies a temporal median to SAM masks before trimap generation, preventing single-frame mask jitter from reaching MEMatte. (2) Enable `temporal_smooth_enabled` for post-process EMA smoothing on the alpha output. Use `tools/resmooth.py` to iterate on smoothing settings without re-running the full pipeline.
 
 **"Hair looks hard-edged"** — Increase trimap dilation (20-25px), decrease erosion (10-12px). Switch to `morphological` trimap mode if using `logit`.
 

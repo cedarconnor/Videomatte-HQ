@@ -94,6 +94,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Fallback trimap edge band width in pixels when threshold trimap is empty (hard-mask SAM outputs).",
     )
 
+    p.add_argument("--mask-temporal-smooth-radius", type=int, default=None,
+                   help="Temporal median radius for SAM masks before trimap (0=off, 1=3-frame, 2=5-frame).")
     p.add_argument("--temporal-smooth", action="store_true", dest="temporal_smooth_enabled", default=None)
     p.add_argument("--no-temporal-smooth", action="store_false", dest="temporal_smooth_enabled")
     p.add_argument("--temporal-smooth-strength", type=float, default=None)
@@ -165,6 +167,8 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, args: argparse.Namespace) -> Vid
     _apply_optional(cfg, "trimap_bg_threshold", args.trimap_bg_threshold)
     _apply_optional(cfg, "trimap_fallback_band_px", args.trimap_fallback_band_px)
 
+    if args.mask_temporal_smooth_radius is not None:
+        cfg.mask_temporal_smooth_radius = max(0, min(2, args.mask_temporal_smooth_radius))
     if args.temporal_smooth_enabled is not None:
         cfg.temporal_smooth_enabled = args.temporal_smooth_enabled
     _apply_optional(cfg, "temporal_smooth_strength", args.temporal_smooth_strength)

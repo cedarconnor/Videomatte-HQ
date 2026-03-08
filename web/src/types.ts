@@ -111,6 +111,7 @@ export interface VideoMatteConfigForm {
   trimap_fg_threshold: number;
   trimap_bg_threshold: number;
   trimap_fallback_band_px: number;
+  mask_temporal_smooth_radius: number;
   temporal_smooth_enabled: boolean;
   temporal_smooth_strength: number;
   temporal_smooth_motion_threshold: number;
