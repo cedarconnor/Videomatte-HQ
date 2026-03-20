@@ -8,11 +8,13 @@ from videomatte_hq.pipeline.stage_segment import (
     ChunkedSegmenter,
     StaticMaskSegmentBackend,
     UltralyticsSAM3SegmentBackend,
+    _apply_mask_hysteresis,
     _apply_anchor_reference_area_guard,
     _apply_temporal_area_guard,
     _apply_strict_background_suppression,
     _filter_probability_by_prev_component,
     _bbox_from_mask,
+    _mask_sequence_from_logits,
     _normalize_precision,
     _ordered_sam_model_candidates,
     _select_mask_candidate,
@@ -104,6 +106,42 @@ def test_filter_probability_by_prev_component_removes_disconnected_blob() -> Non
     filtered = _filter_probability_by_prev_component(prob, prev, threshold=0.5)
     assert float(filtered[:, 0:8].max()) == 0.0
     assert float(filtered[24:40, 22:46].mean()) > 0.5
+
+
+def test_apply_mask_hysteresis_keeps_borderline_pixels_on_previous_label() -> None:
+    prev = np.zeros((4, 4), dtype=np.float32)
+    prev[1:3, 1:3] = 1.0
+
+    prob = np.full((4, 4), 0.5, dtype=np.float32)
+    prob[1, 1] = 0.48  # borderline FG pixel should stay FG
+    prob[0, 0] = 0.52  # borderline BG pixel should stay BG
+    prob[3, 3] = 0.8   # confident FG should flip on
+    prob[0, 3] = 0.2   # confident BG should stay off
+
+    out = _apply_mask_hysteresis(prob, prev, threshold=0.5, low_threshold=0.45, high_threshold=0.55)
+
+    assert out[1, 1] == 1.0
+    assert out[0, 0] == 0.0
+    assert out[3, 3] == 1.0
+    assert out[0, 3] == 0.0
+
+
+def test_mask_sequence_from_logits_applies_hysteresis_across_frames() -> None:
+    frame0 = np.zeros((8, 8), dtype=np.float32)
+    frame0[2:6, 2:6] = 0.7
+    frame1 = np.zeros((8, 8), dtype=np.float32)
+    frame1[2:6, 2:6] = 0.48
+
+    masks = _mask_sequence_from_logits(
+        [frame0, frame1],
+        threshold=0.5,
+        hysteresis_enabled=True,
+        low_threshold=0.45,
+        high_threshold=0.55,
+    )
+
+    assert float(masks[0][3, 3]) == 1.0
+    assert float(masks[1][3, 3]) == 1.0
 
 
 def test_strict_background_suppression_clamps_far_motion() -> None:
@@ -374,6 +412,72 @@ def test_chunked_segmenter_uses_video_fast_path_for_offset_start() -> None:
     result = segmenter.segment_sequence(source=source, prompt=prompt, anchor_frame=0, chunk_size=4, chunk_overlap=1)
     assert backend.video_calls == 1
     assert backend.chunk_calls == 0
+    assert len(result.logits) == 6
+
+
+def test_chunked_segmenter_video_fast_path_applies_hysteresis_to_output_masks() -> None:
+    class _Backend:
+        def segment_video_sequence(self, video_path, prompt, *, start_frame=0, num_frames, frame_shape):
+            logits = []
+            for idx in range(num_frames):
+                prob = np.zeros(frame_shape, dtype=np.float32)
+                prob[8:24, 10:22] = 0.7 if idx == 0 else 0.48
+                logits.append(prob)
+            return logits
+
+    frames = [np.zeros((32, 32, 3), dtype=np.float32) for _ in range(3)]
+    source = DummyVideoSource(frames, start=0)
+    anchor_mask = np.zeros((32, 32), dtype=np.float32)
+    anchor_mask[8:24, 10:22] = 1.0
+    prompt = MaskPromptAdapter().adapt(anchor_mask, frame_shape=anchor_mask.shape)
+    segmenter = ChunkedSegmenter(
+        backend=_Backend(),
+        processing_long_side=32,
+        mask_hysteresis_enabled=True,
+        mask_hysteresis_low=0.45,
+        mask_hysteresis_high=0.55,
+    )
+
+    result = segmenter.segment_sequence(source=source, prompt=prompt, anchor_frame=0, chunk_size=4, chunk_overlap=1)
+
+    assert float(result.masks[0][12, 12]) == 1.0
+    assert float(result.masks[1][12, 12]) == 1.0
+    assert float(result.masks[2][12, 12]) == 1.0
+
+
+def test_chunked_segmenter_clears_ultralytics_cached_model_after_video_fast_path_failure() -> None:
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.predictor = object()
+
+    class _Backend(UltralyticsSAM3SegmentBackend):
+        def __init__(self) -> None:
+            super().__init__(device="cpu")
+            self._model = _FakeModel()
+            self._preferred_prompt_variant = "points"
+            self.chunk_calls = 0
+
+        def segment_video_sequence(self, video_path, prompt, *, start_frame=0, num_frames, frame_shape):
+            raise RuntimeError("video predictor failure")
+
+        def segment_chunk(self, frames, prompt, anchor_frame_index=0, reference_anchor_area=None):
+            self.chunk_calls += 1
+            h, w = frames[0].shape[:2]
+            return [np.zeros((h, w), dtype=np.float32) for _ in frames]
+
+    frames = [np.zeros((32, 32, 3), dtype=np.float32) for _ in range(6)]
+    source = DummyVideoSource(frames, start=0)
+    anchor_mask = np.zeros((32, 32), dtype=np.float32)
+    anchor_mask[8:24, 10:22] = 1.0
+    prompt = MaskPromptAdapter().adapt(anchor_mask, frame_shape=anchor_mask.shape)
+
+    backend = _Backend()
+    segmenter = ChunkedSegmenter(backend=backend, processing_long_side=32)
+    result = segmenter.segment_sequence(source=source, prompt=prompt, anchor_frame=0, chunk_size=4, chunk_overlap=1)
+
+    assert backend.chunk_calls > 0
+    assert backend._model is None
+    assert backend._preferred_prompt_variant is None
     assert len(result.logits) == 6
 
 

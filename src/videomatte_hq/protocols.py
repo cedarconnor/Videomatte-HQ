@@ -71,3 +71,11 @@ class EdgeRefiner(Protocol):
 
     def refine(self, rgb: np.ndarray, trimap: np.ndarray) -> np.ndarray:
         ...
+
+
+@runtime_checkable
+class BatchedEdgeRefiner(EdgeRefiner, Protocol):
+    """Optional batched refinement interface for same-sized tile groups."""
+
+    def refine_batch(self, rgb_tiles: list[np.ndarray], trimap_tiles: list[np.ndarray]) -> list[np.ndarray]:
+        ...

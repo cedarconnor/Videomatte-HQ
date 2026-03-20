@@ -4,8 +4,9 @@ setlocal enabledelayedexpansion
 :: ============================================================================
 ::  Videomatte-HQ v2 — Full Installer (Windows)
 ::
-::  Installs Python venv, PyTorch with CUDA, all dependencies, web frontend,
-::  and downloads required model checkpoints.
+::  Installs Python venv, PyTorch with CUDA, all dependencies, third-party
+::  models (MEMatte + MatAnyone2), model checkpoints, web frontend, and
+::  runs the test suite.
 ::
 ::  Usage:   install.bat              (interactive, prompts for CUDA version)
 ::           install.bat --cpu        (CPU-only PyTorch, no CUDA)
@@ -30,7 +31,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Check Python version (need 3.10+)
 for /f "tokens=2 delims= " %%V in ('python --version 2^>^&1') do set "PY_VER=%%V"
 echo [INFO] Found Python %PY_VER%
 
@@ -49,6 +49,14 @@ if %PY_MAJOR%==3 if %PY_MINOR% LSS 10 (
 )
 
 echo [OK]   Python version is compatible.
+
+where git >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Git is not on PATH.
+    echo         Install Git from https://git-scm.com/
+    exit /b 1
+)
+echo [OK]   Git is available.
 
 :: ── Step 1: Parse arguments ──
 
@@ -80,10 +88,10 @@ if "%TORCH_MODE%"=="" (
     echo.
     echo  Select PyTorch compute backend:
     echo.
-    echo    1) CUDA 12.4  (recommended for modern NVIDIA GPUs)
-    echo    2) CUDA 12.1
-    echo    3) CUDA 11.8  (older GPUs / drivers)
-    echo    4) CPU only   (no GPU acceleration, very slow)
+    echo    1^) CUDA 12.4  (recommended for modern NVIDIA GPUs)
+    echo    2^) CUDA 12.1
+    echo    3^) CUDA 11.8  (older GPUs / drivers)
+    echo    4^) CPU only   (no GPU acceleration, very slow)
     echo.
     set /p "CUDA_CHOICE=  Enter choice [1]: "
     if "!CUDA_CHOICE!"=="" set "CUDA_CHOICE=1"
@@ -137,7 +145,6 @@ if exist ".venv\Scripts\python.exe" (
     echo [OK]   Virtual environment created.
 )
 
-:: Activate venv
 call .venv\Scripts\activate.bat
 echo [OK]   Virtual environment activated.
 
@@ -162,7 +169,6 @@ if errorlevel 1 (
 )
 echo [OK]   PyTorch installed.
 
-:: Verify CUDA if requested
 if "%TORCH_MODE%"=="cuda" (
     python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'; print(f'[OK]   CUDA available: {torch.cuda.get_device_name(0)}')" 2>nul
     if errorlevel 1 (
@@ -185,18 +191,111 @@ echo [OK]   Project installed.
 :: ── Step 7: Install additional runtime dependencies ──
 
 echo.
-echo [INFO] Installing additional runtime dependencies (einops, timm)...
-pip install einops timm >nul 2>&1
-echo [OK]   Additional dependencies installed.
+echo [INFO] Installing additional runtime dependencies...
+pip install einops timm hydra-core omegaconf kornia safetensors >nul 2>&1
+if errorlevel 1 (
+    echo [WARN] Some additional dependencies failed to install.
+    echo        MatAnyone2 may not work. Try: pip install einops timm hydra-core omegaconf kornia safetensors
+) else (
+    echo [OK]   Additional dependencies installed (einops, timm, hydra-core, omegaconf, kornia, safetensors).
+)
 
-:: ── Step 8: Frontend (npm) ──
+:: ── Step 8: Clone and set up MEMatte ──
+
+echo.
+if exist "third_party\MEMatte\inference.py" (
+    echo [OK]   MEMatte repo already cloned: third_party\MEMatte
+) else (
+    echo [INFO] Cloning MEMatte repository...
+    if not exist "third_party" mkdir third_party
+    git clone https://github.com/AcademicFuworker/MEMatte third_party\MEMatte 2>nul
+    if exist "third_party\MEMatte\inference.py" (
+        echo [OK]   MEMatte cloned successfully.
+    ) else (
+        echo [WARN] MEMatte clone failed. Clone manually:
+        echo        git clone https://github.com/AcademicFuworker/MEMatte third_party\MEMatte
+    )
+)
+
+if exist "third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth" (
+    echo [OK]   MEMatte checkpoint found: MEMatte_ViTS_DIM.pth
+) else (
+    echo [INFO] Downloading MEMatte checkpoint...
+    if not exist "third_party\MEMatte\checkpoints" mkdir "third_party\MEMatte\checkpoints"
+    python -c "import urllib.request, os; urllib.request.urlretrieve('https://github.com/AcademicFuworker/MEMatte/releases/download/V1.0/MEMatte_ViTS_DIM.pth', os.path.join('third_party','MEMatte','checkpoints','MEMatte_ViTS_DIM.pth'))" 2>nul
+    if exist "third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth" (
+        echo [OK]   MEMatte checkpoint downloaded.
+    ) else (
+        echo [WARN] MEMatte checkpoint download failed.
+        echo        Download manually from the MEMatte GitHub releases page and place at:
+        echo        third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth
+    )
+)
+
+:: ── Step 9: Clone and set up MatAnyone2 ──
+
+echo.
+if exist "third_party\MatAnyone2\matanyone2\inference\inference_core.py" (
+    echo [OK]   MatAnyone2 repo already cloned: third_party\MatAnyone2
+) else (
+    echo [INFO] Cloning MatAnyone2 repository...
+    if not exist "third_party" mkdir third_party
+    git clone https://github.com/pq-yang/MatAnyone2 third_party\MatAnyone2 2>nul
+    if exist "third_party\MatAnyone2\matanyone2\inference\inference_core.py" (
+        echo [OK]   MatAnyone2 cloned successfully.
+    ) else (
+        echo [WARN] MatAnyone2 clone failed. Clone manually:
+        echo        git clone https://github.com/pq-yang/MatAnyone2 third_party\MatAnyone2
+    )
+)
+
+if exist "third_party\MatAnyone2\pretrained_models\matanyone2.pth" (
+    echo [OK]   MatAnyone2 checkpoint found: matanyone2.pth
+) else (
+    echo [INFO] Downloading MatAnyone2 checkpoint (~135 MB)...
+    if not exist "third_party\MatAnyone2\pretrained_models" mkdir "third_party\MatAnyone2\pretrained_models"
+    python -c "import sys; sys.path.insert(0,'third_party/MatAnyone2'); from hugging_face.tools.download_util import load_file_from_url; load_file_from_url('https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth', 'third_party/MatAnyone2/pretrained_models')" 2>nul
+    if exist "third_party\MatAnyone2\pretrained_models\matanyone2.pth" (
+        echo [OK]   MatAnyone2 checkpoint downloaded.
+    ) else (
+        :: Fallback: direct download
+        echo [INFO] Trying direct download...
+        python -c "import urllib.request, os; urllib.request.urlretrieve('https://github.com/pq-yang/MatAnyone2/releases/download/v1.0.0/matanyone2.pth', os.path.join('third_party','MatAnyone2','pretrained_models','matanyone2.pth'))" 2>nul
+        if exist "third_party\MatAnyone2\pretrained_models\matanyone2.pth" (
+            echo [OK]   MatAnyone2 checkpoint downloaded.
+        ) else (
+            echo [WARN] MatAnyone2 checkpoint download failed.
+            echo        Download manually from: https://github.com/pq-yang/MatAnyone2/releases
+            echo        Place at: third_party\MatAnyone2\pretrained_models\matanyone2.pth
+        )
+    )
+)
+
+:: ── Step 10: Download SAM model ──
+
+echo.
+if exist "sam2_l.pt" (
+    echo [OK]   SAM model already exists: sam2_l.pt
+) else (
+    echo [INFO] Downloading SAM2-Large model (~450 MB)...
+    echo        This may take a few minutes.
+    python -c "from ultralytics import SAM; SAM('sam2_l.pt')" 2>nul
+    if exist "sam2_l.pt" (
+        echo [OK]   SAM model downloaded.
+    ) else (
+        echo [WARN] SAM model auto-download may have failed.
+        echo        It will be downloaded automatically on first run.
+    )
+)
+
+:: ── Step 11: Frontend (npm) ──
 
 echo.
 where npm >nul 2>&1
 if errorlevel 1 (
     echo [WARN] npm not found on PATH. Skipping web frontend build.
     echo        The web UI will still work if web/dist/ exists from a prior build.
-    echo        Install Node.js from https://nodejs.org/ to enable frontend dev mode.
+    echo        Install Node.js from https://nodejs.org/ to enable the web UI.
     goto skip_npm
 )
 
@@ -204,7 +303,7 @@ echo [INFO] Installing web frontend dependencies...
 pushd web
 call npm install
 if errorlevel 1 (
-    echo [WARN] npm install failed. Web frontend may not work in dev mode.
+    echo [WARN] npm install failed. Web frontend may not work.
     popd
     goto skip_npm
 )
@@ -219,57 +318,18 @@ echo [OK]   Web frontend ready.
 
 :skip_npm
 
-:: ── Step 9: Download SAM model ──
+:: ── Step 12: Run tests ──
 
 echo.
-if exist "sam2_l.pt" (
-    echo [OK]   SAM model already exists: sam2_l.pt
-) else (
-    echo [INFO] Downloading SAM2-Large model (sam2_l.pt)...
-    echo        This is ~450 MB and may take a few minutes.
-    python -c "from ultralytics import SAM; SAM('sam2_l.pt')" 2>nul
-    if exist "sam2_l.pt" (
-        echo [OK]   SAM model downloaded.
-    ) else (
-        echo [WARN] SAM model auto-download may have failed.
-        echo        It will be downloaded automatically on first run.
-    )
-)
-
-:: ── Step 10: Verify MEMatte assets ──
-
-echo.
-set "MEMATTE_OK=1"
-
-if exist "third_party\MEMatte\inference.py" (
-    echo [OK]   MEMatte repo found: third_party\MEMatte
-) else (
-    echo [WARN] MEMatte repo NOT found at third_party\MEMatte
-    echo        Clone it: git clone https://github.com/AcademicFuworker/MEMatte third_party\MEMatte
-    set "MEMATTE_OK=0"
-)
-
-if exist "third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth" (
-    echo [OK]   MEMatte checkpoint found: MEMatte_ViTS_DIM.pth
-) else (
-    echo [WARN] MEMatte checkpoint NOT found.
-    echo        Download from the MEMatte GitHub releases page and place at:
-    echo        third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth
-    set "MEMATTE_OK=0"
-)
-
-:: ── Step 11: Run tests ──
-
-echo.
-echo [INFO] Running quick test suite...
+echo [INFO] Running test suite...
 python -m pytest tests/ -x -q --tb=short 2>&1
 if errorlevel 1 (
-    echo [WARN] Some tests failed. This may be expected if MEMatte assets are missing.
+    echo [WARN] Some tests failed. Check output above for details.
 ) else (
     echo [OK]   All tests passed.
 )
 
-:: ── Step 12: Verify CLI ──
+:: ── Step 13: Verify CLI ──
 
 echo.
 echo [INFO] Verifying CLI entry point...
@@ -293,18 +353,45 @@ echo.
 echo  Start the web UI:
 echo    run_web.bat
 echo.
-echo  Run from CLI:
-echo    videomatte-hq-v2 --input video.mp4 --output-dir output --frame-end 29
+echo  Run v2 pipeline (recommended):
+echo    videomatte-hq-v2 --input video.mp4 --output-dir output --pipeline-mode v2
+echo.
+echo  Run v1 pipeline (legacy):
+echo    videomatte-hq-v2 --input video.mp4 --output-dir output --pipeline-mode v1 --frame-end 29
 echo.
 
-if "%MEMATTE_OK%"=="0" (
-    echo  [ACTION REQUIRED] MEMatte assets are missing.
-    echo  See BEGINNER_GUIDE.md for download instructions.
+:: Check for missing assets
+set "MISSING=0"
+
+if not exist "third_party\MEMatte\inference.py" (
+    echo  [ACTION REQUIRED] MEMatte repo is missing.
+    echo    git clone https://github.com/AcademicFuworker/MEMatte third_party\MEMatte
+    set "MISSING=1"
+)
+if not exist "third_party\MEMatte\checkpoints\MEMatte_ViTS_DIM.pth" (
+    echo  [ACTION REQUIRED] MEMatte checkpoint is missing.
+    echo    Download from MEMatte GitHub releases to third_party\MEMatte\checkpoints\
+    set "MISSING=1"
+)
+if not exist "third_party\MatAnyone2\matanyone2\inference\inference_core.py" (
+    echo  [ACTION REQUIRED] MatAnyone2 repo is missing (needed for v2 pipeline).
+    echo    git clone https://github.com/pq-yang/MatAnyone2 third_party\MatAnyone2
+    set "MISSING=1"
+)
+if not exist "third_party\MatAnyone2\pretrained_models\matanyone2.pth" (
+    echo  [ACTION REQUIRED] MatAnyone2 checkpoint is missing (needed for v2 pipeline).
+    echo    Download from: https://github.com/pq-yang/MatAnyone2/releases
+    set "MISSING=1"
+)
+
+if "%MISSING%"=="1" (
+    echo.
+    echo  See INSTALL.md for manual download instructions.
     echo.
 )
 
 if "%TORCH_MODE%"=="cpu" (
-    echo  [NOTE] CPU-only mode. Processing will be slow.
+    echo  [NOTE] CPU-only mode. Processing will be very slow.
     echo  For GPU acceleration, reinstall with: install.bat --cuda 12.4
     echo.
 )

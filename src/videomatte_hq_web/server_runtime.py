@@ -483,12 +483,14 @@ def create_app() -> FastAPI:
             if not _looks_like_video_input(str(cfg.input)):
                 raise ValueError("Auto-anchor preview currently supports video file inputs only.")
             out_path = Path(req.output_path) if req.output_path else (Path(str(cfg.output_dir)) / "anchor_mask.auto.png")
+            use_tight = str(cfg.pipeline_mode).strip().lower() == "v2"
             result = await asyncio.to_thread(
                 build_auto_anchor_mask_for_video,
                 cfg.input,
                 out_path,
                 device=str(cfg.device),
                 frame_start=int(cfg.frame_start),
+                tight=use_tight,
             )
             frame_rgb = await asyncio.to_thread(_load_video_frame_rgb_u8, cfg, int(result.probe_frame))
             mask_img = cv2.imread(str(result.mask_path), cv2.IMREAD_UNCHANGED)

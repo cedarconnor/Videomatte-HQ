@@ -242,3 +242,150 @@ def test_cli_overrides_apply_trimap_fallback_band_px() -> None:
     args = parser.parse_args(["--trimap-fallback-band-px", "3"])
     cfg = _apply_cli_overrides(VideoMatteConfig(), args)
     assert cfg.trimap_fallback_band_px == 3
+
+
+def test_cli_overrides_apply_unknown_edge_blend_px() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--unknown-edge-blend-px", "6"])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.unknown_edge_blend_px == 6
+
+
+def test_cli_overrides_accept_hybrid_trimap_mode() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--trimap-mode", "hybrid"])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.trimap_mode == "hybrid"
+
+
+def test_cli_overrides_apply_sam3_processing_long_side() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--sam3-processing-long-side", "1280"])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.sam3_processing_long_side == 1280
+
+
+def test_cli_overrides_apply_mask_hysteresis_fields() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--mask-hysteresis", "--mask-hysteresis-low", "0.42", "--mask-hysteresis-high", "0.58"])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.mask_hysteresis_enabled is True
+    assert cfg.mask_hysteresis_low == 0.42
+    assert cfg.mask_hysteresis_high == 0.58
+
+
+def test_cli_temporal_smoothing_defaults_follow_stability_profile() -> None:
+    parser = _build_parser()
+    args = parser.parse_args([])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.tile_batch_size == 1
+    assert cfg.unknown_edge_blend_px == 4
+    assert cfg.mask_temporal_smooth_radius == 2
+    assert cfg.temporal_smooth_enabled is True
+    assert cfg.temporal_smooth_strength == 0.55
+    assert cfg.temporal_smooth_motion_threshold == 0.03
+
+
+def test_cli_overrides_can_disable_default_temporal_smoothing() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--no-temporal-smooth", "--mask-temporal-smooth-radius", "0"])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.temporal_smooth_enabled is False
+    assert cfg.mask_temporal_smooth_radius == 0
+
+
+def test_preflight_checks_reject_invalid_mask_hysteresis_band(tmp_path: Path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"dummy")
+    anchor = tmp_path / "anchor.png"
+    anchor.write_bytes(b"dummy")
+
+    cfg = VideoMatteConfig(
+        input=str(video_path),
+        anchor_mask=str(anchor),
+        refine_enabled=False,
+        segment_backend="static",
+        mask_hysteresis_low=0.6,
+        mask_hysteresis_high=0.4,
+    )
+
+    with pytest.raises(ValueError, match="mask_hysteresis_low"):
+        _run_preflight_checks(cfg)
+
+
+def test_cli_overrides_apply_tile_batch_size() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--tile-batch-size", "4"])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.tile_batch_size == 4
+
+
+def test_cli_overrides_apply_pipeline_mode_v2() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["--pipeline-mode", "v2"])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.pipeline_mode == "v2"
+
+
+def test_cli_overrides_apply_matanyone2_fields() -> None:
+    parser = _build_parser()
+    args = parser.parse_args([
+        "--pipeline-mode", "v2",
+        "--matanyone2-repo-dir", "/custom/matanyone2",
+        "--matanyone2-max-size", "720",
+        "--matanyone2-warmup", "5",
+        "--matanyone2-hires-threshold", "720",
+    ])
+    cfg = _apply_cli_overrides(VideoMatteConfig(), args)
+    assert cfg.pipeline_mode == "v2"
+    assert cfg.matanyone2_repo_dir == "/custom/matanyone2"
+    assert cfg.matanyone2_max_size == 720
+    assert cfg.matanyone2_warmup == 5
+    assert cfg.matanyone2_hires_threshold == 720
+
+
+def test_preflight_v2_requires_matanyone2_repo(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    video_path = repo_root / "clip.mp4"
+    video_path.write_bytes(b"dummy")
+    anchor = repo_root / "anchor.png"
+    anchor.write_bytes(b"dummy")
+
+    monkeypatch.setattr("videomatte_hq.cli._repo_root", lambda: repo_root)
+
+    cfg = VideoMatteConfig(
+        input=str(video_path),
+        anchor_mask=str(anchor),
+        pipeline_mode="v2",
+        matanyone2_repo_dir="third_party/MatAnyone2",
+        refine_enabled=False,
+        segment_backend="static",
+    )
+
+    with pytest.raises(FileNotFoundError, match="MatAnyone2 repo dir not found"):
+        _run_preflight_checks(cfg)
+
+
+def test_preflight_v2_skips_chunk_overlap_check(tmp_path: Path) -> None:
+    """v2 mode should not validate chunk_overlap (it's a v1-only concept)."""
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"dummy")
+    anchor = tmp_path / "anchor.png"
+    anchor.write_bytes(b"dummy")
+    ma2_dir = tmp_path / "third_party" / "MatAnyone2"
+    ma2_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg = VideoMatteConfig(
+        input=str(video_path),
+        anchor_mask=str(anchor),
+        pipeline_mode="v2",
+        matanyone2_repo_dir=str(ma2_dir),
+        refine_enabled=False,
+        segment_backend="static",
+        chunk_size=50,
+        chunk_overlap=50,  # Would fail in v1, but v2 should skip this check
+    )
+
+    # Should not raise about chunk_overlap
+    _run_preflight_checks(cfg)

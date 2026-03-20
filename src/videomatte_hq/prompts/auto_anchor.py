@@ -134,7 +134,15 @@ def _detect_person_anchor_mask(frame_bgr: np.ndarray, device: str = "cpu") -> np
     return None
 
 
-def _postprocess_anchor_mask(mask_u8: np.ndarray) -> np.ndarray:
+def _postprocess_anchor_mask(mask_u8: np.ndarray, tight: bool = False) -> np.ndarray:
+    """Clean up a YOLO segmentation mask for use as an anchor.
+
+    Args:
+        mask_u8: Raw detection mask (uint8, 0/255).
+        tight: When True, skip the expansion dilation — only close small
+               holes.  Use tight=True when the downstream consumer expects
+               a boundary-accurate mask (e.g. MatAnyone2 in v2 pipeline).
+    """
     h, w = mask_u8.shape[:2]
     mask = (np.asarray(mask_u8) > 0).astype(np.uint8)
     if int(mask.sum()) == 0:
@@ -146,35 +154,23 @@ def _postprocess_anchor_mask(mask_u8: np.ndarray) -> np.ndarray:
     bh = int(ys.max() - ys.min() + 1)
     ref = max(bw, bh)
 
+    # Morphological close to fill small holes/concavities in the seg mask.
     close_k = int(round(ref * 0.015))
     close_k = int(np.clip(close_k, 3, 41))
     if close_k % 2 == 0:
         close_k += 1
-    dilate_k = int(round(ref * 0.05))
-    dilate_k = int(np.clip(dilate_k, 5, 81))
-    if dilate_k % 2 == 0:
-        dilate_k += 1
-
     close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_k, close_k))
-    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_k, dilate_k))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel, iterations=1)
-    mask = cv2.dilate(mask, dilate_kernel, iterations=1)
 
-    # YOLO seg masks clip at their detection bbox, producing hard horizontal
-    # cuts at the top/bottom.  Add vertical padding to recover head/feet that
-    # the detection box missed.  The padding fills a rectangle at the top and
-    # bottom using the mask's horizontal extent so the silhouette stays plausible.
-    ys2, xs2 = np.where(mask > 0)
-    if ys2.size > 0:
-        y_min, y_max = int(ys2.min()), int(ys2.max())
-        x_min, x_max = int(xs2.min()), int(xs2.max())
-        v_pad = max(int(round(bh * 0.12)), 30)
-        pad_top = max(0, y_min - v_pad)
-        pad_bot = min(h, y_max + 1 + v_pad)
-        # Narrow the horizontal extent slightly so the padding tapers
-        x_inset = max(0, int(round((x_max - x_min) * 0.10)))
-        mask[pad_top:y_min, x_min + x_inset : x_max + 1 - x_inset] = 1
-        mask[y_max + 1 : pad_bot, x_min + x_inset : x_max + 1 - x_inset] = 1
+    if not tight:
+        # Legacy expansion for v1 pipeline where SAM re-segments every frame
+        # and a generous initial mask improves recall.
+        dilate_k = int(round(ref * 0.05))
+        dilate_k = int(np.clip(dilate_k, 5, 81))
+        if dilate_k % 2 == 0:
+            dilate_k += 1
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_k, dilate_k))
+        mask = cv2.dilate(mask, dilate_kernel, iterations=1)
 
     mask = _largest_component(mask)
     return (mask * 255).astype(np.uint8)
@@ -188,6 +184,7 @@ def build_auto_anchor_mask_for_video(
     frame_start: int = 0,
     max_probe_frames: int = 10,
     black_frame_mean_threshold: float = 8.0,
+    tight: bool = False,
 ) -> AutoAnchorResult:
     """Generate an initial anchor mask for a video by probing early frames and detecting a person."""
     video_path = Path(video_path)
@@ -230,7 +227,7 @@ def build_auto_anchor_mask_for_video(
         mask[y0:y1, x0:x1] = 255
         method = "fallback_center_box"
     else:
-        mask = _postprocess_anchor_mask(mask)
+        mask = _postprocess_anchor_mask(mask, tight=tight)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(out_path), mask):

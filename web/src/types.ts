@@ -96,6 +96,7 @@ export interface VideoMatteConfigForm {
   frame_start: number;
   frame_end: number;
   anchor_mask: string;
+  pipeline_mode: "v1" | "v2";
   segment_backend: string;
   sam3_model: string;
   chunk_size: number;
@@ -121,6 +122,16 @@ export interface VideoMatteConfigForm {
   preview_fps: number;
   prompt_mode: "mask" | "points";
   point_prompts: Record<string, { positive: [number, number][]; negative: [number, number][] }>;
+  // v2 pipeline fields
+  matanyone2_repo_dir: string;
+  matanyone2_max_size: number;
+  matanyone2_warmup: number;
+  matanyone2_hires_threshold: number;
+  gradient_trimap_base_kernel: number;
+  gradient_trimap_max_extra: number;
+  gradient_trimap_fg_thresh: number;
+  gradient_trimap_bg_thresh: number;
+  gradient_trimap_scale: number;
 }
 
 export interface VideoInfoResponse {

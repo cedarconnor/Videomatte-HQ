@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 
 from videomatte_hq.pipeline.stage_trimap import (
+    build_trimap_gradient_adaptive,
+    build_trimap_hybrid,
     build_trimap_from_logits,
     build_trimap_morphological,
     probability_to_logits,
@@ -145,3 +147,136 @@ def test_build_trimap_morphological_scales_with_resolution() -> None:
         f"4K unknown band fraction ({frac_4k:.4f}) is much smaller than "
         f"1080p ({frac_1080:.4f}); resolution scaling may not be working"
     )
+
+
+def test_build_trimap_hybrid_marks_logit_uncertainty_outside_morph_band_unknown() -> None:
+    mask = np.zeros((32, 32), dtype=np.float32)
+    mask[8:24, 8:24] = 1.0
+
+    prob = np.zeros((32, 32), dtype=np.float32)
+    prob[8:24, 8:24] = 0.99
+    prob[6:26, 6:26] = np.maximum(prob[6:26, 6:26], 0.5)
+    logits = probability_to_logits(prob)
+
+    morph = build_trimap_morphological(mask, erosion_px=1, dilation_px=1)
+    hybrid = build_trimap_hybrid(
+        mask,
+        logits,
+        erosion_px=1,
+        dilation_px=1,
+        fg_threshold=0.9,
+        bg_threshold=0.1,
+        fallback_band_px=1,
+    )
+
+    assert float(morph[5, 16]) == 0.0
+    assert float(hybrid[5, 16]) == 0.0
+    assert float(morph[6, 16]) == 0.0
+    assert float(hybrid[6, 16]) == 0.5
+
+
+def test_build_trimap_hybrid_relaxes_morph_fg_when_logits_are_not_confident() -> None:
+    mask = np.zeros((32, 32), dtype=np.float32)
+    mask[8:24, 8:24] = 1.0
+
+    prob = np.zeros((32, 32), dtype=np.float32)
+    prob[8:24, 8:24] = 0.5
+    logits = probability_to_logits(prob)
+
+    hybrid = build_trimap_hybrid(
+        mask,
+        logits,
+        erosion_px=2,
+        dilation_px=2,
+        fg_threshold=0.9,
+        bg_threshold=0.1,
+        fallback_band_px=1,
+    )
+
+    assert float(hybrid[16, 16]) == 0.5
+
+
+# ---- Gradient-Adaptive Trimap Tests ----
+
+
+def test_gradient_adaptive_trimap_output_shape_and_values() -> None:
+    """Gradient-adaptive trimap should have correct shape and valid values."""
+    h, w = 200, 200
+    rgb = np.random.randint(0, 255, (h, w, 3), dtype=np.uint8)
+    # Create alpha with soft edges (transition zone) so boundary mask is non-empty
+    alpha = np.zeros((h, w), dtype=np.float32)
+    alpha[60:140, 60:140] = 1.0
+    # Add gradient transition (values between bg_thresh and fg_thresh)
+    for edge in range(10):
+        val = 0.05 + edge * 0.09  # 0.05 to ~0.86
+        alpha[50 + edge, 50:150] = val
+        alpha[140 + edge, 50:150] = 1.0 - val
+        alpha[50:150, 50 + edge] = val
+        alpha[50:150, 140 + edge] = 1.0 - val
+
+    trimap = build_trimap_gradient_adaptive(rgb, alpha)
+
+    assert trimap.shape == (h, w)
+    assert trimap.dtype == np.float32
+    # Should contain all three zones
+    unique_vals = set(np.unique(trimap).tolist())
+    assert 0.0 in unique_vals, "No definite BG found"
+    assert 1.0 in unique_vals, "No definite FG found"
+    assert 0.5 in unique_vals, "No unknown band found"
+
+
+def test_gradient_adaptive_trimap_center_is_fg() -> None:
+    """Center of a large foreground region should be definite FG."""
+    h, w = 200, 200
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    alpha = np.zeros((h, w), dtype=np.float32)
+    alpha[30:170, 30:170] = 1.0
+
+    trimap = build_trimap_gradient_adaptive(rgb, alpha, fg_thresh=0.95, bg_thresh=0.05)
+
+    assert float(trimap[100, 100]) == 1.0  # center is definite FG
+    assert float(trimap[0, 0]) == 0.0  # corner is definite BG
+
+
+def test_gradient_adaptive_trimap_high_gradient_widens_band() -> None:
+    """Regions with high image gradients should produce wider unknown bands."""
+    h, w = 200, 200
+
+    # Uniform image (low gradient everywhere)
+    rgb_flat = np.full((h, w, 3), 128, dtype=np.uint8)
+    alpha = np.zeros((h, w), dtype=np.float32)
+    alpha[50:150, 50:150] = 1.0
+    trimap_flat = build_trimap_gradient_adaptive(rgb_flat, alpha, base_kernel=5, max_extra=15, gradient_scale=1.0)
+
+    # Image with strong edges around the mask boundary (high gradient)
+    rgb_edge = np.full((h, w, 3), 128, dtype=np.uint8)
+    rgb_edge[48:52, :] = 255
+    rgb_edge[148:152, :] = 255
+    rgb_edge[:, 48:52] = 255
+    rgb_edge[:, 148:152] = 255
+    trimap_edge = build_trimap_gradient_adaptive(rgb_edge, alpha, base_kernel=5, max_extra=15, gradient_scale=1.0)
+
+    unknown_flat = int((trimap_flat == 0.5).sum())
+    unknown_edge = int((trimap_edge == 0.5).sum())
+    # High-gradient image should produce at least as many unknown pixels
+    assert unknown_edge >= unknown_flat
+
+
+def test_gradient_adaptive_trimap_empty_alpha() -> None:
+    """Empty alpha should return mostly background."""
+    h, w = 100, 100
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    alpha = np.zeros((h, w), dtype=np.float32)
+
+    trimap = build_trimap_gradient_adaptive(rgb, alpha)
+    assert float(trimap.max()) == 0.0
+
+
+def test_gradient_adaptive_trimap_full_alpha() -> None:
+    """Full alpha should return mostly foreground."""
+    h, w = 100, 100
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    alpha = np.ones((h, w), dtype=np.float32)
+
+    trimap = build_trimap_gradient_adaptive(rgb, alpha)
+    assert float(trimap.min()) == 1.0

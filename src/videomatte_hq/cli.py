@@ -58,8 +58,39 @@ def _build_parser() -> argparse.ArgumentParser:
         help="ultralytics_sam3 | static",
     )
     p.add_argument("--sam3-model", type=str, default=None, help="Ultralytics SAM checkpoint name/path.")
+    p.add_argument(
+        "--sam3-processing-long-side",
+        type=int,
+        default=None,
+        help="Resize long side for SAM stage-1 inference (higher values retain more hair detail but cost more runtime).",
+    )
     p.add_argument("--chunk-size", type=int, default=None, help="Segmentation chunk size.")
     p.add_argument("--chunk-overlap", type=int, default=None, help="Chunk overlap.")
+    p.add_argument("--mask-hysteresis", action="store_true", dest="mask_hysteresis_enabled", default=None,
+                   help="Enable Stage-1 Schmitt-trigger mask hysteresis so borderline pixels keep their previous label until confidence clears a low/high band.")
+    p.add_argument("--no-mask-hysteresis", action="store_false", dest="mask_hysteresis_enabled",
+                   help="Disable Stage-1 mask hysteresis.")
+    p.add_argument("--mask-hysteresis-low", type=float, default=None,
+                   help="Stage-1 probability threshold below which pixels flip to background when hysteresis is enabled.")
+    p.add_argument("--mask-hysteresis-high", type=float, default=None,
+                   help="Stage-1 probability threshold above which pixels flip to foreground when hysteresis is enabled.")
+
+    # ---- Pipeline Mode (v1/v2) ----
+    p.add_argument(
+        "--pipeline-mode",
+        type=str,
+        default=None,
+        choices=["v1", "v2"],
+        help="Pipeline mode: 'v1' (SAM3+MEMatte every frame) or 'v2' (MatAnyone2 temporal matting).",
+    )
+    p.add_argument("--matanyone2-repo-dir", type=str, default=None,
+                   help="Path to cloned MatAnyone2 repository.")
+    p.add_argument("--matanyone2-max-size", type=int, default=None,
+                   help="Max resolution (short edge) for MatAnyone2 processing (default 1080).")
+    p.add_argument("--matanyone2-warmup", type=int, default=None,
+                   help="Number of MatAnyone2 warmup iterations on first frame (default 10).")
+    p.add_argument("--matanyone2-hires-threshold", type=int, default=None,
+                   help="Short edge threshold above which MEMatte refinement runs in v2 mode (default 1080).")
 
     p.add_argument("--refine-enabled", action="store_true", help="Enable MEMatte refinement.")
     p.add_argument(
@@ -76,14 +107,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--tile-size", type=int, default=None, help="Refinement tile size.")
     p.add_argument("--tile-overlap", type=int, default=None, help="Refinement tile overlap.")
+    p.add_argument(
+        "--tile-batch-size",
+        type=int,
+        default=None,
+        help="Max number of same-sized MEMatte tiles to batch together per Stage-2 call.",
+    )
     p.add_argument("--trimap-fg-threshold", type=float, default=None, help="Definite FG probability threshold.")
     p.add_argument("--trimap-bg-threshold", type=float, default=None, help="Definite BG probability threshold.")
     p.add_argument(
         "--trimap-mode",
         type=str,
         default=None,
-        choices=["morphological", "logit"],
-        help="Trimap generation mode: 'morphological' (default, uses erosion/dilation) or 'logit' (legacy threshold-based).",
+        choices=["morphological", "hybrid", "logit"],
+        help="Trimap generation mode: 'morphological' (stable erosion/dilation band), 'hybrid' (morphology + logit uncertainty), or 'logit' (legacy threshold-based).",
     )
     p.add_argument("--trimap-erosion-px", type=int, default=None, help="Morphological trimap erosion radius in pixels (default 20).")
     p.add_argument("--trimap-dilation-px", type=int, default=None, help="Morphological trimap dilation radius in pixels (default 10).")
@@ -92,6 +129,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Fallback trimap edge band width in pixels when threshold trimap is empty (hard-mask SAM outputs).",
+    )
+    p.add_argument(
+        "--unknown-edge-blend-px",
+        type=int,
+        default=None,
+        help="Blend refined alpha back toward the coarse prior within this many pixels of unknown-band edges (0 disables).",
     )
 
     p.add_argument("--mask-temporal-smooth-radius", type=int, default=None,
@@ -145,12 +188,23 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, args: argparse.Namespace) -> Vid
     _apply_optional(cfg, "frame_end", args.frame_end)
     _apply_optional(cfg, "alpha_format", args.alpha_format)
 
+    _apply_optional(cfg, "pipeline_mode", args.pipeline_mode)
+    _apply_optional(cfg, "matanyone2_repo_dir", args.matanyone2_repo_dir)
+    _apply_optional(cfg, "matanyone2_max_size", args.matanyone2_max_size)
+    _apply_optional(cfg, "matanyone2_warmup", args.matanyone2_warmup)
+    _apply_optional(cfg, "matanyone2_hires_threshold", args.matanyone2_hires_threshold)
+
     _apply_optional(cfg, "anchor_mask", args.anchor_mask)
     _apply_optional(cfg, "anchor_frame", args.anchor_frame)
     _apply_optional(cfg, "segment_backend", args.segment_backend)
     _apply_optional(cfg, "sam3_model", args.sam3_model)
+    _apply_optional(cfg, "sam3_processing_long_side", args.sam3_processing_long_side)
     _apply_optional(cfg, "chunk_size", args.chunk_size)
     _apply_optional(cfg, "chunk_overlap", args.chunk_overlap)
+    if args.mask_hysteresis_enabled is not None:
+        cfg.mask_hysteresis_enabled = args.mask_hysteresis_enabled
+    _apply_optional(cfg, "mask_hysteresis_low", args.mask_hysteresis_low)
+    _apply_optional(cfg, "mask_hysteresis_high", args.mask_hysteresis_high)
 
     if args.refine_enabled:
         cfg.refine_enabled = True
@@ -160,12 +214,14 @@ def _apply_cli_overrides(cfg: VideoMatteConfig, args: argparse.Namespace) -> Vid
     _apply_optional(cfg, "mematte_checkpoint", args.mematte_checkpoint)
     _apply_optional(cfg, "tile_size", args.tile_size)
     _apply_optional(cfg, "tile_overlap", args.tile_overlap)
+    _apply_optional(cfg, "tile_batch_size", args.tile_batch_size)
     _apply_optional(cfg, "trimap_mode", args.trimap_mode)
     _apply_optional(cfg, "trimap_erosion_px", args.trimap_erosion_px)
     _apply_optional(cfg, "trimap_dilation_px", args.trimap_dilation_px)
     _apply_optional(cfg, "trimap_fg_threshold", args.trimap_fg_threshold)
     _apply_optional(cfg, "trimap_bg_threshold", args.trimap_bg_threshold)
     _apply_optional(cfg, "trimap_fallback_band_px", args.trimap_fallback_band_px)
+    _apply_optional(cfg, "unknown_edge_blend_px", args.unknown_edge_blend_px)
 
     if args.mask_temporal_smooth_radius is not None:
         cfg.mask_temporal_smooth_radius = max(0, min(2, args.mask_temporal_smooth_radius))
@@ -242,6 +298,9 @@ def _run_preflight_checks(cfg: VideoMatteConfig, *, allow_external_paths: bool =
     elif not str(cfg.input).strip():
         raise ValueError("input is required.")
 
+    is_v2 = str(cfg.pipeline_mode).strip().lower() == "v2"
+
+    # SAM/ultralytics check — needed for v1 always, and v2 for first-frame mask
     if str(cfg.segment_backend).strip().lower() == "ultralytics_sam3":
         try:
             _check_runtime_dependency("ultralytics")
@@ -267,20 +326,51 @@ def _run_preflight_checks(cfg: VideoMatteConfig, *, allow_external_paths: bool =
         raise ValueError(
             f"Invalid frame range after preflight: frame_end ({cfg.frame_end}) < frame_start ({cfg.frame_start})."
         )
-    if int(cfg.chunk_overlap) >= int(cfg.chunk_size):
+    if not is_v2:
+        if int(cfg.chunk_overlap) >= int(cfg.chunk_size):
+            raise ValueError(
+                f"chunk_overlap ({cfg.chunk_overlap}) must be less than chunk_size ({cfg.chunk_size})."
+            )
+    if not (0.0 <= float(cfg.mask_hysteresis_low) <= 1.0 and 0.0 <= float(cfg.mask_hysteresis_high) <= 1.0):
         raise ValueError(
-            f"chunk_overlap ({cfg.chunk_overlap}) must be less than chunk_size ({cfg.chunk_size})."
+            "mask_hysteresis_low and mask_hysteresis_high must both be within [0, 1]."
+        )
+    if float(cfg.mask_hysteresis_low) >= float(cfg.mask_hysteresis_high):
+        raise ValueError(
+            f"mask_hysteresis_low ({cfg.mask_hysteresis_low}) must be less than mask_hysteresis_high ({cfg.mask_hysteresis_high})."
         )
     if int(cfg.anchor_frame) != 0:
         raise ValueError(
             f"Unsupported anchor_frame ({cfg.anchor_frame}) for v2 pipeline. Only anchor_frame=0 is currently supported."
         )
-    if not bool(cfg.refine_enabled):
-        logger.info(
-            "MEMatte refinement disabled — pipeline will produce SAM-only preview alphas."
-        )
-        return
 
+    # ---- v2 MatAnyone2 preflight ----
+    if is_v2:
+        matanyone2_repo = _resolve_path_under_repo(str(cfg.matanyone2_repo_dir))
+        if not matanyone2_repo.exists():
+            raise FileNotFoundError(
+                f"MatAnyone2 repo dir not found: {matanyone2_repo}. "
+                "Clone MatAnyone2 into third_party/MatAnyone2."
+            )
+        cfg.matanyone2_repo_dir = str(matanyone2_repo)
+
+        # In v2, MEMatte is only required if source exceeds hires_threshold.
+        # We can't know the source resolution at preflight time, so we check
+        # MEMatte assets only if refine_enabled is True.
+        if not bool(cfg.refine_enabled):
+            logger.info(
+                "v2 pipeline: MEMatte refinement disabled — MatAnyone2 output will be bicubic-upscaled for hires content."
+            )
+            return
+        # Fall through to MEMatte asset checks below
+    else:
+        if not bool(cfg.refine_enabled):
+            logger.info(
+                "MEMatte refinement disabled — pipeline will produce SAM-only preview alphas."
+            )
+            return
+
+    # ---- MEMatte asset checks (v1 always, v2 when refine_enabled) ----
     mematte_repo_candidate = _resolve_path_under_repo(str(cfg.mematte_repo_dir))
     mematte_ckpt_candidate = _resolve_path_under_repo(str(cfg.mematte_checkpoint))
     if allow_external_paths:
@@ -334,11 +424,15 @@ def _resolve_auto_anchor(
     output_dir = Path(str(cfg.output_dir))
     auto_anchor_out = Path(args.auto_anchor_output) if args.auto_anchor_output else (output_dir / "anchor_mask.auto.png")
     requested_start = int(cfg.frame_start)
+    # v2 pipeline needs a tight mask (MatAnyone2 treats it as ground truth);
+    # v1 pipeline benefits from a generous mask (SAM re-segments every frame).
+    use_tight = str(cfg.pipeline_mode).strip().lower() == "v2"
     result = build_auto_anchor_mask_for_video(
         cfg.input,
         auto_anchor_out,
         device=str(cfg.device),
         frame_start=requested_start,
+        tight=use_tight,
     )
     cfg.anchor_mask = str(result.mask_path)
     effective_start = max(requested_start, int(result.probe_frame))
@@ -368,6 +462,7 @@ def _write_cli_run_metadata(
     summary = {
         "input": str(cfg.input),
         "output_dir": str(out_dir.resolve()),
+        "pipeline_mode": str(cfg.pipeline_mode),
         "requested_frame_start": int(requested_frame_start),
         "frame_start": int(cfg.frame_start),
         "frame_end": int(cfg.frame_end),
@@ -387,6 +482,10 @@ def _write_cli_run_metadata(
         "anchor_mask": str(cfg.anchor_mask),
         "allow_external_paths": bool(allow_external_paths),
     }
+    if str(cfg.pipeline_mode) == "v2":
+        summary["matanyone2_repo_dir"] = str(cfg.matanyone2_repo_dir)
+        summary["matanyone2_max_size"] = int(cfg.matanyone2_max_size)
+        summary["matanyone2_hires_threshold"] = int(cfg.matanyone2_hires_threshold)
     if auto_anchor is not None:
         summary["auto_anchor"] = {
             "mask_path": str(auto_anchor.mask_path),

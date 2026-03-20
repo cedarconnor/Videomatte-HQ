@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class TemporalSmoothConfig:
-    enabled: bool = False
-    strength: float = 0.6
-    motion_threshold: float = 0.04
+    enabled: bool = True
+    strength: float = 0.55
+    motion_threshold: float = 0.03
 
 
 def apply_temporal_smooth(

@@ -54,6 +54,7 @@ function buildInitialForm(prefs: UiPreferences): VideoMatteConfigForm {
     frame_start: 0,
     frame_end: 30,
     anchor_mask: "",
+    pipeline_mode: "v1",
     segment_backend: "ultralytics_sam3",
     sam3_model: "sam2_l.pt",
     chunk_size: 100,
@@ -69,48 +70,68 @@ function buildInitialForm(prefs: UiPreferences): VideoMatteConfigForm {
     trimap_fg_threshold: 0.9,
     trimap_bg_threshold: 0.1,
     trimap_fallback_band_px: 1,
-    mask_temporal_smooth_radius: 1,
-    temporal_smooth_enabled: false,
-    temporal_smooth_strength: 0.6,
-    temporal_smooth_motion_threshold: 0.04,
+    mask_temporal_smooth_radius: 2,
+    temporal_smooth_enabled: true,
+    temporal_smooth_strength: 0.55,
+    temporal_smooth_motion_threshold: 0.03,
     generate_preview_mp4: true,
     preview_fps: 0,
     device: prefs.default_device || "cuda",
     precision: prefs.default_precision || "fp16",
     prompt_mode: "mask",
     point_prompts: {},
+    // v2 fields
+    matanyone2_repo_dir: "third_party/MatAnyone2",
+    matanyone2_max_size: 1080,
+    matanyone2_warmup: 10,
+    matanyone2_hires_threshold: 1080,
+    gradient_trimap_base_kernel: 7,
+    gradient_trimap_max_extra: 20,
+    gradient_trimap_fg_thresh: 0.95,
+    gradient_trimap_bg_thresh: 0.05,
+    gradient_trimap_scale: 0.5,
   };
 }
 
 function validateForm(form: VideoMatteConfigForm): string[] {
   const errors: string[] = [];
+  const isV2 = form.pipeline_mode === "v2";
   if (!form.input.trim()) errors.push("Input path is required.");
   if (!form.output_dir.trim()) errors.push("Output folder is required.");
   if (!Number.isFinite(form.frame_start) || form.frame_start < 0) errors.push("Frame start must be >= 0.");
   if (!Number.isFinite(form.frame_end) || form.frame_end < form.frame_start) errors.push("Frame end must be >= frame start.");
-  if (!Number.isFinite(form.chunk_size) || form.chunk_size < 2) errors.push("Chunk size must be >= 2.");
-  if (!Number.isFinite(form.chunk_overlap) || form.chunk_overlap < 0) errors.push("Chunk overlap must be >= 0.");
-  if (form.chunk_overlap >= form.chunk_size) errors.push("Chunk overlap must be smaller than chunk size.");
+  if (!isV2) {
+    if (!Number.isFinite(form.chunk_size) || form.chunk_size < 2) errors.push("Chunk size must be >= 2.");
+    if (!Number.isFinite(form.chunk_overlap) || form.chunk_overlap < 0) errors.push("Chunk overlap must be >= 0.");
+    if (form.chunk_overlap >= form.chunk_size) errors.push("Chunk overlap must be smaller than chunk size.");
+  }
   if (form.refine_enabled) {
     if (!Number.isFinite(form.tile_size) || form.tile_size < 64) errors.push("Tile size must be >= 64.");
     if (!Number.isFinite(form.tile_overlap) || form.tile_overlap < 0) errors.push("Tile overlap must be >= 0.");
     if (form.tile_overlap >= form.tile_size) errors.push("Tile overlap must be smaller than tile size.");
   }
-  if (form.trimap_mode === "morphological") {
+  if (!isV2 && form.trimap_mode === "morphological") {
     if (!Number.isFinite(form.trimap_erosion_px) || form.trimap_erosion_px < 1) errors.push("Trimap erosion must be >= 1 px.");
     if (!Number.isFinite(form.trimap_dilation_px) || form.trimap_dilation_px < 1) errors.push("Trimap dilation must be >= 1 px.");
   }
-  if (!Number.isFinite(form.trimap_fg_threshold) || form.trimap_fg_threshold < 0 || form.trimap_fg_threshold > 1) {
-    errors.push("Trimap FG threshold must be between 0 and 1.");
+  if (!isV2) {
+    if (!Number.isFinite(form.trimap_fg_threshold) || form.trimap_fg_threshold < 0 || form.trimap_fg_threshold > 1) {
+      errors.push("Trimap FG threshold must be between 0 and 1.");
+    }
+    if (!Number.isFinite(form.trimap_bg_threshold) || form.trimap_bg_threshold < 0 || form.trimap_bg_threshold > 1) {
+      errors.push("Trimap BG threshold must be between 0 and 1.");
+    }
+    if (Number.isFinite(form.trimap_bg_threshold) && Number.isFinite(form.trimap_fg_threshold) && form.trimap_bg_threshold >= form.trimap_fg_threshold) {
+      errors.push("Trimap BG threshold must be lower than trimap FG threshold.");
+    }
+    if (!Number.isFinite(form.trimap_fallback_band_px) || form.trimap_fallback_band_px < 0) {
+      errors.push("Trimap fallback band must be >= 0.");
+    }
   }
-  if (!Number.isFinite(form.trimap_bg_threshold) || form.trimap_bg_threshold < 0 || form.trimap_bg_threshold > 1) {
-    errors.push("Trimap BG threshold must be between 0 and 1.");
-  }
-  if (Number.isFinite(form.trimap_bg_threshold) && Number.isFinite(form.trimap_fg_threshold) && form.trimap_bg_threshold >= form.trimap_fg_threshold) {
-    errors.push("Trimap BG threshold must be lower than trimap FG threshold.");
-  }
-  if (!Number.isFinite(form.trimap_fallback_band_px) || form.trimap_fallback_band_px < 0) {
-    errors.push("Trimap fallback band must be >= 0.");
+  if (isV2) {
+    if (!Number.isFinite(form.matanyone2_max_size) || form.matanyone2_max_size < 480) {
+      errors.push("MatAnyone2 max size must be >= 480.");
+    }
   }
   if (form.prompt_mode === "points") {
     const frame0 = form.point_prompts["0"];
@@ -321,6 +342,7 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
     update("trimap_bg_threshold", preset.bg);
   }
 
+  const isV2 = form.pipeline_mode === "v2";
   const isPointMode = form.prompt_mode === "points";
   const pickerFrameEnd = videoFrameCount > 0 ? Math.min(form.frame_end, videoFrameCount - 1) : form.frame_end;
 
@@ -335,6 +357,25 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
         <div className="panel-head">
           <h2>Run Pipeline</h2>
           <p>Thin UI for the current v2 CLI. Start with a short range, inspect QC, then run the full clip.</p>
+        </div>
+
+        <div className="prompt-tabs" style={{ marginBottom: "0.8rem" }}>
+          <button
+            type="button"
+            className={`prompt-tab ${!isV2 ? "active" : ""}`}
+            onClick={() => update("pipeline_mode", "v1")}
+            title="SAM3 segmentation on every frame + MEMatte refinement on every frame"
+          >
+            v1: SAM3 + MEMatte
+          </button>
+          <button
+            type="button"
+            className={`prompt-tab ${isV2 ? "active" : ""}`}
+            onClick={() => update("pipeline_mode", "v2")}
+            title="MatAnyone2 temporal matting + MEMatte only for >1080p content"
+          >
+            v2: MatAnyone2
+          </button>
         </div>
 
         <div className="field-grid">
@@ -432,6 +473,68 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
           </label>
         </div>
 
+        {isV2 && (
+          <div className="hint-box">
+            <strong>MatAnyone2 Settings</strong>
+            <p className="muted">
+              MatAnyone2 provides temporally consistent matting. MEMatte refinement only runs when source resolution exceeds the hi-res threshold.
+            </p>
+            <div className="field-grid">
+              <label title="Path to the cloned MatAnyone2 repository.">
+                MatAnyone2 Repo Dir
+                <input value={form.matanyone2_repo_dir} onChange={(e) => update("matanyone2_repo_dir", e.target.value)} />
+              </label>
+              <label title="Maximum processing resolution (short edge). MatAnyone2 downscales to this before processing.">
+                Max Processing Size
+                <input type="number" min={480} max={2160} step={1} value={form.matanyone2_max_size} onChange={(e) => update("matanyone2_max_size", Number(e.target.value))} />
+              </label>
+              <label title="Number of warmup iterations on the first frame to stabilize the memory bank.">
+                Warmup Iterations
+                <input type="number" min={0} max={50} step={1} value={form.matanyone2_warmup} onChange={(e) => update("matanyone2_warmup", Number(e.target.value))} />
+              </label>
+              <label title="Source short edge above which MEMatte hi-res refinement is activated. At or below this threshold, MatAnyone2 output is used directly.">
+                Hi-Res Threshold
+                <input type="number" min={480} max={4320} step={1} value={form.matanyone2_hires_threshold} onChange={(e) => update("matanyone2_hires_threshold", Number(e.target.value))} />
+              </label>
+            </div>
+            <div className="muted">
+              MEMatte refinement: {form.refine_enabled ? `runs for sources > ${form.matanyone2_hires_threshold}p` : "disabled (bicubic upscale only)"}
+            </div>
+          </div>
+        )}
+
+        {isV2 && form.refine_enabled && (
+          <div className="hint-box">
+            <strong>Gradient-Adaptive Trimap (v2)</strong>
+            <p className="muted">
+              Unknown band width adapts to image gradient — wider around complex edges (hair), narrower around clean edges.
+            </p>
+            <div className="field-grid">
+              <label title="Base kernel size for the unknown band around alpha transitions.">
+                Base Kernel
+                <input type="number" min={3} max={31} step={2} value={form.gradient_trimap_base_kernel} onChange={(e) => update("gradient_trimap_base_kernel", Number(e.target.value))} />
+              </label>
+              <label title="Maximum additional kernel size in high-gradient regions.">
+                Max Extra
+                <input type="number" min={1} max={50} step={1} value={form.gradient_trimap_max_extra} onChange={(e) => update("gradient_trimap_max_extra", Number(e.target.value))} />
+              </label>
+              <label title="Alpha value above which pixels are classified as definite foreground.">
+                FG Threshold
+                <input type="number" min={0.5} max={1} step={0.01} value={form.gradient_trimap_fg_thresh} onChange={(e) => update("gradient_trimap_fg_thresh", Number(e.target.value))} />
+              </label>
+              <label title="Alpha value below which pixels are classified as definite background.">
+                BG Threshold
+                <input type="number" min={0} max={0.5} step={0.01} value={form.gradient_trimap_bg_thresh} onChange={(e) => update("gradient_trimap_bg_thresh", Number(e.target.value))} />
+              </label>
+              <label title="Scaling factor for gradient influence on unknown band width.">
+                Gradient Scale
+                <input type="number" min={0} max={2} step={0.1} value={form.gradient_trimap_scale} onChange={(e) => update("gradient_trimap_scale", Number(e.target.value))} />
+              </label>
+            </div>
+          </div>
+        )}
+
+        {!isV2 && (
         <div className="hint-box">
           <strong>Trimap Generation</strong>
           <div className="field-grid">
@@ -502,6 +605,7 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
             </>
           )}
         </div>
+        )}
 
         <div className="hint-box">
           <strong>Flicker Reduction</strong>
@@ -539,7 +643,7 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
                   <span style={{ minWidth: "2.5rem", textAlign: "right" }}>{form.temporal_smooth_strength.toFixed(2)}</span>
                 </div>
               </label>
-              <label title="Alpha-space difference below which pixels are considered flickering vs moving. Lower values smooth more aggressively.">
+              <label title="Alpha-space difference below which pixels are treated as mostly static. Higher values smooth more aggressively; lower values preserve more motion changes.">
                 Motion threshold
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                   <input type="range" min={0.01} max={0.5} step={0.01}
@@ -555,27 +659,31 @@ export function RunPage({ onJobQueued, uiPrefs }: Props) {
         </div>
 
         <details className="stacked-details">
-          <summary>Segmentation & Refinement (advanced)</summary>
+          <summary>{isV2 ? "SAM3 & Refinement (advanced)" : "Segmentation & Refinement (advanced)"}</summary>
           <div className="field-grid">
-            <label title="Segmentation model backend. ultralytics_sam3 uses SAM2 via Ultralytics; static replays pre-computed masks.">
-              Segment Backend
-              <select value={form.segment_backend} onChange={(e) => update("segment_backend", e.target.value)}>
-                <option value="ultralytics_sam3">ultralytics_sam3</option>
-                <option value="static">static</option>
-              </select>
-            </label>
-            <label title="SAM2 model checkpoint name or path. Larger models (sam2_l) are slower but more accurate. Ultralytics will auto-download if not found locally.">
-              SAM3 Model
-              <input value={form.sam3_model} onChange={(e) => update("sam3_model", e.target.value)} />
-            </label>
-            <label title="Number of frames processed per SAM video chunk. Larger chunks maintain better temporal consistency but use more VRAM.">
-              Chunk Size
-              <input type="number" value={form.chunk_size} onChange={(e) => update("chunk_size", Number(e.target.value))} />
-            </label>
-            <label title="Number of frames that overlap between consecutive chunks. Overlap frames are blended to prevent chunk boundary artifacts. Must be less than chunk size.">
-              Chunk Overlap
-              <input type="number" value={form.chunk_overlap} onChange={(e) => update("chunk_overlap", Number(e.target.value))} />
-            </label>
+            {!isV2 && (
+              <>
+                <label title="Segmentation model backend. ultralytics_sam3 uses SAM2 via Ultralytics; static replays pre-computed masks.">
+                  Segment Backend
+                  <select value={form.segment_backend} onChange={(e) => update("segment_backend", e.target.value)}>
+                    <option value="ultralytics_sam3">ultralytics_sam3</option>
+                    <option value="static">static</option>
+                  </select>
+                </label>
+                <label title="SAM2 model checkpoint name or path. Larger models (sam2_l) are slower but more accurate. Ultralytics will auto-download if not found locally.">
+                  SAM3 Model
+                  <input value={form.sam3_model} onChange={(e) => update("sam3_model", e.target.value)} />
+                </label>
+                <label title="Number of frames processed per SAM video chunk. Larger chunks maintain better temporal consistency but use more VRAM.">
+                  Chunk Size
+                  <input type="number" value={form.chunk_size} onChange={(e) => update("chunk_size", Number(e.target.value))} />
+                </label>
+                <label title="Number of frames that overlap between consecutive chunks. Overlap frames are blended to prevent chunk boundary artifacts. Must be less than chunk size.">
+                  Chunk Overlap
+                  <input type="number" value={form.chunk_overlap} onChange={(e) => update("chunk_overlap", Number(e.target.value))} />
+                </label>
+              </>
+            )}
             <label className="check-line" title="When enabled, MEMatte refines SAM masks to produce soft alpha edges with hair detail. When disabled, outputs hard binary masks from SAM only (preview mode).">
               <input
                 type="checkbox"

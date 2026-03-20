@@ -175,6 +175,61 @@ def _to_mask(logits_or_prob: np.ndarray, threshold: float = 0.5) -> np.ndarray:
     return (probs >= float(threshold)).astype(np.float32)
 
 
+def _apply_mask_hysteresis(
+    logits_or_prob: np.ndarray,
+    prev_mask: np.ndarray | None,
+    *,
+    threshold: float = 0.5,
+    low_threshold: float = 0.45,
+    high_threshold: float = 0.55,
+) -> np.ndarray:
+    probs = _as_probabilities(logits_or_prob)
+    low = float(np.clip(min(low_threshold, high_threshold), 0.0, 1.0))
+    high = float(np.clip(max(low_threshold, high_threshold), 0.0, 1.0))
+    base_threshold = float(np.clip(threshold, 0.0, 1.0))
+
+    if prev_mask is None:
+        return (probs >= base_threshold).astype(np.float32)
+
+    prev = np.asarray(prev_mask, dtype=np.float32)
+    if prev.ndim == 3:
+        prev = prev[..., 0]
+    if prev.shape != probs.shape:
+        prev = cv2.resize(prev, (probs.shape[1], probs.shape[0]), interpolation=cv2.INTER_LINEAR)
+
+    out = prev >= base_threshold
+    out[probs >= high] = True
+    out[probs <= low] = False
+    return out.astype(np.float32)
+
+
+def _mask_sequence_from_logits(
+    logits: list[np.ndarray],
+    *,
+    threshold: float = 0.5,
+    hysteresis_enabled: bool = False,
+    low_threshold: float = 0.45,
+    high_threshold: float = 0.55,
+    prev_mask: np.ndarray | None = None,
+) -> list[np.ndarray]:
+    masks: list[np.ndarray] = []
+    prev = None if prev_mask is None else np.asarray(prev_mask, dtype=np.float32)
+    for logit in logits:
+        if hysteresis_enabled:
+            mask = _apply_mask_hysteresis(
+                logit,
+                prev,
+                threshold=threshold,
+                low_threshold=low_threshold,
+                high_threshold=high_threshold,
+            )
+        else:
+            mask = _to_mask(logit, threshold=threshold)
+        masks.append(mask.astype(np.float32))
+        prev = mask
+    return masks
+
+
 def _mask_iou(mask_a: np.ndarray, mask_b: np.ndarray, threshold: float = 0.5) -> float:
     a = np.asarray(mask_a, dtype=np.float32) >= float(threshold)
     b = np.asarray(mask_b, dtype=np.float32) >= float(threshold)
@@ -528,6 +583,9 @@ class SegmentStageConfig:
     drift_iou_threshold: float = 0.70
     drift_area_threshold: float = 0.40
     max_reanchors_per_chunk: int = 2
+    mask_hysteresis_enabled: bool = False
+    mask_hysteresis_low: float = 0.45
+    mask_hysteresis_high: float = 0.55
 
 
 @dataclass(slots=True)
@@ -595,6 +653,9 @@ class UltralyticsSAM3SegmentBackend:
     strict_max_area_ratio: float = 3.0
     strict_min_iou: float = 0.20
     strict_anchor_max_area_ratio: float = 4.0
+    mask_hysteresis_enabled: bool = False
+    mask_hysteresis_low: float = 0.45
+    mask_hysteresis_high: float = 0.55
     prompt_adapter: PromptAdapter = field(default_factory=MaskPromptAdapter)
     _model: object | None = None
     _runtime_configured: bool = False
@@ -1010,7 +1071,16 @@ class UltralyticsSAM3SegmentBackend:
                     frame_logit = probability_to_logits(prob)
 
                 logits.append(frame_logit.astype(np.float32))
-                prev_mask = _to_mask(frame_logit, threshold=self.mask_threshold)
+                if self.mask_hysteresis_enabled:
+                    prev_mask = _apply_mask_hysteresis(
+                        frame_logit,
+                        prev_mask,
+                        threshold=self.mask_threshold,
+                        low_threshold=self.mask_hysteresis_low,
+                        high_threshold=self.mask_hysteresis_high,
+                    )
+                else:
+                    prev_mask = _to_mask(frame_logit, threshold=self.mask_threshold)
                 area = float((prev_mask >= 0.5).sum())
                 if anchor_area is None:
                     if area > 0.0:
@@ -1098,7 +1168,16 @@ class UltralyticsSAM3SegmentBackend:
                     )
                 frame_logit = probability_to_logits(prob)
             logits.append(frame_logit.astype(np.float32))
-            prev_mask = _to_mask(frame_logit, threshold=self.mask_threshold)
+            if self.mask_hysteresis_enabled:
+                prev_mask = _apply_mask_hysteresis(
+                    frame_logit,
+                    prev_mask,
+                    threshold=self.mask_threshold,
+                    low_threshold=self.mask_hysteresis_low,
+                    high_threshold=self.mask_hysteresis_high,
+                )
+            else:
+                prev_mask = _to_mask(frame_logit, threshold=self.mask_threshold)
             area = float((prev_mask >= 0.5).sum())
             if anchor_area is None:
                 if area > 0.0:
@@ -1119,6 +1198,9 @@ class ChunkedSegmenter(Segmenter):
     drift_iou_threshold: float = 0.70
     drift_area_threshold: float = 0.40
     max_reanchors_per_chunk: int = 2
+    mask_hysteresis_enabled: bool = False
+    mask_hysteresis_low: float = 0.45
+    mask_hysteresis_high: float = 0.55
     prompt_adapter: PromptAdapter = field(default_factory=MaskPromptAdapter)
 
     def segment_sequence(
@@ -1162,7 +1244,13 @@ class ChunkedSegmenter(Segmenter):
                     frame_shape=src_shape,
                 )
                 if len(logits) == num_frames:
-                    masks = [_to_mask(l, threshold=self.mask_threshold) for l in logits]
+                    masks = _mask_sequence_from_logits(
+                        [np.asarray(l, dtype=np.float32) for l in logits],
+                        threshold=self.mask_threshold,
+                        hysteresis_enabled=self.mask_hysteresis_enabled,
+                        low_threshold=self.mask_hysteresis_low,
+                        high_threshold=self.mask_hysteresis_high,
+                    )
                     return SegmentResult(masks=masks, logits=[np.asarray(l, dtype=np.float32) for l in logits], anchored_frames=[0])
             except Exception as exc:
                 logger.warning("Video fast path failed; falling back to chunked per-frame path: %s", exc)
@@ -1172,6 +1260,13 @@ class ChunkedSegmenter(Segmenter):
                 model = getattr(maybe_video_backend, "_model", None)
                 if model is not None and hasattr(model, "predictor"):
                     model.predictor = None
+                # Some Ultralytics builds keep additional predictor-side state
+                # that survives `model.predictor = None`; drop the cached model
+                # entirely so point-prompt fallback starts from a clean runtime.
+                if hasattr(maybe_video_backend, "_model"):
+                    maybe_video_backend._model = None
+                if hasattr(maybe_video_backend, "_preferred_prompt_variant"):
+                    maybe_video_backend._preferred_prompt_variant = None
 
         prev_tail_mask_proc: np.ndarray | None = None
 
@@ -1212,7 +1307,14 @@ class ChunkedSegmenter(Segmenter):
                 raise RuntimeError(
                     f"Segment backend returned {len(chunk_logits)} frames for chunk size {len(frames_proc)}."
                 )
-            chunk_masks = [_to_mask(l, threshold=self.mask_threshold) for l in chunk_logits]
+            chunk_masks = _mask_sequence_from_logits(
+                [np.asarray(l, dtype=np.float32) for l in chunk_logits],
+                threshold=self.mask_threshold,
+                hysteresis_enabled=self.mask_hysteresis_enabled,
+                low_threshold=self.mask_hysteresis_low,
+                high_threshold=self.mask_hysteresis_high,
+                prev_mask=prev_tail_mask_proc,
+            )
 
             # Intra-chunk drift detection + re-anchor.
             reanchors = 0
@@ -1241,10 +1343,15 @@ class ChunkedSegmenter(Segmenter):
                         )
                     if len(replacement_logits) == (len(frames_proc) - local_idx):
                         chunk_logits[local_idx:] = replacement_logits
-                        chunk_masks[local_idx:] = [
-                            _to_mask(l, threshold=self.mask_threshold)
-                            for l in replacement_logits
-                        ]
+                        replacement_prev = chunk_masks[local_idx - 1] if local_idx > 0 else prev_tail_mask_proc
+                        chunk_masks[local_idx:] = _mask_sequence_from_logits(
+                            [np.asarray(l, dtype=np.float32) for l in replacement_logits],
+                            threshold=self.mask_threshold,
+                            hysteresis_enabled=self.mask_hysteresis_enabled,
+                            low_threshold=self.mask_hysteresis_low,
+                            high_threshold=self.mask_hysteresis_high,
+                            prev_mask=replacement_prev,
+                        )
                         anchored_frames.append(chunk_start + local_idx)
                         reanchors += 1
                         continue
@@ -1282,14 +1389,20 @@ class ChunkedSegmenter(Segmenter):
             )
 
         logits: list[np.ndarray] = []
-        masks: list[np.ndarray] = []
         for idx, maybe_logit in enumerate(logits_by_frame):
             if maybe_logit is None:
                 maybe_logit = np.full(src_shape, -6.0, dtype=np.float32)
                 logger.warning("Missing segmentation output for frame %d. Filled with background.", idx)
             logit = np.asarray(maybe_logit, dtype=np.float32)
             logits.append(logit)
-            masks.append(_to_mask(logit, threshold=self.mask_threshold))
+
+        masks = _mask_sequence_from_logits(
+            logits,
+            threshold=self.mask_threshold,
+            hysteresis_enabled=self.mask_hysteresis_enabled,
+            low_threshold=self.mask_hysteresis_low,
+            high_threshold=self.mask_hysteresis_high,
+        )
 
         anchored_sorted = sorted(set(int(i) for i in anchored_frames if 0 <= i < num_frames))
         return SegmentResult(masks=masks, logits=logits, anchored_frames=anchored_sorted)
@@ -1318,6 +1431,9 @@ def build_segmenter(cfg: SegmentStageConfig, *, prompt_adapter: PromptAdapter | 
             precision=cfg.precision,
             processing_long_side=cfg.processing_long_side,
             mask_threshold=cfg.mask_threshold,
+            mask_hysteresis_enabled=cfg.mask_hysteresis_enabled,
+            mask_hysteresis_low=cfg.mask_hysteresis_low,
+            mask_hysteresis_high=cfg.mask_hysteresis_high,
             temporal_component_filter=cfg.temporal_component_filter,
             strict_background_suppression=cfg.strict_background_suppression,
             strict_bbox_expand_ratio=cfg.strict_bbox_expand_ratio,
@@ -1340,5 +1456,8 @@ def build_segmenter(cfg: SegmentStageConfig, *, prompt_adapter: PromptAdapter | 
         drift_iou_threshold=cfg.drift_iou_threshold,
         drift_area_threshold=cfg.drift_area_threshold,
         max_reanchors_per_chunk=cfg.max_reanchors_per_chunk,
+        mask_hysteresis_enabled=cfg.mask_hysteresis_enabled,
+        mask_hysteresis_low=cfg.mask_hysteresis_low,
+        mask_hysteresis_high=cfg.mask_hysteresis_high,
         prompt_adapter=active_prompt_adapter,
     )

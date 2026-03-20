@@ -47,6 +47,9 @@ class VideoMatteConfig:
     drift_iou_threshold: float = 0.70
     drift_area_threshold: float = 0.40
     max_reanchors_per_chunk: int = 2
+    mask_hysteresis_enabled: bool = False
+    mask_hysteresis_low: float = 0.45
+    mask_hysteresis_high: float = 0.55
 
     # ---- Refinement (Stage 2) ----
     refine_enabled: bool = True
@@ -56,6 +59,7 @@ class VideoMatteConfig:
     mematte_patch_decoder: bool = True
     tile_size: int = 1536
     tile_overlap: int = 96
+    tile_batch_size: int = 1
     tile_min_unknown_coverage: float = 0.001
     trimap_mode: str = "morphological"
     trimap_erosion_px: int = 20
@@ -63,7 +67,8 @@ class VideoMatteConfig:
     trimap_fg_threshold: float = 0.9
     trimap_bg_threshold: float = 0.1
     trimap_fallback_band_px: int = 1
-    skip_iou_threshold: float = 0.98
+    unknown_edge_blend_px: int = 4
+    skip_iou_threshold: float = 0.97
 
     # ---- Matte Tuning (Optional) ----
     shrink_grow_px: int = 0
@@ -73,10 +78,10 @@ class VideoMatteConfig:
     matte_tuning_enabled: bool = True
 
     # ---- Temporal Smoothing ----
-    mask_temporal_smooth_radius: int = 1  # 0 = off, 1 = 3-frame median, 2 = 5-frame (max 2)
-    temporal_smooth_enabled: bool = False
-    temporal_smooth_strength: float = 0.6
-    temporal_smooth_motion_threshold: float = 0.04
+    mask_temporal_smooth_radius: int = 2  # 0 = off, 1 = 3-frame median, 2 = 5-frame (max 2)
+    temporal_smooth_enabled: bool = True
+    temporal_smooth_strength: float = 0.55
+    temporal_smooth_motion_threshold: float = 0.03
 
     # ---- Prompt Mode ----
     prompt_mode: str = "mask"          # "mask" | "points"
@@ -85,6 +90,24 @@ class VideoMatteConfig:
     # ---- Preview ----
     generate_preview_mp4: bool = True
     preview_fps: float = 0.0  # 0 = auto-detect from source
+
+    # ---- Pipeline Mode ----
+    pipeline_mode: str = "v1"  # "v1" (SAM3+MEMatte) or "v2" (MatAnyone2)
+
+    # ---- MatAnyone2 (v2 pipeline) ----
+    matanyone2_repo_dir: str = "third_party/MatAnyone2"
+    matanyone2_max_size: int = 1080
+    matanyone2_warmup: int = 10
+    matanyone2_erode_kernel: int = 0
+    matanyone2_dilate_kernel: int = 0
+    matanyone2_hires_threshold: int = 1080
+
+    # ---- Gradient-Adaptive Trimap (v2 pipeline) ----
+    gradient_trimap_base_kernel: int = 7
+    gradient_trimap_max_extra: int = 20
+    gradient_trimap_fg_thresh: float = 0.95
+    gradient_trimap_bg_thresh: float = 0.05
+    gradient_trimap_scale: float = 0.5
 
     # ---- Runtime ----
     device: str = "cuda"
@@ -116,6 +139,9 @@ class VideoMatteConfig:
             drift_iou_threshold=self.drift_iou_threshold,
             drift_area_threshold=self.drift_area_threshold,
             max_reanchors_per_chunk=self.max_reanchors_per_chunk,
+            mask_hysteresis_enabled=self.mask_hysteresis_enabled,
+            mask_hysteresis_low=self.mask_hysteresis_low,
+            mask_hysteresis_high=self.mask_hysteresis_high,
         )
 
     def refine_stage_config(self) -> RefineStageConfig:
@@ -127,6 +153,7 @@ class VideoMatteConfig:
             mematte_patch_decoder=self.mematte_patch_decoder,
             tile_size=self.tile_size,
             tile_overlap=self.tile_overlap,
+            tile_batch_size=self.tile_batch_size,
             tile_min_unknown_coverage=self.tile_min_unknown_coverage,
             trimap_mode=self.trimap_mode,
             trimap_erosion_px=self.trimap_erosion_px,
@@ -134,10 +161,24 @@ class VideoMatteConfig:
             trimap_fg_threshold=self.trimap_fg_threshold,
             trimap_bg_threshold=self.trimap_bg_threshold,
             trimap_fallback_band_px=self.trimap_fallback_band_px,
+            unknown_edge_blend_px=self.unknown_edge_blend_px,
             skip_iou_threshold=self.skip_iou_threshold,
             device=self.device,
             precision=self.precision,
         )
+
+    def matanyone2_stage_config(self) -> dict:
+        """Return config dict for MatAnyone2 stage."""
+        return {
+            "repo_dir": self.matanyone2_repo_dir,
+            "max_size": self.matanyone2_max_size,
+            "warmup": self.matanyone2_warmup,
+            "erode_kernel": self.matanyone2_erode_kernel,
+            "dilate_kernel": self.matanyone2_dilate_kernel,
+            "hires_threshold": self.matanyone2_hires_threshold,
+            "device": self.device,
+            "precision": self.precision,
+        }
 
     def matte_tuning_config(self) -> MatteTuningConfig:
         return MatteTuningConfig(

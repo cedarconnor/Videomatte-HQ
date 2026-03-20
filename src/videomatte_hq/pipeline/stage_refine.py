@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
 from dataclasses import dataclass, field
 
@@ -10,13 +11,14 @@ import numpy as np
 
 from videomatte_hq.pipeline.stage_qc import compute_boundary_iou, compute_iou
 from videomatte_hq.pipeline.stage_trimap import (
+    build_trimap_hybrid,
     build_trimap_from_logits,
     build_trimap_morphological,
     resize_binary_mask,
     resize_logits,
     sigmoid_logits,
 )
-from videomatte_hq.protocols import EdgeRefiner, FrameSourceLike
+from videomatte_hq.protocols import BatchedEdgeRefiner, EdgeRefiner, FrameSourceLike
 from videomatte_hq.tiling.windows import hann_2d
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,16 @@ def _to_rgb_float(frame: np.ndarray) -> np.ndarray:
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
+def _resolution_scale(shape: tuple[int, int], reference_long_side: int = 1920) -> float:
+    long_side = max(int(shape[0]), int(shape[1]))
+    return max(1.0, long_side / float(reference_long_side))
+
+
+def _smoothstep01(x: np.ndarray) -> np.ndarray:
+    y = np.clip(np.asarray(x, dtype=np.float32), 0.0, 1.0)
+    return y * y * (3.0 - 2.0 * y)
+
+
 def _iter_tiles(h: int, w: int, tile_size: int, overlap: int):
     step = max(1, int(tile_size) - int(overlap))
     y = 0
@@ -74,6 +86,7 @@ class RefineStageConfig:
     mematte_patch_decoder: bool = True
     tile_size: int = 1536
     tile_overlap: int = 96
+    tile_batch_size: int = 1
     tile_min_unknown_coverage: float = 0.001
     trimap_mode: str = "morphological"
     trimap_erosion_px: int = 20
@@ -81,7 +94,8 @@ class RefineStageConfig:
     trimap_fg_threshold: float = 0.9
     trimap_bg_threshold: float = 0.1
     trimap_fallback_band_px: int = 1
-    skip_iou_threshold: float = 0.98
+    unknown_edge_blend_px: int = 4
+    skip_iou_threshold: float = 0.97
     preview_solidify_mask: bool = True
     preview_fg_floor: float = 0.9
     preview_bg_ceiling: float = 0.1
@@ -100,7 +114,7 @@ class RefineSequenceResult:
 
 
 @dataclass(slots=True)
-class _RefinerCallCounter(EdgeRefiner):
+class _RefinerCallCounter(BatchedEdgeRefiner):
     """Wrap an EdgeRefiner and count actual tile-level refine invocations."""
 
     inner: EdgeRefiner
@@ -110,9 +124,19 @@ class _RefinerCallCounter(EdgeRefiner):
         self.calls += 1
         return self.inner.refine(rgb, trimap)
 
+    def refine_batch(self, rgb_tiles: list[np.ndarray], trimap_tiles: list[np.ndarray]) -> list[np.ndarray]:
+        if len(rgb_tiles) != len(trimap_tiles):
+            raise ValueError("rgb_tiles and trimap_tiles must have matching lengths.")
+        if not rgb_tiles:
+            return []
+        self.calls += len(rgb_tiles)
+        if isinstance(self.inner, BatchedEdgeRefiner):
+            return self.inner.refine_batch(rgb_tiles, trimap_tiles)
+        return [self.inner.refine(rgb, trimap) for rgb, trimap in zip(rgb_tiles, trimap_tiles)]
+
 
 @dataclass(slots=True)
-class MEMatteEdgeRefiner(EdgeRefiner):
+class MEMatteEdgeRefiner(BatchedEdgeRefiner):
     """EdgeRefiner adapter backed by the detectron2-free MEMatte wrapper."""
 
     repo_dir: str = "third_party/MEMatte"
@@ -140,16 +164,33 @@ class MEMatteEdgeRefiner(EdgeRefiner):
         self._model = model
         return model
 
-    def refine(self, rgb: np.ndarray, trimap: np.ndarray) -> np.ndarray:
-        model = self._ensure_loaded()
-        import torch
-
+    @staticmethod
+    def _prepare_mematte_inputs(rgb: np.ndarray, trimap: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         rgb_f = _to_rgb_float(rgb)
         tri_f = np.asarray(trimap, dtype=np.float32)
         if tri_f.ndim == 3:
             tri_f = tri_f[..., 0]
         tri_f = np.clip(tri_f, 0.0, 1.0)
-        alpha_prior = (tri_f >= 0.5).astype(np.float32)
+        # Strict > 0.5 so unknown pixels (exactly 0.5) get alpha_prior=0
+        # rather than being biased toward foreground.
+        alpha_prior = (tri_f > 0.5).astype(np.float32)
+        return rgb_f, tri_f, alpha_prior
+
+    @staticmethod
+    def _alpha_to_numpy(alpha_t: object) -> np.ndarray:
+        if hasattr(alpha_t, "detach"):
+            alpha_np = alpha_t.detach().cpu().numpy()
+        else:
+            alpha_np = np.asarray(alpha_t)
+        if alpha_np.ndim == 3 and alpha_np.shape[0] == 1:
+            alpha_np = alpha_np[0]
+        return np.clip(alpha_np.astype(np.float32), 0.0, 1.0)
+
+    def refine(self, rgb: np.ndarray, trimap: np.ndarray) -> np.ndarray:
+        model = self._ensure_loaded()
+        import torch
+
+        rgb_f, tri_f, alpha_prior = self._prepare_mematte_inputs(rgb, trimap)
 
         rgb_t = torch.from_numpy(np.transpose(rgb_f, (2, 0, 1)).copy()).float()
         trimap_t = torch.from_numpy(tri_f[None, ...].copy()).float()
@@ -161,13 +202,38 @@ class MEMatteEdgeRefiner(EdgeRefiner):
             alpha_prior=alpha_prior_t,
             bg_tile=None,
         )
-        if hasattr(alpha_t, "detach"):
-            alpha_np = alpha_t.detach().cpu().numpy()
-        else:
-            alpha_np = np.asarray(alpha_t)
-        if alpha_np.ndim == 3 and alpha_np.shape[0] == 1:
-            alpha_np = alpha_np[0]
-        return np.clip(alpha_np.astype(np.float32), 0.0, 1.0)
+        return self._alpha_to_numpy(alpha_t)
+
+    def refine_batch(self, rgb_tiles: list[np.ndarray], trimap_tiles: list[np.ndarray]) -> list[np.ndarray]:
+        if len(rgb_tiles) != len(trimap_tiles):
+            raise ValueError("rgb_tiles and trimap_tiles must have matching lengths.")
+        if not rgb_tiles:
+            return []
+
+        model = self._ensure_loaded()
+        import torch
+
+        rgb_tensors = []
+        trimap_tensors = []
+        alpha_prior_tensors = []
+        for rgb, trimap in zip(rgb_tiles, trimap_tiles):
+            rgb_f, tri_f, alpha_prior = self._prepare_mematte_inputs(rgb, trimap)
+            rgb_tensors.append(torch.from_numpy(np.transpose(rgb_f, (2, 0, 1)).copy()).float())
+            trimap_tensors.append(torch.from_numpy(tri_f[None, ...].copy()).float())
+            alpha_prior_tensors.append(torch.from_numpy(alpha_prior[None, ...].copy()).float())
+
+        alpha_tiles = model.infer_tile_batch(
+            rgb_tiles=rgb_tensors,
+            trimap_tiles=trimap_tensors,
+            alpha_priors=alpha_prior_tensors,
+            bg_tiles=None,
+        )
+        if len(alpha_tiles) != len(rgb_tiles):
+            raise RuntimeError(
+                "MEMatte batched refine returned an unexpected number of tiles: "
+                f"expected={len(rgb_tiles)} got={len(alpha_tiles)}"
+            )
+        return [self._alpha_to_numpy(alpha_t) for alpha_t in alpha_tiles]
 
 
 def _largest_component(binary: np.ndarray) -> np.ndarray:
@@ -286,6 +352,53 @@ def _cleanup_preview_mask(mask: np.ndarray, previous_mask: np.ndarray | None, cf
     return fg.astype(np.float32)
 
 
+def _run_refine_tiles(
+    refiner: EdgeRefiner,
+    rgb_tiles: list[np.ndarray],
+    trimap_tiles: list[np.ndarray],
+) -> list[np.ndarray]:
+    if len(rgb_tiles) != len(trimap_tiles):
+        raise ValueError("rgb_tiles and trimap_tiles must have matching lengths.")
+    if not rgb_tiles:
+        return []
+    if len(rgb_tiles) == 1:
+        return [np.asarray(refiner.refine(rgb_tiles[0], trimap_tiles[0]), dtype=np.float32)]
+    if isinstance(refiner, BatchedEdgeRefiner):
+        outputs = refiner.refine_batch(rgb_tiles, trimap_tiles)
+        if len(outputs) != len(rgb_tiles):
+            raise RuntimeError(
+                "Batched edge refiner returned an unexpected number of tiles: "
+                f"expected={len(rgb_tiles)} got={len(outputs)}"
+            )
+        return [np.asarray(alpha, dtype=np.float32) for alpha in outputs]
+    return [np.asarray(refiner.refine(rgb, trimap), dtype=np.float32) for rgb, trimap in zip(rgb_tiles, trimap_tiles)]
+
+
+def _accumulate_tile_alpha(
+    acc_num: np.ndarray,
+    acc_den: np.ndarray,
+    *,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    unknown_tile: np.ndarray,
+    tile_alpha: np.ndarray,
+) -> None:
+    tile_h = y1 - y0
+    tile_w = x1 - x0
+    if tile_alpha.shape != (tile_h, tile_w):
+        tile_alpha = cv2.resize(
+            tile_alpha,
+            (tile_w, tile_h),
+            interpolation=cv2.INTER_LINEAR,
+        )
+    window = hann_2d(tile_h, tile_w)
+    weight = window * unknown_tile.astype(np.float32)
+    acc_num[y0:y1, x0:x1] += weight * np.clip(tile_alpha, 0.0, 1.0)
+    acc_den[y0:y1, x0:x1] += weight
+
+
 def _refine_frame_tiled(
     rgb: np.ndarray,
     trimap: np.ndarray,
@@ -308,34 +421,122 @@ def _refine_frame_tiled(
 
     tile_size = max(64, int(cfg.tile_size))
     overlap = int(np.clip(cfg.tile_overlap, 0, tile_size - 1))
+    tile_batch_size = max(1, int(cfg.tile_batch_size))
     min_cov = float(np.clip(cfg.tile_min_unknown_coverage, 0.0, 1.0))
 
+    active_tiles: list[tuple[int, int, int, int, np.ndarray, np.ndarray, np.ndarray]] = []
     for x0, y0, x1, y1 in _iter_tiles(h, w, tile_size=tile_size, overlap=overlap):
         unknown_tile = unknown[y0:y1, x0:x1]
         coverage = float(unknown_tile.mean())
         if coverage <= min_cov:
             continue
-
-        rgb_tile = rgb[y0:y1, x0:x1]
-        trimap_tile = trimap[y0:y1, x0:x1]
-        tile_alpha = np.asarray(refiner.refine(rgb_tile, trimap_tile), dtype=np.float32)
-        if tile_alpha.shape != (y1 - y0, x1 - x0):
-            tile_alpha = cv2.resize(
-                tile_alpha,
-                (x1 - x0, y1 - y0),
-                interpolation=cv2.INTER_LINEAR,
+        active_tiles.append(
+            (
+                x0,
+                y0,
+                x1,
+                y1,
+                unknown_tile,
+                rgb[y0:y1, x0:x1],
+                trimap[y0:y1, x0:x1],
             )
+        )
 
-        window = hann_2d(y1 - y0, x1 - x0)
-        weight = window * unknown_tile.astype(np.float32)
-        acc_num[y0:y1, x0:x1] += weight * np.clip(tile_alpha, 0.0, 1.0)
-        acc_den[y0:y1, x0:x1] += weight
+    shape_groups: dict[tuple[int, int], list[tuple[int, int, int, int, np.ndarray, np.ndarray, np.ndarray]]] = {}
+    for tile in active_tiles:
+        x0, y0, x1, y1, _, _, _ = tile
+        shape_groups.setdefault((y1 - y0, x1 - x0), []).append(tile)
+
+    for group_tiles in shape_groups.values():
+        for start in range(0, len(group_tiles), tile_batch_size):
+            chunk_tiles = group_tiles[start : start + tile_batch_size]
+            rgb_tiles = [tile[5] for tile in chunk_tiles]
+            trimap_tiles = [tile[6] for tile in chunk_tiles]
+            tile_alphas = _run_refine_tiles(refiner, rgb_tiles, trimap_tiles)
+            for tile, tile_alpha in zip(chunk_tiles, tile_alphas):
+                x0, y0, x1, y1, unknown_tile, _, _ = tile
+                _accumulate_tile_alpha(
+                    acc_num,
+                    acc_den,
+                    x0=x0,
+                    y0=y0,
+                    x1=x1,
+                    y1=y1,
+                    unknown_tile=unknown_tile,
+                    tile_alpha=tile_alpha,
+                )
 
     has = acc_den > 1e-8
     alpha[has] = (acc_num[has] / acc_den[has]).astype(np.float32)
+    alpha = _apply_unknown_edge_blend(alpha, coarse_prob, trimap, cfg)
     alpha[trimap >= 1.0] = 1.0
     alpha[trimap <= 0.0] = 0.0
     return np.clip(alpha, 0.0, 1.0).astype(np.float32)
+
+
+def _apply_unknown_edge_blend(
+    refined_alpha: np.ndarray,
+    coarse_prob: np.ndarray,
+    trimap: np.ndarray,
+    cfg: RefineStageConfig,
+) -> np.ndarray:
+    blend_px = max(0, int(cfg.unknown_edge_blend_px))
+    if blend_px <= 0:
+        return np.clip(np.asarray(refined_alpha, dtype=np.float32), 0.0, 1.0).astype(np.float32)
+
+    unknown = trimap == 0.5
+    if not bool(unknown.any()):
+        return np.clip(np.asarray(refined_alpha, dtype=np.float32), 0.0, 1.0).astype(np.float32)
+
+    radius = max(1, int(round(float(blend_px) * _resolution_scale(trimap.shape))))
+    dist = cv2.distanceTransform(unknown.astype(np.uint8), cv2.DIST_L2, 5).astype(np.float32)
+    refine_weight = _smoothstep01(dist / float(radius))
+
+    refined = np.clip(np.asarray(refined_alpha, dtype=np.float32), 0.0, 1.0)
+    prior = np.clip(np.asarray(coarse_prob, dtype=np.float32), 0.0, 1.0)
+    out = refined.copy()
+    out[unknown] = (
+        prior[unknown] * (1.0 - refine_weight[unknown]) + refined[unknown] * refine_weight[unknown]
+    ).astype(np.float32)
+    out[trimap >= 1.0] = 1.0
+    out[trimap <= 0.0] = 0.0
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+
+def _build_frame_trimap_and_prior(
+    mask_up: np.ndarray,
+    coarse_logit: np.ndarray,
+    shape: tuple[int, int],
+    cfg: RefineStageConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    logits_up = resize_logits(coarse_logit, shape)
+    if cfg.trimap_mode == "morphological":
+        trimap = build_trimap_morphological(
+            mask_up,
+            erosion_px=cfg.trimap_erosion_px,
+            dilation_px=cfg.trimap_dilation_px,
+        )
+        coarse_prob = sigmoid_logits(logits_up)
+    elif cfg.trimap_mode == "hybrid":
+        trimap = build_trimap_hybrid(
+            mask_up,
+            logits_up,
+            erosion_px=cfg.trimap_erosion_px,
+            dilation_px=cfg.trimap_dilation_px,
+            fg_threshold=cfg.trimap_fg_threshold,
+            bg_threshold=cfg.trimap_bg_threshold,
+            fallback_band_px=cfg.trimap_fallback_band_px,
+        )
+        coarse_prob = sigmoid_logits(logits_up)
+    else:
+        trimap = build_trimap_from_logits(
+            logits_up,
+            fg_threshold=cfg.trimap_fg_threshold,
+            bg_threshold=cfg.trimap_bg_threshold,
+            fallback_band_px=cfg.trimap_fallback_band_px,
+        )
+        coarse_prob = sigmoid_logits(logits_up)
+    return trimap.astype(np.float32), np.asarray(coarse_prob, dtype=np.float32)
 
 
 def build_edge_refiner(cfg: RefineStageConfig) -> EdgeRefiner:
@@ -355,6 +556,7 @@ def refine_sequence(
     coarse_logits: list[np.ndarray],
     cfg: RefineStageConfig,
     refiner: EdgeRefiner | None = None,
+    trimap_callback: Callable[[int, np.ndarray], None] | None = None,
 ) -> RefineSequenceResult:
     """Run stage-2 refinement for an entire sequence."""
     num_frames = int(len(source))
@@ -365,13 +567,21 @@ def refine_sequence(
         )
 
     use_refiner = bool(cfg.refine_enabled)
+    source_shape = tuple(int(v) for v in source.resolution)
     if not use_refiner:
         logger.info("MEMatte refinement disabled — generating SAM-only preview alphas.")
         out_alphas: list[np.ndarray] = []
         prev_mask: np.ndarray | None = None
         for frame_idx in range(num_frames):
-            shape = tuple(int(v) for v in np.asarray(source[frame_idx]).shape[:2])
-            mask_up = resize_binary_mask(coarse_masks[frame_idx], shape, threshold=0.5)
+            mask_up = resize_binary_mask(coarse_masks[frame_idx], source_shape, threshold=0.5)
+            if trimap_callback is not None:
+                trimap, _ = _build_frame_trimap_and_prior(
+                    mask_up,
+                    coarse_logits[frame_idx],
+                    source_shape,
+                    cfg,
+                )
+                trimap_callback(frame_idx, trimap)
             alpha = _cleanup_preview_mask(mask_up, prev_mask, cfg)
             out_alphas.append(np.clip(alpha, 0.0, 1.0).astype(np.float32))
             prev_mask = mask_up
@@ -390,18 +600,26 @@ def refine_sequence(
     prev_alpha: np.ndarray | None = None
 
     for frame_idx in range(num_frames):
-        rgb = _to_rgb_float(source[frame_idx])
-        shape = rgb.shape[:2]
-
-        logits_up = resize_logits(coarse_logits[frame_idx], shape)
-        mask_up = resize_binary_mask(coarse_masks[frame_idx], shape, threshold=0.5)
-
-        if (
+        mask_up = resize_binary_mask(coarse_masks[frame_idx], source_shape, threshold=0.5)
+        should_reuse = bool(
             prev_mask is not None
             and prev_alpha is not None
             and compute_iou(mask_up, prev_mask) > float(cfg.skip_iou_threshold)
             and compute_boundary_iou(mask_up, prev_mask) > float(cfg.skip_iou_threshold) * 0.9
-        ):
+        )
+        trimap: np.ndarray | None = None
+        coarse_prob: np.ndarray | None = None
+        if not should_reuse or trimap_callback is not None:
+            trimap, coarse_prob = _build_frame_trimap_and_prior(
+                mask_up,
+                coarse_logits[frame_idx],
+                source_shape,
+                cfg,
+            )
+            if trimap_callback is not None:
+                trimap_callback(frame_idx, trimap)
+
+        if should_reuse:
             reused_alpha = prev_alpha.copy()
             out_alphas.append(reused_alpha)
             prev_alpha = reused_alpha
@@ -409,21 +627,15 @@ def refine_sequence(
             prev_mask = mask_up
             continue
 
-        if cfg.trimap_mode == "morphological":
-            trimap = build_trimap_morphological(
+        # Decode the full-resolution frame only when MEMatte actually needs to run.
+        rgb = _to_rgb_float(source[frame_idx])
+        if trimap is None or coarse_prob is None:
+            trimap, coarse_prob = _build_frame_trimap_and_prior(
                 mask_up,
-                erosion_px=cfg.trimap_erosion_px,
-                dilation_px=cfg.trimap_dilation_px,
+                coarse_logits[frame_idx],
+                source_shape,
+                cfg,
             )
-            coarse_prob = mask_up
-        else:
-            trimap = build_trimap_from_logits(
-                logits_up,
-                fg_threshold=cfg.trimap_fg_threshold,
-                bg_threshold=cfg.trimap_bg_threshold,
-                fallback_band_px=cfg.trimap_fallback_band_px,
-            )
-            coarse_prob = sigmoid_logits(logits_up)
 
         alpha = _refine_frame_tiled(
             rgb=rgb,
