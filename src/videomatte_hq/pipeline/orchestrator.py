@@ -432,17 +432,19 @@ def _run_pipeline_v2(cfg: VideoMatteConfig) -> PipelineRunResult:
         tuned = apply_matte_tuning(alphas, cfg.matte_tuning_config())
         tuned = apply_temporal_smooth(tuned, cfg.temporal_smooth_config())
 
-        # Write output
+        # Write output — free each frame after writing to limit memory
+        num_tuned = len(tuned)
         writer = AlphaWriter(
             output_pattern=cfg.output_alpha,
             alpha_format=cfg.alpha_format,
             workers=max(1, int(cfg.workers_io)),
             base_dir=output_dir,
         )
-        for idx, alpha in enumerate(tuned):
-            writer.write(write_start + idx, alpha)
+        for idx in range(num_tuned):
+            writer.write(write_start + idx, tuned[idx])
+            tuned[idx] = None  # free memory immediately
         writer.close()
-        logger.info("Wrote %d alpha frames to %s", len(tuned), output_dir)
+        logger.info("Wrote %d alpha frames to %s", num_tuned, output_dir)
 
         if cfg.generate_preview_mp4:
             from videomatte_hq.io.preview_mp4 import generate_alpha_preview_mp4
@@ -463,7 +465,7 @@ def _run_pipeline_v2(cfg: VideoMatteConfig) -> PipelineRunResult:
         return PipelineRunResult(
             segment_result=None,
             refine_result=RefineSequenceResult(
-                alphas=tuned,
+                alphas=[],  # already written to disk; don't hold in memory
                 reused_frames=[],
             ),
             output_dir=output_dir,

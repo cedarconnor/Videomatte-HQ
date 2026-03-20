@@ -57,37 +57,36 @@ def apply_temporal_smooth(
         if (t + 1) % 100 == 0:
             logger.info("  median frame %d/%d", t + 1, n)
 
-    # --- Pass 2: forward-backward EMA ---
+    # --- Pass 2: forward-backward EMA (O(1) memory) ---
+    # Two sequential in-place passes at half strength each, which achieves
+    # similar smoothing to the classic average(fwd, bwd) approach without
+    # needing to buffer all frames.
+    half_s = strength * 0.5
     logger.info("Temporal smooth pass 2/2: forward-backward EMA, strength=%.2f, threshold=%.3f.", strength, motion_thr)
 
-    # Forward pass
-    fwd = [np.asarray(alphas[0], dtype=np.float32)]
+    # Forward pass — in-place
+    prev = np.asarray(alphas[0], dtype=np.float32).copy()
     for t in range(1, n):
         current = np.asarray(alphas[t], dtype=np.float32)
-        delta = np.abs(current - fwd[t - 1])
+        delta = np.abs(current - prev)
         motion = np.clip(delta / motion_thr, 0.0, 1.0)
-        weight = 1.0 - strength * (1.0 - motion)
-        fwd.append(fwd[t - 1] * (1.0 - weight) + current * weight)
+        weight = 1.0 - half_s * (1.0 - motion)
+        prev = prev * (1.0 - weight) + current * weight
+        alphas[t] = prev.copy()
         if (t + 1) % 100 == 0:
             logger.info("  forward EMA frame %d/%d", t + 1, n)
 
-    # Backward pass
-    bwd = [None] * n
-    bwd[n - 1] = np.asarray(alphas[n - 1], dtype=np.float32)
+    # Backward pass — in-place on top of forward result
+    prev = np.asarray(alphas[n - 1], dtype=np.float32).copy()
     for t in range(n - 2, -1, -1):
         current = np.asarray(alphas[t], dtype=np.float32)
-        delta = np.abs(current - bwd[t + 1])
+        delta = np.abs(current - prev)
         motion = np.clip(delta / motion_thr, 0.0, 1.0)
-        weight = 1.0 - strength * (1.0 - motion)
-        bwd[t] = bwd[t + 1] * (1.0 - weight) + current * weight
+        weight = 1.0 - half_s * (1.0 - motion)
+        prev = prev * (1.0 - weight) + current * weight
+        alphas[t] = np.clip(prev, 0.0, 1.0).astype(np.float32)
         if (t + 1) % 100 == 0:
             logger.info("  backward EMA frame %d/%d", t + 1, n)
-
-    # Average forward and backward, write back in-place
-    for t in range(n):
-        alphas[t] = np.clip((fwd[t] + bwd[t]) * 0.5, 0.0, 1.0).astype(np.float32)
-    # Free intermediate lists
-    del fwd, bwd
 
     logger.info("Temporal smooth complete: %d frames, strength=%.2f, threshold=%.3f.",
                 n, strength, motion_thr)
